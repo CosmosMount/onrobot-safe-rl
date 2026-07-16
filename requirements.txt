@@ -1,0 +1,9 @@
+jax[cuda12]
+flax
+optax
+numpy
+pyyaml
+scipy
+tqdm
+wandb
+unitree_sdk2py

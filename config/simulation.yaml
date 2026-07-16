@@ -1,0 +1,5 @@
+# Simulation-specific DDS and velocity-frame settings.
+
+domain_id: 1
+interface: lo
+sport_velocity_world_frame: true

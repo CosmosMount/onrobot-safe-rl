@@ -1,0 +1,114 @@
+# Shared Go2 config — edit this file only (train + controller).
+
+# --- DDS / controller (SI: time s, frequency Hz, angles rad) ---
+control_hz: 500
+domain_id: 1
+interface: lo
+ipc_socket: /tmp/go2_policy.sock
+# unitree_mujoco publishes framelinvel (world frame) on rt/sportmodestate; real Go2 uses body frame
+sport_velocity_world_frame: true
+sport_state_max_age_ms: 250
+policy_timeout_ms: 500
+policy_delay_ms: 0
+kp: 60.0
+kd: 5.0
+# Go2 MJCF limits (rad): hip ±1.05; front thigh -1.57~3.49; rear thigh -0.52~4.54; knee -2.72~-0.84
+# Order: FR FL RR RL × [hip thigh calf]
+joint_min: [-1.05, -1.57, -2.72, -1.05, -1.57, -2.72, -1.05, -0.52, -2.72, -1.05, -0.52, -2.72]
+joint_max: [1.05, 3.49, -0.84, 1.05, 3.49, -0.84, 1.05, 4.54, -0.84, 1.05, 4.54, -0.84]
+
+# --- Robot / MDP (SI: angles rad, speeds m/s, acceleration m/s², time s, frequency Hz) ---
+init_qpos: [0.05, 0.7, -1.4, 0.05, 0.7, -1.4, 0.05, 0.7, -1.4, 0.05, 0.7, -1.4]
+action_offset: [0.2, 0.4, 0.4, 0.2, 0.4, 0.4, 0.2, 0.4, 0.4, 0.2, 0.4, 0.4]
+success_orientation_rad: 0.523599   # π/6
+fallen_risk_rad: 0.349066           # π/9
+
+# acc_z: belly-down ≈ +9.8, belly-up ≈ -9.8. up_cos = acc_z/|acc| (1=upright, -1=flip)
+imu:
+  upright_acc_z: 3.0
+  upside_down_acc_z: -3.0
+  upright_up_cos: 0.5
+  upside_down_up_cos: -0.7
+
+joint_tolerance: 0.20  # rad (L2 joint error)
+move_speed: 0.5        # m/s
+# Diagnostic baseline gates idle reward. Use config/rewards/upstream.yaml to
+# restore the dense walk_in_the_park reward.
+reward_min_forward_vel: 0.04
+action_filter_highcut: 4.0
+
+stand_up:
+  pose_1: [0.0, 1.36, -2.65, 0.0, 1.36, -2.65, -0.2, 1.36, -2.65, 0.2, 1.36, -2.65]
+  pose_2: [0.05, 0.7, -1.4, 0.05, 0.7, -1.4, 0.05, 0.7, -1.4, 0.05, 0.7, -1.4]
+  warmup_s: 1.0
+  phase_1_s: 1.0
+  phase_2_s: 1.0
+  hold_s: 2.0
+  joint_tolerance: 0.20
+  deactivate_motion_service: false
+
+# swing_legs: all four swing down; push_legs: rear two push calf only
+recovery:
+  swing_legs: [true, true, true, true]
+  push_legs: [false, false, true, true]
+  fold_jpos: [0.0, 1.4, -2.7, 0.0, 1.4, -2.7, 0.0, 1.4, -2.7, 0.0, 1.4, -2.7]
+  above_jpos: [0.0, 1.85, -2.65, 0.0, 1.85, -2.65, 0.0, 1.95, -2.65, 0.0, 1.95, -2.65]
+  swing_down_jpos: [0.0, 3.49, -2.65, 0.0, 3.49, -2.65, 0.0, 4.45, -2.65, 0.0, 4.45, -2.65]
+  push_jpos: [0.0, 3.49, -2.65, 0.0, 3.49, -2.65, 0.0, 4.45, -0.88, 0.0, 4.45, -0.88]
+  fold_ramp_s: 0.45
+  fold_settle_s: 0.50
+  above_ramp_s: 0.45
+  above_settle_s: 0.35
+  swing_down_ramp_s: 0.60
+  swing_down_settle_s: 0.50
+  push_ramp_s: 0.30
+  push_settle_s: 0.25
+  joint_reach_tol: 0.12
+  kp: 100.0
+  kd: 8.0
+  deactivate_motion_service: false
+
+# --- Online training (python -m train) ---
+train:
+  seed: 42
+  control_frequency: 20.0
+  max_episode_steps: 400      # policy steps only; standup/recovery excluded
+  reset_grace_steps: 20       # policy steps before fallen_risk can trigger standup
+  reset_hold_steps: 100       # max steps to wait for standup on episode reset (20Hz→5s)
+  recovery_stable_steps: 10   # consecutive stable steps to leave standup mode
+  standup_timeout_steps: 200  # force episode end if standup exceeds this (not counted in max_episode_steps)
+  max_joint_delta: null
+  use_action_filter: false
+  explore_action_scale: 1.0
+  max_steps: 1000000
+  start_training: 1000
+  batch_size: 256
+  utd_ratio: 20
+  buffer_size: 1000000
+  log_interval: 100
+  eval_interval: 1000
+  eval_episodes: 1
+  no_eval: true
+  save_dir: saved/checkpoints
+  use_tqdm: true
+  save_checkpoints: true
+  warmup: true
+  profile: false
+  benchmark_only: false
+  benchmark_steps: 200
+  wandb: true
+  wandb_project: go2_walk
+  wandb_run_name: null
+
+  droq:
+    actor_lr: 3.0e-4
+    critic_lr: 3.0e-4
+    temp_lr: 3.0e-4
+    hidden_dims: [256, 256]
+    discount: 0.99
+    tau: 0.005
+    num_qs: 2
+    critic_dropout_rate: 0.01
+    critic_layer_norm: true
+    init_temperature: 0.1
+    target_entropy: null

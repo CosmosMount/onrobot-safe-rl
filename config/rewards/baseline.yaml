@@ -1,0 +1,3 @@
+# Diagnostic baseline reward: do not reward a fully idle robot.
+
+reward_min_forward_vel: 0.04

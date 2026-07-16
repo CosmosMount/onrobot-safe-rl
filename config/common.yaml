@@ -1,0 +1,103 @@
+# Shared Go2 configuration. Overlay simulation.yaml or real_robot.yaml for
+# environment-specific DDS and velocity-frame settings.
+
+control_hz: 500
+ipc_socket: /tmp/go2_policy.sock
+policy_timeout_ms: 500
+policy_delay_ms: 0
+kp: 60.0
+kd: 5.0
+
+joint_min: [-1.05, -1.57, -2.72, -1.05, -1.57, -2.72, -1.05, -0.52, -2.72, -1.05, -0.52, -2.72]
+joint_max: [1.05, 3.49, -0.84, 1.05, 3.49, -0.84, 1.05, 4.54, -0.84, 1.05, 4.54, -0.84]
+
+init_qpos: [0.05, 0.7, -1.4, 0.05, 0.7, -1.4, 0.05, 0.7, -1.4, 0.05, 0.7, -1.4]
+action_offset: [0.2, 0.4, 0.4, 0.2, 0.4, 0.4, 0.2, 0.4, 0.4, 0.2, 0.4, 0.4]
+success_orientation_rad: 0.523599
+fallen_risk_rad: 0.349066
+
+imu:
+  upright_acc_z: 3.0
+  upside_down_acc_z: -3.0
+  upright_up_cos: 0.5
+  upside_down_up_cos: -0.7
+
+joint_tolerance: 0.20
+move_speed: 0.5
+reward_min_forward_vel: 0.04
+sport_state_max_age_ms: 250
+action_filter_highcut: 4.0
+
+stand_up:
+  pose_1: [0.0, 1.36, -2.65, 0.0, 1.36, -2.65, -0.2, 1.36, -2.65, 0.2, 1.36, -2.65]
+  pose_2: [0.05, 0.7, -1.4, 0.05, 0.7, -1.4, 0.05, 0.7, -1.4, 0.05, 0.7, -1.4]
+  warmup_s: 1.0
+  phase_1_s: 1.0
+  phase_2_s: 1.0
+  hold_s: 2.0
+  joint_tolerance: 0.20
+  deactivate_motion_service: false
+
+recovery:
+  swing_legs: [true, true, true, true]
+  push_legs: [false, false, true, true]
+  fold_jpos: [0.0, 1.4, -2.7, 0.0, 1.4, -2.7, 0.0, 1.4, -2.7, 0.0, 1.4, -2.7]
+  above_jpos: [0.0, 1.85, -2.65, 0.0, 1.85, -2.65, 0.0, 1.95, -2.65, 0.0, 1.95, -2.65]
+  swing_down_jpos: [0.0, 3.49, -2.65, 0.0, 3.49, -2.65, 0.0, 4.45, -2.65, 0.0, 4.45, -2.65]
+  push_jpos: [0.0, 3.49, -2.65, 0.0, 3.49, -2.65, 0.0, 4.45, -0.88, 0.0, 4.45, -0.88]
+  fold_ramp_s: 0.45
+  fold_settle_s: 0.50
+  above_ramp_s: 0.45
+  above_settle_s: 0.35
+  swing_down_ramp_s: 0.60
+  swing_down_settle_s: 0.50
+  push_ramp_s: 0.30
+  push_settle_s: 0.25
+  joint_reach_tol: 0.12
+  kp: 100.0
+  kd: 8.0
+  deactivate_motion_service: false
+
+train:
+  seed: 42
+  control_frequency: 20.0
+  max_episode_steps: 400
+  reset_grace_steps: 20
+  reset_hold_steps: 100
+  recovery_stable_steps: 10
+  standup_timeout_steps: 200
+  max_joint_delta: null
+  use_action_filter: false
+  explore_action_scale: 1.0
+  max_steps: 1000000
+  start_training: 1000
+  batch_size: 256
+  utd_ratio: 20
+  buffer_size: 1000000
+  log_interval: 100
+  eval_interval: 1000
+  eval_episodes: 1
+  no_eval: true
+  save_dir: saved/checkpoints
+  use_tqdm: true
+  save_checkpoints: true
+  warmup: true
+  profile: false
+  benchmark_only: false
+  benchmark_steps: 200
+  wandb: true
+  wandb_project: go2_walk
+  wandb_run_name: null
+
+  droq:
+    actor_lr: 3.0e-4
+    critic_lr: 3.0e-4
+    temp_lr: 3.0e-4
+    hidden_dims: [256, 256]
+    discount: 0.99
+    tau: 0.005
+    num_qs: 2
+    critic_dropout_rate: 0.01
+    critic_layer_norm: true
+    init_temperature: 0.1
+    target_entropy: null

@@ -1,0 +1,7 @@
+.vscode/
+.agents/
+
+saved/
+build/
+wandb/
+__pycache__/
