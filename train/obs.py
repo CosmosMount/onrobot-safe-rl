@@ -144,9 +144,12 @@ def get_run_reward_from_state(
     droll = float(state.imu_gyro[0])
     dpitch = float(state.imu_gyro[1])
     dyaw = float(state.imu_gyro[2])
+    up_cos = body_up_cos(state.imu_quat)
+    upright_gate = float(up_cos >= cfg.reward_upright_min_cos)
     forward_vel = cos_pitch * x_velocity
-    if (cfg.reward_min_forward_vel is not None
-            and forward_vel < cfg.reward_min_forward_vel):
+    if (not upright_gate
+            or (cfg.reward_min_forward_vel is not None
+                and forward_vel < cfg.reward_min_forward_vel)):
         forward_term = 0.0
     else:
         forward_term = _tolerance(
@@ -156,24 +159,26 @@ def get_run_reward_from_state(
             value_at_margin=0.0,
         )
     reward_raw = forward_term - 0.1 * abs(dyaw)
-    reward = get_run_reward(
-        x_velocity,
-        cfg.move_speed,
-        cos_pitch,
-        dyaw,
-        min_forward_vel=cfg.reward_min_forward_vel,
-    )
+    reward = float(10.0 * reward_raw)
     info = {
         'x_velocity': x_velocity,
         'forward_velocity': forward_vel,
         'cos_pitch': cos_pitch,
+        'body_up_cos': up_cos,
+        'upright_gate': upright_gate,
         'dyaw': dyaw,
         'dpitch': dpitch,
         'droll': droll,
         'forward_term': forward_term,
         'reward_raw': reward_raw,
+        'task_reward': reward,
     }
     return reward, info
+
+
+def get_terminal_penalty(*, terminated: bool, cfg: Go2Config) -> float:
+    """Apply failure penalty only to true MDP terminations, never time limits."""
+    return float(cfg.fall_terminal_penalty if terminated else 0.0)
 
 
 def gravity_acc_z(state: RobotState) -> float:
@@ -216,9 +221,14 @@ def is_fallen_risk(state: RobotState, cfg: Go2Config) -> bool:
     return abs(roll) > limit or abs(pitch) > limit
 
 
-def is_pose_stable(state: RobotState, cfg: Go2Config) -> bool:
+def is_pose_stable(state: RobotState,
+                   cfg: Go2Config,
+                   *,
+                   joint_tolerance: float | None = None) -> bool:
     """Standing pose recovered enough to resume policy."""
     if is_fallen_risk(state, cfg):
         return False
     joint_err = float(np.linalg.norm(state.joint_q - cfg.init_qpos))
-    return joint_err < cfg.joint_tolerance
+    tolerance = (cfg.joint_tolerance
+                 if joint_tolerance is None else joint_tolerance)
+    return joint_err < tolerance

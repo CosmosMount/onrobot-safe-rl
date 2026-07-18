@@ -24,7 +24,9 @@ def build_legacy_env(robot_cfg, train_cfg: TrainConfig, seed: int) -> Go2Env:
         use_action_filter=train_cfg.use_action_filter,
         reset_grace_steps=train_cfg.reset_grace_steps,
         reset_hold_steps=train_cfg.reset_hold_steps,
+        reset_joint_tolerance=train_cfg.reset_joint_tolerance,
         recovery_stable_steps=train_cfg.recovery_stable_steps,
         standup_timeout_steps=train_cfg.standup_timeout_steps,
+        abort_on_unstable_reset=train_cfg.abort_on_unstable_reset,
         seed=seed,
     )

@@ -42,6 +42,8 @@ class Go2Config:
     joint_tolerance: float           # rad (L2 joint error)
     move_speed: float                # m/s
     reward_min_forward_vel: Optional[float]  # m/s; None matches upstream reward
+    reward_upright_min_cos: float    # minimum body-up cosine for forward reward
+    fall_terminal_penalty: float     # reward added on true failure termination
     action_filter_highcut: float     # Hz
     sport_state_max_age_ms: float = 250.0
     sport_velocity_world_frame: bool = True  # unitree_mujoco framelinvel is world frame
@@ -71,9 +73,11 @@ class TrainConfig:
     control_frequency: float = 20.0
     max_episode_steps: int = 400
     reset_grace_steps: int = 20
-    reset_hold_steps: int = 100
+    reset_hold_steps: int = 220
+    reset_joint_tolerance: float = 0.30
     recovery_stable_steps: int = 10
     standup_timeout_steps: int = 200
+    abort_on_unstable_reset: bool = True
     max_joint_delta: float | None = None
     use_action_filter: bool = True
     explore_action_scale: float = 0.2
@@ -146,6 +150,11 @@ def _parse_robot(root: dict[str, Any]) -> Go2Config:
         move_speed=float(root.get('move_speed', 0.5)),
         reward_min_forward_vel=_optional_float(
             root.get('reward_min_forward_vel', None)),
+        reward_upright_min_cos=float(
+            root.get('reward_upright_min_cos',
+                     math.cos(math.pi / 6))),
+        fall_terminal_penalty=float(
+            root.get('fall_terminal_penalty', -10.0)),
         action_filter_highcut=float(root.get('action_filter_highcut', 4.0)),
         sport_state_max_age_ms=float(root.get('sport_state_max_age_ms',
                                               250.0)),

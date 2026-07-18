@@ -25,6 +25,8 @@ imu:
 joint_tolerance: 0.20
 move_speed: 0.5
 reward_min_forward_vel: 0.04
+reward_upright_min_cos: 0.8660254
+fall_terminal_penalty: -10.0
 sport_state_max_age_ms: 250
 action_filter_highcut: 4.0
 
@@ -63,9 +65,11 @@ train:
   control_frequency: 20.0
   max_episode_steps: 400
   reset_grace_steps: 20
-  reset_hold_steps: 100
+  reset_hold_steps: 220
+  reset_joint_tolerance: 0.30
   recovery_stable_steps: 10
   standup_timeout_steps: 200
+  abort_on_unstable_reset: true
   max_joint_delta: null
   use_action_filter: false
   explore_action_scale: 1.0

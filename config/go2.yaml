@@ -35,6 +35,8 @@ move_speed: 0.5        # m/s
 # Diagnostic baseline gates idle reward. Use config/rewards/upstream.yaml to
 # restore the dense walk_in_the_park reward.
 reward_min_forward_vel: 0.04
+reward_upright_min_cos: 0.8660254  # cos(30deg); no forward reward when not upright
+fall_terminal_penalty: -10.0      # added only on true failure, never on time limit
 action_filter_highcut: 4.0
 
 stand_up:
@@ -74,9 +76,11 @@ train:
   control_frequency: 20.0
   max_episode_steps: 400      # policy steps only; standup/recovery excluded
   reset_grace_steps: 20       # policy steps before fallen_risk can trigger standup
-  reset_hold_steps: 100       # max steps to wait for standup on episode reset (20Hz→5s)
+  reset_hold_steps: 220       # recovery→standup plus 10 stable frames (20Hz→11s)
+  reset_joint_tolerance: 0.30 # L2 joint error accepted only when starting policy after reset
   recovery_stable_steps: 10   # consecutive stable steps to leave standup mode
   standup_timeout_steps: 200  # force episode end if standup exceeds this (not counted in max_episode_steps)
+  abort_on_unstable_reset: true  # never collect policy transitions from a failed standup/recovery
   max_joint_delta: null
   use_action_filter: false
   explore_action_scale: 1.0

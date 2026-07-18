@@ -74,12 +74,13 @@ XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 ## 编译 controller
 
+以下命令均从仓库根目录执行；根目录本身没有 `CMakeLists.txt`，
+controller 的 CMake 工程位于 `controller/`：
+
 ```bash
-cd controller
-mkdir -p build
-cd build
-cmake ..
-make -j4
+cd /path/to/onrobot-safe-rl
+cmake -S controller -B controller/build
+cmake --build controller/build -j4
 ```
 
 生成文件：
@@ -91,17 +92,21 @@ controller/build/go2_control
 controller 支持可选配置路径参数：
 
 ```bash
-cd controller/build
+cd /path/to/onrobot-safe-rl
+./controller/build/go2_control config/go2.yaml
+```
+
+如果从 `controller/build` 目录启动，等价命令为：
+
+```bash
+cd /path/to/onrobot-safe-rl/controller/build
 ./go2_control ../../config/go2.yaml
 ```
 
-不传参数时默认读取：
-
-```text
-../../config/go2.yaml
-```
-
 ## 仿真部署
+
+仿真训练需要三个终端，依次启动 unitree_mujoco、controller 和 Python
+训练进程。三个进程需同时保持运行。
 
 ### 1. 启动 unitree_mujoco
 
@@ -129,17 +134,17 @@ cd /path/to/onrobot-safe-rl
 
 ### 3. 启动训练
 
-兼容配置：
+推荐的仿真 profile：
 
 ```bash
 cd /path/to/onrobot-safe-rl
-python -m train --mode in_process --config-profile go2
+python -m train --mode in_process --config-profile simulation
 ```
 
-拆分配置：
+兼容的单文件配置：
 
 ```bash
-python -m train --mode in_process --config-profile simulation
+python -m train --mode in_process --config-profile go2
 ```
 
 ## 真机部署

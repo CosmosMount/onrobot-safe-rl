@@ -23,6 +23,8 @@ class RobotState:
         default_factory=lambda: np.zeros(3, np.float32))               # m/s²
     body_velocity: np.ndarray = field(
         default_factory=lambda: np.zeros(3, np.float32))               # m/s
+    world_position: np.ndarray = field(
+        default_factory=lambda: np.zeros(3, np.float32))               # m
     timestamp: float = 0.0                                               # s
     low_state_timestamp: float = 0.0                                      # s
     sport_state_timestamp: float = 0.0                                    # s

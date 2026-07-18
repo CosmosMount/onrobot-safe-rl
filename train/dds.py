@@ -94,6 +94,7 @@ class StateReader:
             else:
                 vel_body = vel
 
+            self._state.world_position[:] = pos
             self._state.body_velocity[:] = vel_body
             self._state.sport_state_timestamp = now
             self._state.sport_state_count = self.sport_message_count
@@ -109,6 +110,7 @@ class StateReader:
                 imu_gyro=self._state.imu_gyro.copy(),
                 imu_accel=self._state.imu_accel.copy(),
                 body_velocity=self._state.body_velocity.copy(),
+                world_position=self._state.world_position.copy(),
                 timestamp=self._state.timestamp,
                 low_state_timestamp=self._state.low_state_timestamp,
                 sport_state_timestamp=self._state.sport_state_timestamp,

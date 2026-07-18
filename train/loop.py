@@ -193,7 +193,15 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
 
             log_metrics: dict[str, float] = {
                 'env/reward': float(reward),
+                'env/task_reward': float(info.get('task_reward', reward)),
+                'env/terminal_penalty': float(
+                    info.get('terminal_penalty', 0.0)),
+                'env/upright_gate': float(info.get('upright_gate', 1.0)),
+                'env/body_up_cos': float(info.get('body_up_cos', 1.0)),
                 'env/x_velocity': float(info.get('x_velocity', 0.0)),
+                'env/world_x': float(info.get('world_x', 0.0)),
+                'env/world_y': float(info.get('world_y', 0.0)),
+                'env/world_z': float(info.get('world_z', 0.0)),
                 'env/forward_term': float(info.get('forward_term', 0.0)),
                 'env/episode_return': float(episode_return),
                 'env/episode_length': float(episode_length),
@@ -245,6 +253,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                     standup=info.get('terminated', False)
                     or info.get('standup_timed_out', False),
                     with_recovery=info.get('is_belly_up', False),
+                    grace_period=not info.get('truncated', False),
                 )
                 if not _is_finite_array(observation):
                     observation = np.zeros(env.observation_space.shape,

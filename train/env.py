@@ -16,8 +16,9 @@ from train.config import Go2Config, load_app_config
 from train.dds import DdsConfig, StateReader
 from train.ipc import PolicyClient
 from train.obs import (build_observation, body_up_cos, get_run_reward_from_state,
-                       gravity_acc_z, gravity_up_cos, is_belly_up, is_fallen,
-                       is_pose_stable)
+                       get_terminal_penalty, gravity_acc_z, gravity_up_cos,
+                       is_belly_up, is_fallen, is_pose_stable,
+                       quat_to_euler_xyz)
 from train.types import RobotState
 from jaxrl.env.specs import BoxSpec
 
@@ -29,6 +30,10 @@ except ImportError:
 
 # Consecutive belly-up frames before mid-episode recovery (20Hz → 0.25s).
 _BELLY_UP_TRIGGER_STEPS = 5
+
+
+class UnstableResetError(RuntimeError):
+    """Raised when standup/recovery did not produce a safe policy start state."""
 
 
 def action_to_qpos(action: np.ndarray, cfg: Go2Config) -> np.ndarray:
@@ -54,9 +59,11 @@ class Go2Env:
                  max_joint_delta: float | None = None,
                  use_action_filter: bool = True,
                  reset_grace_steps: int = 20,
-                 reset_hold_steps: int = 100,
+                 reset_hold_steps: int = 220,
+                 reset_joint_tolerance: float = 0.30,
                  recovery_stable_steps: int = 10,
                  standup_timeout_steps: int = 200,
+                 abort_on_unstable_reset: bool = True,
                  seed: int = 0):
         self.cfg = go2_config or load_app_config()[0]
         self.dds_config = dds_config
@@ -68,8 +75,10 @@ class Go2Env:
         self.use_action_filter = use_action_filter
         self.reset_grace_steps = reset_grace_steps
         self.reset_hold_steps = reset_hold_steps
+        self.reset_joint_tolerance = reset_joint_tolerance
         self.recovery_stable_steps = recovery_stable_steps
         self.standup_timeout_steps = standup_timeout_steps
+        self.abort_on_unstable_reset = abort_on_unstable_reset
 
         n = self.cfg.num_joints
         self.observation_space = BoxSpec(shape=(self.cfg.obs_dim,),
@@ -141,29 +150,71 @@ class Go2Env:
     def _wait_standup(self, *, with_recovery: bool) -> RobotState:
         """Block until controller standup_fsm finishes (recovery→standup or standup only)."""
         assert self._state_reader is not None
-        stable_count = 0
         state = self._state_reader.get_state()
-        for _ in range(self.reset_hold_steps):
-            self._send_standup_request(with_recovery=with_recovery)
-            time.sleep(self.control_dt)
-            state = self._state_reader.get_state()
-            if is_pose_stable(state, self.cfg):
-                stable_count += 1
-                if stable_count >= self.recovery_stable_steps:
-                    break
-            else:
-                stable_count = 0
+
+        def wait_phase(request_recovery: bool,
+                       initial_state: RobotState) -> tuple[RobotState, bool]:
+            stable_count = 0
+            phase_state = initial_state
+            for _ in range(self.reset_hold_steps):
+                self._send_standup_request(
+                    with_recovery=request_recovery)
+                time.sleep(self.control_dt)
+                phase_state = self._state_reader.get_state()
+                if is_pose_stable(
+                        phase_state,
+                        self.cfg,
+                        joint_tolerance=self.reset_joint_tolerance):
+                    stable_count += 1
+                    if stable_count >= self.recovery_stable_steps:
+                        return phase_state, True
+                else:
+                    stable_count = 0
+            return phase_state, False
+
+        state, reset_stable = wait_phase(with_recovery, state)
+
+        # A tilted fall can cross the belly-up threshold only after the terminal
+        # frame was captured. A standup-only request cannot recover that pose,
+        # so escalate once instead of starting policy or aborting immediately.
+        escalated_to_recovery = False
+        if not reset_stable and not with_recovery and is_belly_up(
+                state, self.cfg):
+            escalated_to_recovery = True
+            print('[env] standup ended belly-up; escalating to '
+                  'recovery→standup', flush=True)
+            state, reset_stable = wait_phase(True, state)
+
+        if not reset_stable and self.abort_on_unstable_reset:
+            roll, pitch, _ = quat_to_euler_xyz(state.imu_quat)
+            joint_err = float(np.linalg.norm(state.joint_q -
+                                             self.cfg.init_qpos))
+            raise UnstableResetError(
+                'Standup/recovery did not reach a stable policy start state '
+                f'within {self.reset_hold_steps} steps: '
+                f'roll={roll:.3f} pitch={pitch:.3f} '
+                f'joint_error={joint_err:.3f} '
+                f'belly_up={is_belly_up(state, self.cfg)} '
+                f'recovery_requested={with_recovery} '
+                f'recovery_escalated={escalated_to_recovery}. '
+                'Policy rollout was aborted so unstable transitions cannot '
+                'enter replay.')
         # Signal controller to leave standup FSM and accept policy targets.
         self._policy_client.send_target(state.joint_q)
         return state
 
     def reset(self, *, standup: bool = False,
-              with_recovery: bool = False) -> np.ndarray:
+              with_recovery: bool = False,
+              grace_period: bool = True) -> np.ndarray:
         self._ensure_connected()
         assert self._policy_client is not None
 
         self._step_count = 0
-        self._steps_since_reset = 0
+        # A time-limit truncation is only a logical episode boundary: physics
+        # is not reset, so granting a new fall-detection grace period would
+        # admit up to reset_grace_steps unsafe transitions into replay.
+        self._steps_since_reset = (
+            0 if grace_period else self.reset_grace_steps + 1)
         self._standup_active = False
         self._standup_with_recovery = False
         self._standup_stable_count = 0
@@ -332,6 +383,10 @@ class Go2Env:
                                                     and belly_up)
         truncated = self._step_count >= self.max_episode_steps
         done = terminated or truncated
+        terminal_penalty = get_terminal_penalty(
+            terminated=terminated, cfg=self.cfg)
+        reward += terminal_penalty
+        reward_info['terminal_penalty'] = float(terminal_penalty)
 
         return obs, reward, done, {
             'is_fallen': fallen,
@@ -350,6 +405,9 @@ class Go2Env:
                 > 1e-5),
             'sport_state_age_ms': float(
                 self._state_reader.sport_state_age() * 1000.0),
+            'world_x': float(state.world_position[0]),
+            'world_y': float(state.world_position[1]),
+            'world_z': float(state.world_position[2]),
             'step_count': self._step_count,
             'standup_step_count': self._standup_step_count,
             **reward_info,
