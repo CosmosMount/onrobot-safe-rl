@@ -15,6 +15,7 @@ except ImportError:
 from train.config import TrainConfig
 from train.logging import TrainLogger
 from train.profiling import StepProfiler
+from train.rolling_metrics import RollingTrainingSummary
 from collector.transition_builder import build_transition
 from learner.checkpoint import (has_legacy_agent_checkpoint, latest_snapshot,
                                 restore_training_snapshot,
@@ -47,6 +48,16 @@ def _batch_is_finite(batch: dict) -> bool:
     return True
 
 
+def _snapshot_metadata(cfg: TrainConfig) -> dict:
+    return {
+        'experiment_name': cfg.experiment_name,
+        'start_training': cfg.start_training,
+        'batch_size': cfg.batch_size,
+        'utd_ratio': cfg.utd_ratio,
+        'seed': cfg.seed,
+    }
+
+
 def run_training(agent, env, replay_buffer, cfg: TrainConfig):
     os.makedirs(cfg.save_dir, exist_ok=True)
 
@@ -54,7 +65,15 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
     if cfg.save_checkpoints and not cfg.benchmark_only:
         latest = latest_snapshot(cfg.save_dir)
         if latest is not None:
-            snapshot = restore_training_snapshot(latest)
+            snapshot = restore_training_snapshot(
+                latest, agent=agent, replay_buffer=replay_buffer)
+            snapshot_experiment = snapshot.get('metadata', {}).get(
+                'experiment_name')
+            if snapshot_experiment not in (None, cfg.experiment_name):
+                raise RuntimeError(
+                    'Refusing to restore a snapshot from another experiment: '
+                    f'snapshot={snapshot_experiment!r} '
+                    f'current={cfg.experiment_name!r}')
             agent = snapshot['agent']
             replay_buffer = snapshot['replay_buffer']
             start_i = int(snapshot['step'])
@@ -78,6 +97,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
         project=cfg.wandb_project,
         run_name=cfg.wandb_run_name,
         config={
+            'experiment_name': cfg.experiment_name,
             'seed': cfg.seed,
             'max_steps': cfg.max_steps,
             'start_training': cfg.start_training,
@@ -99,6 +119,12 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
 
     episode_return = 0.0
     episode_length = 0
+    completed_step = start_i
+    last_saved_step = start_i if latest_snapshot(cfg.save_dir) else -1
+    rolling = RollingTrainingSummary(
+        window=cfg.rolling_summary_window,
+        action_dim=env.action_space.shape[0],
+    )
     done = False
     max_steps = cfg.benchmark_steps if cfg.benchmark_only else cfg.max_steps
     iterator = range(start_i, max_steps)
@@ -180,6 +206,14 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                 profiler.record_update(time.perf_counter() - update_t0)
 
             profiler.end_loop(time.perf_counter() - loop_t0)
+            completed_step = i + 1
+            timing_metrics = profiler.metrics()
+            rolling.record_step(
+                action=action,
+                info=info,
+                timing=timing_metrics,
+                update_info=update_info,
+            )
 
             if (i % cfg.log_interval == 0 or i == cfg.start_training
                     or (i >= cfg.start_training and i < cfg.start_training + 5)):
@@ -211,7 +245,9 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                     fv = float(v) if hasattr(v, 'item') else float(v)
                     if np.isfinite(fv):
                         log_metrics[f'training/{k}'] = fv
-            log_metrics.update(profiler.metrics())
+            log_metrics.update(timing_metrics)
+            rolling_metrics = rolling.metrics(len(replay_buffer))
+            log_metrics.update(rolling_metrics)
             logger.log(log_metrics, step=i)
 
             if update_info is not None and (
@@ -220,13 +256,22 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                     k: float(v) if hasattr(v, 'item') else v
                     for k, v in update_info.items()
                 }
-                timing = profiler.metrics()
+                timing = timing_metrics
                 _log(f'[step {i}] update {metrics}')
                 if timing:
                     _log(f'[step {i}] timing step_ms={timing["timing/step_ms"]:.1f} '
                          f'update_ms={timing["timing/update_ms"]:.1f} '
                          f'effective_hz={timing["timing/effective_hz"]:.1f} '
                          f'critic/s={timing["timing/critic_updates_per_sec"]:.0f}')
+            if i % cfg.log_interval == 0 and rolling_metrics:
+                _log(
+                    f'[step {i}] rolling n={int(rolling_metrics["rolling/window_steps"])} '
+                    f'forward_vel={rolling_metrics["rolling/forward_velocity_mean"]:.3f} '
+                    f'dx={rolling_metrics["rolling/world_x_delta"]:.3f} '
+                    f'upright={rolling_metrics["rolling/upright_ratio"]:.3f} '
+                    f'action_sat={rolling_metrics["rolling/action_saturation_rate"]:.3f} '
+                    f'falls={int(rolling_metrics["rolling/falls_total"])} '
+                    f'hz={rolling_metrics["rolling/effective_hz_mean"]:.1f}')
 
             if done:
                 if info.get('standup_timed_out'):
@@ -238,6 +283,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                 _log(f'[step {i}] episode done ({reason}) '
                      f'return={episode_return:.2f} '
                      f'policy_len={info.get("step_count", episode_length)}')
+                rolling.record_episode(episode_return, episode_length)
                 logger.log({
                     'training/return': episode_return,
                     'training/length': float(episode_length),
@@ -282,19 +328,29 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                     'eval/length': float(eval_info['length']),
                 }, step=i)
 
-                if cfg.save_checkpoints:
-                    save_training_snapshot(
-                        cfg.save_dir,
-                        agent=agent,
-                        replay_buffer=replay_buffer,
-                        step=i + 1,
-                        metadata={
-                            'start_training': cfg.start_training,
-                            'batch_size': cfg.batch_size,
-                            'utd_ratio': cfg.utd_ratio,
-                        },
-                    )
+            if (cfg.save_checkpoints and not cfg.benchmark_only
+                    and cfg.checkpoint_interval > 0
+                    and completed_step % cfg.checkpoint_interval == 0):
+                path = save_training_snapshot(
+                    cfg.save_dir,
+                    agent=agent,
+                    replay_buffer=replay_buffer,
+                    step=completed_step,
+                    metadata=_snapshot_metadata(cfg),
+                )
+                last_saved_step = completed_step
+                _log(f'[step {i}] checkpoint saved: {path}')
     finally:
+        if (cfg.save_checkpoints and not cfg.benchmark_only
+                and completed_step > 0 and completed_step != last_saved_step):
+            path = save_training_snapshot(
+                cfg.save_dir,
+                agent=agent,
+                replay_buffer=replay_buffer,
+                step=completed_step,
+                metadata=_snapshot_metadata(cfg),
+            )
+            _log(f'[train] final checkpoint saved: {path}')
         logger.finish()
 
     if cfg.benchmark_only:

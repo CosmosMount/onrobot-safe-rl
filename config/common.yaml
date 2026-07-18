@@ -61,6 +61,7 @@ recovery:
   deactivate_motion_service: false
 
 train:
+  experiment_name: default
   seed: 42
   control_frequency: 20.0
   max_episode_steps: 400
@@ -79,10 +80,12 @@ train:
   utd_ratio: 20
   buffer_size: 1000000
   log_interval: 100
+  rolling_summary_window: 1000
   eval_interval: 1000
   eval_episodes: 1
   no_eval: true
   save_dir: saved/checkpoints
+  checkpoint_interval: 1000
   use_tqdm: true
   save_checkpoints: true
   warmup: true

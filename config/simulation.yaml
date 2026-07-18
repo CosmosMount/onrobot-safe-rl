@@ -3,3 +3,12 @@
 domain_id: 1
 interface: lo
 sport_velocity_world_frame: true
+
+# Paper-setting experiments. Keeping these overrides in the simulation profile
+# prevents short diagnostic runs from changing real-robot defaults.
+train:
+  experiment_name: e02_fused_utd20
+  max_steps: 5000
+  save_dir: saved/experiments/e02_fused_utd20
+  profile: true
+  wandb_run_name: e02_fused_utd20

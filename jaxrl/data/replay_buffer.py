@@ -70,6 +70,56 @@ class ReplayBuffer(Dataset):
         self._insert_index = (self._insert_index + 1) % self._capacity
         self._size = min(self._size + 1, self._capacity)
 
+    def state_dict(self) -> dict:
+        """Return a compact snapshot containing only initialized replay rows."""
+        def compact(value):
+            if isinstance(value, np.ndarray):
+                return value[:self._size].copy()
+            if isinstance(value, dict):
+                return {key: compact(item) for key, item in value.items()}
+            raise TypeError(f'Unsupported replay value: {type(value)}')
+
+        return {
+            'dataset_dict': compact(self.dataset_dict),
+            'size': self._size,
+            'capacity': self._capacity,
+            'insert_index': self._insert_index,
+            'rng': self._rng,
+            'seed': self._seed,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore a compact snapshot into this preallocated replay buffer."""
+        if int(state['capacity']) != self._capacity:
+            raise ValueError(
+                'Replay capacity mismatch: '
+                f'snapshot={state["capacity"]} current={self._capacity}')
+        size = int(state['size'])
+        if not 0 <= size <= self._capacity:
+            raise ValueError(f'Invalid replay size in snapshot: {size}')
+
+        def restore(destination, source):
+            if isinstance(destination, np.ndarray):
+                if source.shape != (size, *destination.shape[1:]):
+                    raise ValueError(
+                        'Replay array shape mismatch: '
+                        f'snapshot={source.shape} current={destination.shape}')
+                destination[:size] = source
+                return
+            if isinstance(destination, dict) and isinstance(source, dict):
+                if destination.keys() != source.keys():
+                    raise ValueError('Replay snapshot keys do not match')
+                for key in destination:
+                    restore(destination[key], source[key])
+                return
+            raise TypeError('Unsupported replay snapshot structure')
+
+        restore(self.dataset_dict, state['dataset_dict'])
+        self._size = size
+        self._insert_index = int(state['insert_index'])
+        self._rng = state['rng']
+        self._seed = int(state['seed'])
+
     def sample(self,
                batch_size: int,
                keys: Optional[Iterable[str]] = None,

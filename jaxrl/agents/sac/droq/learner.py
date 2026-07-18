@@ -146,8 +146,7 @@ class DroQLearner(Agent):
                 actor_params) -> Tuple[jnp.ndarray, Dict[str, float]]:
             dist = agent.actor.apply_fn({'params': actor_params},
                                         batch['observations'])
-            actions = dist.sample(seed=key)
-            log_probs = dist.log_prob(actions)
+            actions, log_probs = dist.sample_and_log_prob(seed=key)
             qs = agent.critic.apply_fn({'params': agent.critic.params},
                                        batch['observations'],
                                        actions,
@@ -203,7 +202,7 @@ class DroQLearner(Agent):
 
         if agent.sampled_backup:
             key, rng = jax.random.split(rng)
-            next_actions = dist.sample(seed=key)
+            next_actions, next_log_probs = dist.sample_and_log_prob(seed=key)
         else:
             next_actions = dist.mode()
 
@@ -232,7 +231,6 @@ class DroQLearner(Agent):
         target_q = batch['rewards'] + agent.discount * batch['masks'] * next_q
 
         if agent.sampled_backup:
-            next_log_probs = dist.log_prob(next_actions)
             target_q -= agent.discount * batch['masks'] * agent.temp.apply_fn(
                 {'params': agent.temp.params}) * next_log_probs
 
@@ -264,24 +262,34 @@ class DroQLearner(Agent):
 
         return new_agent, info
 
-    def update(self, batch: DatasetDict, utd_ratio: int):
+    @staticmethod
+    @partial(jax.jit, static_argnames=('utd_ratio', ))
+    def _update_fused(agent, batch: DatasetDict, utd_ratio: int):
+        """Run one UTD update as a single compiled program."""
 
-        new_agent = self
-        for i in range(utd_ratio):
+        def split_utd_axis(x):
+            assert x.shape[0] % utd_ratio == 0
+            mini_batch_size = x.shape[0] // utd_ratio
+            return x.reshape((utd_ratio, mini_batch_size, *x.shape[1:]))
 
-            def slice(x):
-                assert x.shape[0] % utd_ratio == 0
-                batch_size = x.shape[0] // utd_ratio
-                return x[batch_size * i:batch_size * (i + 1)]
+        mini_batches = jax.tree_util.tree_map(split_utd_axis, batch)
 
-            mini_batch = jax.tree_util.tree_map(slice, batch)
-            new_agent, critic_info = DroQLearner.update_critic(
-                new_agent, mini_batch)
+        def critic_step(carry, mini_batch):
+            return DroQLearner.update_critic(carry, mini_batch)
 
-        new_agent, actor_info = DroQLearner.update_actor(new_agent, mini_batch)
+        new_agent, critic_infos = jax.lax.scan(
+            critic_step, agent, mini_batches)
+        critic_info = jax.tree_util.tree_map(lambda x: x[-1], critic_infos)
+        actor_batch = jax.tree_util.tree_map(lambda x: x[-1], mini_batches)
+
+        new_agent, actor_info = DroQLearner.update_actor(
+            new_agent, actor_batch)
         new_agent, temp_info = DroQLearner.update_temperature(
             new_agent, actor_info['entropy'])
 
-        return _normalize_agent_tree(new_agent), {
-            **actor_info, **critic_info, **temp_info
-        }
+        return new_agent, {**actor_info, **critic_info, **temp_info}
+
+    def update(self, batch: DatasetDict, utd_ratio: int):
+        new_agent, info = DroQLearner._update_fused(
+            self, batch, utd_ratio)
+        return _normalize_agent_tree(new_agent), info

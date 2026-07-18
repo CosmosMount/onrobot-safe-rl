@@ -9,8 +9,11 @@ one snapshot.
 from __future__ import annotations
 
 import pickle
+import os
 from pathlib import Path
 from typing import Any
+
+from flax import serialization
 
 
 SNAPSHOT_PREFIX = 'training_snapshot_'
@@ -46,21 +49,52 @@ def save_training_snapshot(save_dir: str | Path,
     root.mkdir(parents=True, exist_ok=True)
     path = _snapshot_path(root, step)
     payload = {
-        'agent': agent,
-        'replay_buffer': replay_buffer,
+        # Flax TrainState contains static apply/optimizer callables which are
+        # intentionally not picklable. Persist only the registered PyTree
+        # state and restore it into a freshly constructed agent template.
+        'agent_state': serialization.to_state_dict(agent),
+        'replay_buffer_state': replay_buffer.state_dict(),
         'step': step,
         'metadata': metadata or {},
     }
-    with path.open('wb') as f:
-        pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+    temporary = path.with_suffix(path.suffix + '.tmp')
+    try:
+        with temporary.open('wb') as f:
+            pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
     return path
 
 
-def restore_training_snapshot(path: str | Path) -> dict[str, Any]:
+def restore_training_snapshot(path: str | Path,
+                              agent: Any | None = None,
+                              replay_buffer: Any | None = None) -> dict[str, Any]:
     with Path(path).open('rb') as f:
         payload = pickle.load(f)
-    required = {'agent', 'replay_buffer', 'step'}
+    required = {'step'}
     missing = required.difference(payload)
     if missing:
         raise ValueError(f'Incomplete training snapshot {path}: missing {missing}')
+    if 'agent_state' in payload:
+        if agent is None:
+            raise ValueError(
+                'An agent template is required to restore state snapshots')
+        payload['agent'] = serialization.from_state_dict(
+            agent, payload['agent_state'])
+    elif 'agent' not in payload:
+        raise ValueError(
+            f'Incomplete training snapshot {path}: missing agent state')
+    if 'replay_buffer_state' in payload:
+        if replay_buffer is None:
+            raise ValueError(
+                'A replay buffer instance is required to restore compact snapshots')
+        replay_buffer.load_state_dict(payload['replay_buffer_state'])
+        payload['replay_buffer'] = replay_buffer
+    elif 'replay_buffer' not in payload:
+        raise ValueError(
+            f'Incomplete training snapshot {path}: missing replay buffer state')
     return payload

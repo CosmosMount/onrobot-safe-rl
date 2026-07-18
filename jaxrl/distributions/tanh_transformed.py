@@ -50,12 +50,27 @@ class TanhTransformedDistribution:
     def sample(self, seed: jax.Array) -> jnp.ndarray:
         return jnp.tanh(self.distribution.sample(seed))
 
+    def log_prob_from_pre_tanh(self, pre_tanh: jnp.ndarray) -> jnp.ndarray:
+        """Compute log-probability from the latent without inverting tanh."""
+        log_prob = self.distribution.log_prob(pre_tanh)
+        log_det = 2.0 * (
+            jnp.log(2.0)
+            - pre_tanh
+            - jax.nn.softplus(-2.0 * pre_tanh)
+        )
+        return log_prob - jnp.sum(log_det, axis=-1)
+
+    def sample_and_log_prob(
+            self, seed: jax.Array) -> tuple[jnp.ndarray, jnp.ndarray]:
+        """Sample once and retain its latent for a stable log-probability."""
+        pre_tanh = self.distribution.sample(seed)
+        action = jnp.tanh(pre_tanh)
+        return action, self.log_prob_from_pre_tanh(pre_tanh)
+
     def mode(self) -> jnp.ndarray:
         return jnp.tanh(self.distribution.mode())
 
     def log_prob(self, value: jnp.ndarray) -> jnp.ndarray:
         value = jnp.clip(value, -0.999999, 0.999999)
         pre_tanh = jnp.arctanh(value)
-        log_prob = self.distribution.log_prob(pre_tanh)
-        log_prob -= jnp.sum(jnp.log(1.0 - value**2 + 1e-6), axis=-1)
-        return log_prob
+        return self.log_prob_from_pre_tanh(pre_tanh)

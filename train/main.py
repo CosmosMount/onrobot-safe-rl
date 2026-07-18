@@ -37,10 +37,12 @@ def main(argv=None) -> int:
 
     print(f'[train] mode={args.mode} '
           f'profile={args.config_profile} '
+          f'experiment={train_cfg.experiment_name} '
           f'config={robot_cfg.domain_id}/{robot_cfg.interface} '
           f'init_qpos={robot_cfg.init_qpos[:3]}... '
           f'standup=controller '
           f'explore_scale={train_cfg.explore_action_scale} '
+          f'max_steps={train_cfg.max_steps} '
           f'reset_hold={train_cfg.reset_hold_steps} '
           f'recovery_stable={train_cfg.recovery_stable_steps}',
           flush=True)

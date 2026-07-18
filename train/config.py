@@ -69,6 +69,7 @@ class Go2Config:
 
 @dataclass
 class TrainConfig:
+    experiment_name: str = 'default'
     seed: int = 42
     control_frequency: float = 20.0
     max_episode_steps: int = 400
@@ -87,10 +88,12 @@ class TrainConfig:
     utd_ratio: int = 20
     buffer_size: int = 1_000_000
     log_interval: int = 100
+    rolling_summary_window: int = 1000
     eval_interval: int = 1000
     eval_episodes: int = 1
     no_eval: bool = True
     save_dir: str = 'saved/checkpoints'
+    checkpoint_interval: int = 1000
     use_tqdm: bool = True
     save_checkpoints: bool = True
     warmup: bool = True
