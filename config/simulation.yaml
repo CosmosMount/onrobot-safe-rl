@@ -3,12 +3,16 @@
 domain_id: 1
 interface: lo
 sport_velocity_world_frame: true
+kd: 5.0
+reward_profile: baseline
 
 # Paper-setting experiments. Keeping these overrides in the simulation profile
 # prevents short diagnostic runs from changing real-robot defaults.
 train:
-  experiment_name: e02_fused_utd20
+  experiment_name: post_e05_safe_reward
   max_steps: 5000
-  save_dir: saved/experiments/e02_fused_utd20
+  save_dir: saved/experiments/post_e05_safe_reward
   profile: true
-  wandb_run_name: e02_fused_utd20
+  pipeline_updates: true
+  metrics_interval: 10
+  wandb_run_name: post_e05_safe_reward

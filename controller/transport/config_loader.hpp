@@ -44,6 +44,8 @@ inline standup_config load_standup_config(
     cfg.warmup_s = node["warmup_s"].as<float>(1.0f);
     cfg.hold_s = node["hold_s"].as<float>(0.2f);
     cfg.joint_tolerance = node["joint_tolerance"].as<float>(0.15f);
+    cfg.kp = node["kp"].as<float>(60.f);
+    cfg.kd = node["kd"].as<float>(5.f);
     cfg.deactivate_motion_service =
         node["deactivate_motion_service"].as<bool>(false);
 

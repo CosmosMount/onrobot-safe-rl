@@ -40,6 +40,8 @@ struct standup_config
     float hold_s = 0.2f;
     std::array<float, 12> stable_pose{};
     float joint_tolerance = 0.15f;
+    float kp = 60.f;
+    float kd = 5.f;
     bool deactivate_motion_service = false;
 };
 

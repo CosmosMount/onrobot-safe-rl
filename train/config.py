@@ -9,7 +9,7 @@ from typing import Any, Optional
 
 import numpy as np
 import yaml
-from common.config_schema import load_layered_config
+from common.config_schema import load_layered_config, load_yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = REPO_ROOT / 'config/go2.yaml'
@@ -88,6 +88,7 @@ class TrainConfig:
     utd_ratio: int = 20
     buffer_size: int = 1_000_000
     log_interval: int = 100
+    metrics_interval: int = 1
     rolling_summary_window: int = 1000
     eval_interval: int = 1000
     eval_episodes: int = 1
@@ -98,6 +99,7 @@ class TrainConfig:
     save_checkpoints: bool = True
     warmup: bool = True
     profile: bool = False
+    pipeline_updates: bool = False
     benchmark_only: bool = False
     benchmark_steps: int = 200
     wandb: bool = False
@@ -211,8 +213,16 @@ def load_app_config(
             return parse_app_config(yaml.safe_load(f))
 
     if profile == 'simulation':
-        root = load_layered_config(REPO_ROOT / 'config/common.yaml',
-                                   REPO_ROOT / 'config/simulation.yaml')
+        overlay_path = REPO_ROOT / 'config/simulation.yaml'
+        overlay = load_yaml(overlay_path)
+        reward_profile = str(overlay.get('reward_profile', 'baseline'))
+        if reward_profile not in {'baseline', 'upstream'}:
+            raise ValueError(f'Unknown reward profile: {reward_profile}')
+        root = load_layered_config(
+            REPO_ROOT / 'config/common.yaml',
+            REPO_ROOT / f'config/rewards/{reward_profile}.yaml',
+            overlay_path,
+        )
         return parse_app_config(root)
     if profile == 'real_robot':
         root = load_layered_config(REPO_ROOT / 'config/common.yaml',

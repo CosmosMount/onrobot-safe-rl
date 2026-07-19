@@ -197,7 +197,8 @@ void controller::control_loop()
 
     if (phase_ == controller_phase::STAND_UP) {
         const bool done = standup_.update(state_received, state, q_target);
-        commander_.fill_cmd(low_cmd_, q_target);
+        commander_.fill_cmd(low_cmd_, q_target,
+                            stand_up_config_.kp, stand_up_config_.kd);
         cmd_pub_->Write(low_cmd_);
         if (done) {
             enter_policy_phase(state);

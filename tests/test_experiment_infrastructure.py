@@ -126,6 +126,21 @@ class ExperimentInfrastructureTest(unittest.TestCase):
         self.assertAlmostEqual(metrics['rolling/action_saturation_rate'], 0.5)
         self.assertAlmostEqual(metrics['rolling/q_mean'], 3.0)
 
+    def test_truncated_policy_step_counts_as_timeout(self):
+        summary = RollingTrainingSummary(window=2, action_dim=2)
+        summary.record_step(
+            action=np.zeros(2, dtype=np.float32),
+            info={
+                'policy_step': True,
+                'truncated': True,
+            },
+            timing={},
+            update_info=None,
+        )
+
+        metrics = summary.metrics(replay_size=1)
+        self.assertEqual(metrics['rolling/timeouts_total'], 1.0)
+
 
 if __name__ == '__main__':
     unittest.main()

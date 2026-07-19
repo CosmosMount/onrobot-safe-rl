@@ -116,9 +116,10 @@ class BaseEnv:
         return self._process_obs(self._env.reset(**kwargs))
 
     def step(
-        self, action: np.ndarray
+        self, action: np.ndarray, during_hold=None
     ) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
-        obs, reward, done, info = self._env.step(self._process_action(action))
+        obs, reward, done, info = self._env.step(
+            self._process_action(action), during_hold=during_hold)
         return self._process_obs(obs), reward, done, info
 
     def render(self, *args, **kwargs):

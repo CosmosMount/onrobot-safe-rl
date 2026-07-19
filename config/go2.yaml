@@ -47,6 +47,8 @@ stand_up:
   phase_2_s: 1.0
   hold_s: 2.0
   joint_tolerance: 0.20
+  kp: 60.0
+  kd: 5.0
   deactivate_motion_service: false
 
 # swing_legs: all four swing down; push_legs: rear two push calf only
@@ -91,6 +93,7 @@ train:
   utd_ratio: 20
   buffer_size: 1000000
   log_interval: 100
+  metrics_interval: 1
   rolling_summary_window: 1000
   eval_interval: 1000
   eval_episodes: 1
@@ -101,6 +104,7 @@ train:
   save_checkpoints: true
   warmup: true
   profile: false
+  pipeline_updates: false
   benchmark_only: false
   benchmark_steps: 200
   wandb: true

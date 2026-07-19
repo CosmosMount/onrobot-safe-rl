@@ -107,6 +107,7 @@ class Go2Env:
         self._standup_step_count = 0
         self._belly_up_count = 0
         self._not_belly_up_count = 0
+        self._last_policy_send_time: float | None = None
         self._np_random = np.random.RandomState(seed)
 
     def seed(self, seed: Optional[int] = None) -> int:
@@ -221,6 +222,7 @@ class Go2Env:
         self._standup_step_count = 0
         self._belly_up_count = 0
         self._not_belly_up_count = 0
+        self._last_policy_send_time = None
         self._prev_requested_action = np.zeros(self.cfg.num_joints,
                                                dtype=np.float32)
         self._prev_executed_action = np.zeros(self.cfg.num_joints,
@@ -291,7 +293,7 @@ class Go2Env:
             self._standup_stable_count = 0
 
     def step(
-        self, action: np.ndarray
+        self, action: np.ndarray, during_hold=None
     ) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
         self._ensure_connected()
         assert self._policy_client is not None
@@ -299,6 +301,7 @@ class Go2Env:
 
         state = self._state_reader.get_state()
         executed_q_target = state.joint_q.copy()
+        action_interval_ms = float('nan')
 
         if self._standup_active:
             policy_step = False
@@ -307,6 +310,11 @@ class Go2Env:
             self._send_standup_request(with_recovery=self._standup_with_recovery)
         else:
             policy_step = True
+            send_time = time.perf_counter()
+            if self._last_policy_send_time is not None:
+                action_interval_ms = (
+                    send_time - self._last_policy_send_time) * 1000.0
+            self._last_policy_send_time = send_time
             policy_action = np.clip(np.asarray(action, dtype=np.float32),
                                     -1.0, 1.0)
             q_desired = action_to_qpos(policy_action, self.cfg)
@@ -319,7 +327,12 @@ class Go2Env:
                 q_send = q_desired
             executed_q_target = self._send_q_target(q_send)
 
-        time.sleep(self.control_dt)
+        hold_start = time.perf_counter()
+        if policy_step and during_hold is not None:
+            during_hold()
+        hold_elapsed = time.perf_counter() - hold_start
+        hold_overrun_s = max(0.0, hold_elapsed - self.control_dt)
+        time.sleep(max(0.0, self.control_dt - hold_elapsed))
         self._state_reader.require_fresh_sport_state(
             self.cfg.sport_state_max_age_ms / 1000.0)
         state = self._state_reader.get_state()
@@ -405,6 +418,12 @@ class Go2Env:
                 > 1e-5),
             'sport_state_age_ms': float(
                 self._state_reader.sport_state_age() * 1000.0),
+            'action_interval_ms': action_interval_ms,
+            'action_frequency_hz': (
+                1000.0 / action_interval_ms
+                if np.isfinite(action_interval_ms) and action_interval_ms > 0.0
+                else float('nan')),
+            'control_hold_overrun_ms': hold_overrun_s * 1000.0,
             'world_x': float(state.world_position[0]),
             'world_y': float(state.world_position[1]),
             'world_z': float(state.world_position[2]),

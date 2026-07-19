@@ -58,6 +58,29 @@ def _snapshot_metadata(cfg: TrainConfig) -> dict:
     }
 
 
+def _apply_agent_update(agent, batch, cfg: TrainConfig, source_step: int):
+    """Apply one complete UTD update and report whether the agent corrupted."""
+    update_t0 = time.perf_counter()
+    if not _batch_is_finite(batch):
+        _log(f'[train] WARNING: non-finite batch at step {source_step}, '
+             'skip update')
+        return agent, None, False, time.perf_counter() - update_t0
+
+    agent, update_info = agent.update(batch, cfg.utd_ratio)
+    corrupted = (
+        update_info is not None
+        and not all(
+            np.isfinite(float(v) if hasattr(v, 'item') else v)
+            for v in update_info.values()
+        )
+    )
+    if corrupted:
+        _log(f'[train] WARNING: non-finite update at step {source_step}, '
+             'skipping future updates until restart')
+        update_info = None
+    return agent, update_info, corrupted, time.perf_counter() - update_t0
+
+
 def run_training(agent, env, replay_buffer, cfg: TrainConfig):
     os.makedirs(cfg.save_dir, exist_ok=True)
 
@@ -103,8 +126,10 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
             'start_training': cfg.start_training,
             'batch_size': cfg.batch_size,
             'utd_ratio': cfg.utd_ratio,
+            'metrics_interval': cfg.metrics_interval,
             'explore_action_scale': cfg.explore_action_scale,
             'control_frequency': control_frequency,
+            'pipeline_updates': cfg.pipeline_updates,
         },
     )
 
@@ -115,6 +140,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
          f'start_training={cfg.start_training} '
          f'explore_action_scale={cfg.explore_action_scale} '
          f'log_interval={cfg.log_interval} utd_ratio={cfg.utd_ratio} '
+         f'pipeline_updates={cfg.pipeline_updates} '
          f'no_eval={cfg.no_eval} profile={cfg.profile}')
 
     episode_return = 0.0
@@ -126,6 +152,20 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
         action_dim=env.action_space.shape[0],
     )
     done = False
+    pending_update = None
+
+    def apply_pending_update():
+        nonlocal agent, pending_update, policy_corrupted
+        if pending_update is None:
+            return None, 0.0, None
+        source_step, batch = pending_update
+        pending_update = None
+        agent, info, corrupted, elapsed = _apply_agent_update(
+            agent, batch, cfg, source_step)
+        if corrupted:
+            policy_corrupted = True
+        return info, elapsed, source_step
+
     max_steps = cfg.benchmark_steps if cfg.benchmark_only else cfg.max_steps
     iterator = range(start_i, max_steps)
     if cfg.use_tqdm and tqdm_module is not None:
@@ -159,9 +199,26 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                 skip_update = True
             profiler.record_sample(time.perf_counter() - sample_t0)
 
+            update_info = None
+            update_elapsed = 0.0
+            update_source_step = None
+
+            def update_during_hold():
+                nonlocal update_info, update_elapsed, update_source_step
+                update_info, update_elapsed, update_source_step = (
+                    apply_pending_update())
+
             step_t0 = time.perf_counter()
-            next_observation, reward, done, info = env.step(action)
+            hold_callback = (
+                update_during_hold
+                if cfg.pipeline_updates and pending_update is not None
+                else None
+            )
+            next_observation, reward, done, info = env.step(
+                action, during_hold=hold_callback)
             profiler.record_step(time.perf_counter() - step_t0)
+            if update_elapsed > 0.0:
+                profiler.record_update(update_elapsed)
 
             episode_return += reward
             if info.get('policy_step', True):
@@ -185,25 +242,21 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                 skip_update = True
             observation = next_observation
 
-            update_info = None
             if (not skip_update and i >= cfg.start_training
                     and len(replay_buffer) > 0):
-                update_t0 = time.perf_counter()
                 batch = replay_buffer.sample_jax(update_batch_size)
-                if _batch_is_finite(batch):
-                    agent, update_info = agent.update(batch, cfg.utd_ratio)
-                    if update_info is not None and not all(
-                            np.isfinite(float(v) if hasattr(v, 'item') else v)
-                            for v in update_info.values()):
-                        _log(f'[train] WARNING: non-finite update at step {i}, '
-                             f'skipping future updates until restart')
-                        skip_update = True
-                        policy_corrupted = True
-                        update_info = None
+                if cfg.pipeline_updates:
+                    if pending_update is not None:
+                        raise RuntimeError(
+                            'A policy transition tried to queue an update '
+                            'before the previous update was consumed')
+                    pending_update = (i, batch)
                 else:
-                    _log(f'[train] WARNING: non-finite batch at step {i}, skip update')
-                    skip_update = True
-                profiler.record_update(time.perf_counter() - update_t0)
+                    agent, update_info, corrupted, update_elapsed = (
+                        _apply_agent_update(agent, batch, cfg, i))
+                    if corrupted:
+                        policy_corrupted = True
+                    profiler.record_update(update_elapsed)
 
             profiler.end_loop(time.perf_counter() - loop_t0)
             completed_step = i + 1
@@ -225,30 +278,46 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                      f'policy_len={info.get("step_count", 0)} '
                      f'ep_return={episode_return:.2f} buffer={len(replay_buffer)}')
 
-            log_metrics: dict[str, float] = {
-                'env/reward': float(reward),
-                'env/task_reward': float(info.get('task_reward', reward)),
-                'env/terminal_penalty': float(
-                    info.get('terminal_penalty', 0.0)),
-                'env/upright_gate': float(info.get('upright_gate', 1.0)),
-                'env/body_up_cos': float(info.get('body_up_cos', 1.0)),
-                'env/x_velocity': float(info.get('x_velocity', 0.0)),
-                'env/world_x': float(info.get('world_x', 0.0)),
-                'env/world_y': float(info.get('world_y', 0.0)),
-                'env/world_z': float(info.get('world_z', 0.0)),
-                'env/forward_term': float(info.get('forward_term', 0.0)),
-                'env/episode_return': float(episode_return),
-                'env/episode_length': float(episode_length),
-            }
-            if update_info is not None:
-                for k, v in update_info.items():
-                    fv = float(v) if hasattr(v, 'item') else float(v)
-                    if np.isfinite(fv):
-                        log_metrics[f'training/{k}'] = fv
-            log_metrics.update(timing_metrics)
-            rolling_metrics = rolling.metrics(len(replay_buffer))
-            log_metrics.update(rolling_metrics)
-            logger.log(log_metrics, step=i)
+            metrics_due = (
+                cfg.metrics_interval <= 1
+                or i % cfg.metrics_interval == 0
+                or done
+                or i == max_steps - 1
+            )
+            rolling_metrics = (
+                rolling.metrics(len(replay_buffer)) if metrics_due else {})
+            if metrics_due:
+                log_metrics: dict[str, float] = {
+                    'env/reward': float(reward),
+                    'env/task_reward': float(info.get('task_reward', reward)),
+                    'env/terminal_penalty': float(
+                        info.get('terminal_penalty', 0.0)),
+                    'env/upright_gate': float(
+                        info.get('upright_gate', 1.0)),
+                    'env/body_up_cos': float(
+                        info.get('body_up_cos', 1.0)),
+                    'env/x_velocity': float(
+                        info.get('x_velocity', 0.0)),
+                    'env/world_x': float(info.get('world_x', 0.0)),
+                    'env/world_y': float(info.get('world_y', 0.0)),
+                    'env/world_z': float(info.get('world_z', 0.0)),
+                    'env/forward_term': float(
+                        info.get('forward_term', 0.0)),
+                    'env/episode_return': float(episode_return),
+                    'env/episode_length': float(episode_length),
+                    'env/action_frequency_hz': float(
+                        info.get('action_frequency_hz', np.nan)),
+                    'env/control_hold_overrun_ms': float(
+                        info.get('control_hold_overrun_ms', 0.0)),
+                }
+                if update_info is not None:
+                    for k, v in update_info.items():
+                        fv = float(v) if hasattr(v, 'item') else float(v)
+                        if np.isfinite(fv):
+                            log_metrics[f'training/{k}'] = fv
+                log_metrics.update(timing_metrics)
+                log_metrics.update(rolling_metrics)
+                logger.log(log_metrics, step=i)
 
             if update_info is not None and (
                     i % cfg.log_interval == 0 or i == cfg.start_training):
@@ -258,6 +327,9 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                 }
                 timing = timing_metrics
                 _log(f'[step {i}] update {metrics}')
+                if (cfg.pipeline_updates and update_source_step is not None):
+                    _log(f'[step {i}] pipelined update source_step='
+                         f'{update_source_step}')
                 if timing:
                     _log(f'[step {i}] timing step_ms={timing["timing/step_ms"]:.1f} '
                          f'update_ms={timing["timing/update_ms"]:.1f} '
@@ -271,7 +343,8 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                     f'upright={rolling_metrics["rolling/upright_ratio"]:.3f} '
                     f'action_sat={rolling_metrics["rolling/action_saturation_rate"]:.3f} '
                     f'falls={int(rolling_metrics["rolling/falls_total"])} '
-                    f'hz={rolling_metrics["rolling/effective_hz_mean"]:.1f}')
+                    f'loop_hz={rolling_metrics["rolling/effective_hz_mean"]:.1f} '
+                    f'action_hz={rolling_metrics["rolling/action_frequency_hz_mean"]:.1f}')
 
             if done:
                 if info.get('standup_timed_out'):
@@ -313,6 +386,8 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                     and cfg.eval_interval > 0 and train_step > 0
                     and i >= cfg.start_training
                     and train_step % cfg.eval_interval == 0):
+                if pending_update is not None:
+                    apply_pending_update()
                 _log(f'[step {i}] eval ({cfg.eval_episodes} ep)...')
                 eval_t0 = time.time()
                 eval_info = evaluate(agent, env, num_episodes=cfg.eval_episodes)
@@ -331,6 +406,8 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
             if (cfg.save_checkpoints and not cfg.benchmark_only
                     and cfg.checkpoint_interval > 0
                     and completed_step % cfg.checkpoint_interval == 0):
+                if pending_update is not None:
+                    apply_pending_update()
                 path = save_training_snapshot(
                     cfg.save_dir,
                     agent=agent,
@@ -341,6 +418,8 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                 last_saved_step = completed_step
                 _log(f'[step {i}] checkpoint saved: {path}')
     finally:
+        if pending_update is not None:
+            apply_pending_update()
         if (cfg.save_checkpoints and not cfg.benchmark_only
                 and completed_step > 0 and completed_step != last_saved_step):
             path = save_training_snapshot(

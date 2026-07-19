@@ -36,7 +36,7 @@ class RollingTrainingSummary:
             self.total_falls += 1
         if info.get('is_recovering'):
             self.total_recoveries += 1
-        if info.get('standup_timed_out'):
+        if info.get('truncated') or info.get('standup_timed_out'):
             self.total_timeouts += 1
         update = update_info or {}
         self._steps.append({
@@ -44,6 +44,10 @@ class RollingTrainingSummary:
                 'forward_velocity', info.get('x_velocity', 0.0))),
             'world_x': float(info.get('world_x', 0.0)),
             'upright': float(info.get('upright_gate', 1.0)),
+            'action_frequency_hz': float(
+                info.get('action_frequency_hz', np.nan)),
+            'control_hold_overrun_ms': float(
+                info.get('control_hold_overrun_ms', 0.0)),
             'action': action.copy(),
             'critic_loss': _finite_or_nan(update.get('critic_loss')),
             'q': _finite_or_nan(update.get('q')),
@@ -74,6 +78,10 @@ class RollingTrainingSummary:
                 steps[-1]['world_x'] - steps[0]['world_x']),
             'rolling/upright_ratio': _nanmean(
                 [step['upright'] for step in steps]),
+            'rolling/action_frequency_hz_mean': _nanmean(
+                [step['action_frequency_hz'] for step in steps]),
+            'rolling/control_hold_overrun_ms_mean': _nanmean(
+                [step['control_hold_overrun_ms'] for step in steps]),
             'rolling/falls_total': float(self.total_falls),
             'rolling/recoveries_total': float(self.total_recoveries),
             'rolling/timeouts_total': float(self.total_timeouts),
