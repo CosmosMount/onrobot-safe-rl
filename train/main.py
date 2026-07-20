@@ -16,7 +16,7 @@ def _parse_args(argv=None) -> argparse.Namespace:
         choices=('in_process', 'split', 'play'),
         default='in_process',
         help=('Runtime layout. in_process keeps collector and learner in one '
-              'process; split reserves the P2 split execution entrypoint; '
+              'process; split runs collector and learner on separate threads; '
               'play loads a saved policy and runs deterministic rollouts.'),
     )
     parser.add_argument(

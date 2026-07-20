@@ -101,6 +101,8 @@ class TrainConfig:
     warmup: bool = True
     profile: bool = False
     pipeline_updates: bool = False
+    split_update_interval_steps: int = 4
+    split_max_pending_updates: int = 2
     benchmark_only: bool = False
     benchmark_steps: int = 200
     wandb: bool = False

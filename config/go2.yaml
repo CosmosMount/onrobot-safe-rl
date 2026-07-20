@@ -106,6 +106,8 @@ train:
   warmup: true
   profile: true
   pipeline_updates: true
+  split_update_interval_steps: 1
+  split_max_pending_updates: 2
   benchmark_only: false
   benchmark_steps: 200
   wandb: true
