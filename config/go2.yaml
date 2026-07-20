@@ -86,11 +86,11 @@ train:
   abort_on_unstable_reset: true  # never collect policy transitions from a failed standup/recovery
   max_joint_delta: null
   use_action_filter: false
-  explore_action_scale: 1.0
-  max_steps: 1000000
+  explore_action_scale: 0.5
+  max_steps: 15000
   start_training: 1000
   batch_size: 256
-  utd_ratio: 20
+  utd_ratio: 5
   buffer_size: 1000000
   log_interval: 100
   metrics_interval: 1
@@ -98,13 +98,14 @@ train:
   eval_interval: 1000
   eval_episodes: 1
   no_eval: true
-  save_dir: saved/checkpoints
+  save_dir: saved/checkpoints_58d
   checkpoint_interval: 1000
   use_tqdm: true
   save_checkpoints: true
+  resume_checkpoint: false
   warmup: true
-  profile: false
-  pipeline_updates: false
+  profile: true
+  pipeline_updates: true
   benchmark_only: false
   benchmark_steps: 200
   wandb: true

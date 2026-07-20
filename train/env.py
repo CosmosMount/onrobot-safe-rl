@@ -206,7 +206,8 @@ class Go2Env:
 
     def reset(self, *, standup: bool = False,
               with_recovery: bool = False,
-              grace_period: bool = True) -> np.ndarray:
+              grace_period: bool = True,
+              preserve_policy_state: bool = False) -> np.ndarray:
         self._ensure_connected()
         assert self._policy_client is not None
 
@@ -223,11 +224,12 @@ class Go2Env:
         self._belly_up_count = 0
         self._not_belly_up_count = 0
         self._last_policy_send_time = None
-        self._prev_requested_action = np.zeros(self.cfg.num_joints,
-                                               dtype=np.float32)
-        self._prev_executed_action = np.zeros(self.cfg.num_joints,
-                                              dtype=np.float32)
-        self._init_action_filter()
+        if not preserve_policy_state:
+            self._prev_requested_action = np.zeros(self.cfg.num_joints,
+                                                   dtype=np.float32)
+            self._prev_executed_action = np.zeros(self.cfg.num_joints,
+                                                  dtype=np.float32)
+            self._init_action_filter()
 
         if standup:
             state = self._wait_standup(with_recovery=with_recovery)
@@ -235,7 +237,7 @@ class Go2Env:
             # No forced init_qpos — resume policy from current pose (e.g. after
             # truncate or training start).
             state = self._state_reader.get_state()
-            if self._action_filter is not None:
+            if self._action_filter is not None and not preserve_policy_state:
                 self._action_filter.init_history(state.joint_q)
 
         return build_observation(state, self._prev_requested_action, self.cfg,

@@ -70,6 +70,12 @@ def save_training_snapshot(save_dir: str | Path,
     return path
 
 
+def load_training_snapshot_metadata(path: str | Path) -> dict[str, Any]:
+    with Path(path).open('rb') as f:
+        payload = pickle.load(f)
+    return dict(payload.get('metadata') or {})
+
+
 def restore_training_snapshot(path: str | Path,
                               agent: Any | None = None,
                               replay_buffer: Any | None = None) -> dict[str, Any]:
@@ -89,11 +95,9 @@ def restore_training_snapshot(path: str | Path,
         raise ValueError(
             f'Incomplete training snapshot {path}: missing agent state')
     if 'replay_buffer_state' in payload:
-        if replay_buffer is None:
-            raise ValueError(
-                'A replay buffer instance is required to restore compact snapshots')
-        replay_buffer.load_state_dict(payload['replay_buffer_state'])
-        payload['replay_buffer'] = replay_buffer
+        if replay_buffer is not None:
+            replay_buffer.load_state_dict(payload['replay_buffer_state'])
+            payload['replay_buffer'] = replay_buffer
     elif 'replay_buffer' not in payload:
         raise ValueError(
             f'Incomplete training snapshot {path}: missing replay buffer state')

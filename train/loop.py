@@ -18,6 +18,7 @@ from train.profiling import StepProfiler
 from train.rolling_metrics import RollingTrainingSummary
 from collector.transition_builder import build_transition
 from learner.checkpoint import (has_legacy_agent_checkpoint, latest_snapshot,
+                                load_training_snapshot_metadata,
                                 restore_training_snapshot,
                                 save_training_snapshot)
 from jaxrl.env.evaluation import evaluate
@@ -48,14 +49,30 @@ def _batch_is_finite(batch: dict) -> bool:
     return True
 
 
-def _snapshot_metadata(cfg: TrainConfig) -> dict:
-    return {
+def _snapshot_metadata(cfg: TrainConfig, env=None) -> dict:
+    metadata = {
         'experiment_name': cfg.experiment_name,
         'start_training': cfg.start_training,
         'batch_size': cfg.batch_size,
         'utd_ratio': cfg.utd_ratio,
         'seed': cfg.seed,
     }
+    if env is not None:
+        metadata['obs_dim'] = int(env.observation_space.shape[0])
+    return metadata
+
+
+def _validate_snapshot_metadata(path, metadata: dict, env) -> None:
+    snapshot_obs_dim = metadata.get('obs_dim')
+    if snapshot_obs_dim is None:
+        return
+    current_obs_dim = int(env.observation_space.shape[0])
+    if int(snapshot_obs_dim) != current_obs_dim:
+        raise RuntimeError(
+            'Refusing to restore an incompatible training snapshot: '
+            f'{path} has obs_dim={snapshot_obs_dim}, '
+            f'current obs_dim={current_obs_dim}. Start a new save_dir or '
+            'switch back to the code/config that produced this snapshot.')
 
 
 def _apply_agent_update(agent, batch, cfg: TrainConfig, source_step: int):
@@ -85,18 +102,19 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
     os.makedirs(cfg.save_dir, exist_ok=True)
 
     start_i = 0
-    if cfg.save_checkpoints and not cfg.benchmark_only:
+    if cfg.save_checkpoints and cfg.resume_checkpoint and not cfg.benchmark_only:
         latest = latest_snapshot(cfg.save_dir)
         if latest is not None:
-            snapshot = restore_training_snapshot(
-                latest, agent=agent, replay_buffer=replay_buffer)
-            snapshot_experiment = snapshot.get('metadata', {}).get(
-                'experiment_name')
+            metadata = load_training_snapshot_metadata(latest)
+            _validate_snapshot_metadata(latest, metadata, env)
+            snapshot_experiment = metadata.get('experiment_name')
             if snapshot_experiment not in (None, cfg.experiment_name):
                 raise RuntimeError(
                     'Refusing to restore a snapshot from another experiment: '
                     f'snapshot={snapshot_experiment!r} '
                     f'current={cfg.experiment_name!r}')
+            snapshot = restore_training_snapshot(
+                latest, agent=agent, replay_buffer=replay_buffer)
             agent = snapshot['agent']
             replay_buffer = snapshot['replay_buffer']
             start_i = int(snapshot['step'])
@@ -107,6 +125,10 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                 f'{cfg.save_dir}. Online training requires an agent+replay '
                 'snapshot. Delete the old checkpoint directory or start a new '
                 'run from step 0.')
+    elif cfg.save_checkpoints and not cfg.benchmark_only:
+        latest = latest_snapshot(cfg.save_dir)
+        if latest is not None:
+            _log(f'[train] starting from scratch; ignoring checkpoint {latest}')
 
     update_batch_size = cfg.batch_size * cfg.utd_ratio
     inner = getattr(env, '_env', env)
@@ -130,6 +152,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
             'explore_action_scale': cfg.explore_action_scale,
             'control_frequency': control_frequency,
             'pipeline_updates': cfg.pipeline_updates,
+            'resume_checkpoint': cfg.resume_checkpoint,
         },
     )
 
@@ -373,6 +396,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                     or info.get('standup_timed_out', False),
                     with_recovery=info.get('is_belly_up', False),
                     grace_period=not info.get('truncated', False),
+                    preserve_policy_state=info.get('truncated', False),
                 )
                 if not _is_finite_array(observation):
                     observation = np.zeros(env.observation_space.shape,
@@ -413,7 +437,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                     agent=agent,
                     replay_buffer=replay_buffer,
                     step=completed_step,
-                    metadata=_snapshot_metadata(cfg),
+                    metadata=_snapshot_metadata(cfg, env),
                 )
                 last_saved_step = completed_step
                 _log(f'[step {i}] checkpoint saved: {path}')
@@ -427,7 +451,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                 agent=agent,
                 replay_buffer=replay_buffer,
                 step=completed_step,
-                metadata=_snapshot_metadata(cfg),
+                metadata=_snapshot_metadata(cfg, env),
             )
             _log(f'[train] final checkpoint saved: {path}')
         logger.finish()

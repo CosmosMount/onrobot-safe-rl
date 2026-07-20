@@ -97,6 +97,7 @@ class TrainConfig:
     checkpoint_interval: int = 1000
     use_tqdm: bool = True
     save_checkpoints: bool = True
+    resume_checkpoint: bool = False
     warmup: bool = True
     profile: bool = False
     pipeline_updates: bool = False
