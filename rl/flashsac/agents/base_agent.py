@@ -3,7 +3,7 @@ from typing import Any, Generic, MutableMapping, TypeVar
 
 import gymnasium as gym
 
-from flash_rl.types import NDArray, Tensor
+from rl.flashsac.types import NDArray, Tensor
 
 Config = TypeVar("Config")
 

@@ -1,1 +1,1 @@
-from rl.distributions.tanh_normal import TanhNormal
+from rl.droq.distributions.tanh_normal import TanhNormal

@@ -3,7 +3,7 @@ from typing import MutableMapping, Optional
 
 import gymnasium as gym
 
-from flash_rl.types import NDArray, Tensor
+from rl.flashsac.types import NDArray, Tensor
 
 Batch = MutableMapping[str, Tensor]
 

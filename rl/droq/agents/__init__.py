@@ -1,1 +1,1 @@
-from rl.agents.sac.sac_learner import SACLearner
+from rl.droq.agents.sac.sac_learner import SACLearner

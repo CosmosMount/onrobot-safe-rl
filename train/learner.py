@@ -11,8 +11,8 @@ from pathlib import Path
 
 import numpy as np
 
-from collector.legacy_env import build_legacy_env
-from collector.transition_builder import build_transition
+from train.collector.legacy_env import build_legacy_env
+from train.collector.transition_builder import build_transition
 from rl.droq.data import ReplayBuffer
 from train.gym_env import prepare_env
 from train.checkpoint import (latest_snapshot, load_training_snapshot_metadata,
@@ -253,7 +253,14 @@ def run_split(robot_cfg, train_cfg, agent_cfgs) -> int:
                 train_agent, info, corrupted, elapsed = _apply_agent_update(
                     train_agent, batch, train_cfg, source_step)
                 if corrupted:
+                    with policy_lock:
+                        shared['learner_error'] = RuntimeError(
+                            'Split learner produced non-finite update metrics '
+                            f'at source_step={source_step}')
                     stop_event.set()
+                    with credit_cv:
+                        credit_cv.notify_all()
+                    break
                 with policy_lock:
                     shared['train_agent'] = train_agent
                     shared['policy_agent'] = train_agent
@@ -321,14 +328,14 @@ def run_split(robot_cfg, train_cfg, agent_cfgs) -> int:
 
     try:
         for i in range(start_i, max_steps):
-            if stop_event.is_set():
-                break
             with policy_lock:
                 if shared['learner_error'] is not None:
                     raise shared['learner_error']
                 if shared['policy_version'] != local_policy_version:
                     local_policy = shared['policy_agent']
                     local_policy_version = int(shared['policy_version'])
+            if stop_event.is_set():
+                break
 
             loop_t0 = time.perf_counter()
             profiler.begin_step()

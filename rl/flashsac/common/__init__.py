@@ -1,6 +1,6 @@
 from typing import Any, Union
 
-from flash_rl.common.logger import TensorboardTrainerLogger, WandbTrainerLogger  # noqa
+from rl.flashsac.common.logger import TensorboardTrainerLogger, WandbTrainerLogger  # noqa
 
 TrainerLogger = Union[WandbTrainerLogger, TensorboardTrainerLogger]
 

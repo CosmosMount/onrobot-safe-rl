@@ -1,8 +1,12 @@
-import gym
-from gym.wrappers.flatten_observation import FlattenObservation
+from rl.droq._gym import gym
 
-from rl.wrappers.single_precision import SinglePrecision
-from rl.wrappers.universal_seed import UniversalSeed
+try:
+    from gym.wrappers.flatten_observation import FlattenObservation
+except ModuleNotFoundError:
+    from gymnasium.wrappers import FlattenObservation
+
+from rl.droq.wrappers.single_precision import SinglePrecision
+from rl.droq.wrappers.universal_seed import UniversalSeed
 
 
 def wrap_gym(env: gym.Env, rescale_actions: bool = True) -> gym.Env:

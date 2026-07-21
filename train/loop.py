@@ -16,7 +16,7 @@ from train.config import TrainConfig
 from train.logging import TrainLogger
 from train.profiling import StepProfiler
 from train.rolling_metrics import RollingTrainingSummary
-from collector.transition_builder import build_transition
+from train.collector.transition_builder import build_transition
 from train.checkpoint import (has_legacy_agent_checkpoint, latest_snapshot,
                               load_training_snapshot_metadata,
                               restore_training_snapshot,

@@ -1,10 +1,9 @@
 from typing import Any
 
 import gymnasium as gym
-from omegaconf import OmegaConf
 
-from flash_rl.agents.base_agent import BaseAgent
-from flash_rl.types import NDArray
+from rl.flashsac.agents.base_agent import BaseAgent
+from rl.flashsac.types import NDArray
 
 
 def create_agent(
@@ -13,6 +12,8 @@ def create_agent(
     env_info: dict[str, Any],
     cfg: Any,
 ) -> BaseAgent[Any]:
+    from omegaconf import OmegaConf
+
     cfg_dict = OmegaConf.to_container(cfg, throw_on_missing=True, resolve=True)
     if not isinstance(cfg_dict, dict):
         raise ValueError("cfg must be a dictionary")
@@ -23,13 +24,13 @@ def create_agent(
 
     # sanity check
     if agent_type == "random":
-        from flash_rl.agents.random_agent import RandomAgent
+        from rl.flashsac.agents.random_agent import RandomAgent
 
         agent = RandomAgent(observation_space, action_space, env_info, cfg)
         return agent
 
     elif agent_type == "flashSAC":
-        from flash_rl.agents.flashSAC.agent import (
+        from rl.flashsac.agents.flashSAC.agent import (
             FlashSACAgent,
             FlashSACConfig,
         )

@@ -6,27 +6,21 @@ module only as the in-process compatibility adapter for `python -m train`.
 
 from __future__ import annotations
 
+import collections
 import time
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
+from scipy.signal import butter
 
-from train.action_filter import ActionFilterButter
 from train.config import Go2Config, load_app_config
 from train.dds import DdsConfig, StateReader
 from train.ipc import PolicyClient
-from train.obs import (build_observation, body_up_cos, get_run_reward_from_state,
-                       get_terminal_penalty, gravity_acc_z, gravity_up_cos,
-                       is_belly_up, is_fallen, is_pose_stable,
+from train.obs import (build_observation, get_run_reward_from_state,
+                       get_terminal_penalty, is_belly_up, is_fallen, is_pose_stable,
                        quat_to_euler_xyz)
 from train.types import RobotState
 import gymnasium as gym
-
-try:
-    from train._debug_agent_log import debug_log as _debug_log
-except ImportError:
-    def _debug_log(*_a, **_k):
-        pass
 
 # Consecutive belly-up frames before mid-episode recovery (20Hz → 0.25s).
 _BELLY_UP_TRIGGER_STEPS = 5
@@ -34,6 +28,54 @@ _BELLY_UP_TRIGGER_STEPS = 5
 
 class UnstableResetError(RuntimeError):
     """Raised when standup/recovery did not produce a safe policy start state."""
+
+
+class ActionFilterButter:
+    """Low-pass Butterworth filter on joint position commands."""
+
+    def __init__(self,
+                 num_joints: int,
+                 sampling_rate: float,
+                 highcut: float = 4.0,
+                 order: int = 2):
+        self.num_joints = num_joints
+        self._hist_len = order
+        nyq = 0.5 * sampling_rate
+        high = highcut / nyq
+        b, a = butter(order, high, btype='low')
+        self._b = np.stack([b] * num_joints)
+        self._a = np.stack([a] * num_joints)
+        self._b /= self._a[:, :1]
+        self._a /= self._a[:, :1]
+        self._xhist: collections.deque[np.ndarray] = collections.deque(
+            maxlen=self._hist_len)
+        self._yhist: collections.deque[np.ndarray] = collections.deque(
+            maxlen=self._hist_len)
+        self.reset()
+
+    def reset(self) -> None:
+        self._xhist.clear()
+        self._yhist.clear()
+        for _ in range(self._hist_len):
+            self._xhist.appendleft(np.zeros(self.num_joints, dtype=np.float32))
+            self._yhist.appendleft(np.zeros(self.num_joints, dtype=np.float32))
+
+    def init_history(self, qpos: np.ndarray) -> None:
+        q = np.asarray(qpos, dtype=np.float32).reshape(-1)
+        for i in range(self._hist_len):
+            self._xhist[i] = q.copy()
+            self._yhist[i] = q.copy()
+
+    def filter(self, x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=np.float32).reshape(-1)
+        xs = np.stack(list(self._xhist), axis=-1)
+        ys = np.stack(list(self._yhist), axis=-1)
+        y = (self._b[:, 0] * x
+             + np.sum(self._b[:, 1:] * xs, axis=-1)
+             - np.sum(self._a[:, 1:] * ys, axis=-1))
+        self._xhist.appendleft(x.copy())
+        self._yhist.appendleft(y.copy())
+        return y.astype(np.float32)
 
 
 def action_to_qpos(action: np.ndarray, cfg: Go2Config) -> np.ndarray:
@@ -297,23 +339,10 @@ class Go2Env:
         return self._belly_up_count >= _BELLY_UP_TRIGGER_STEPS
 
     def _tick_standup(self, state: RobotState) -> None:
-        belly_up = is_belly_up(state, self.cfg)
-        if not belly_up:
+        if not is_belly_up(state, self.cfg):
             self._not_belly_up_count += 1
             if self._not_belly_up_count >= self.recovery_stable_steps:
                 # Flipped back or false trigger — resume policy, no standup.
-                # region agent log
-                _debug_log(
-                    'G',
-                    'env.py:_tick_standup',
-                    'abort standup (not belly-up)',
-                    {
-                        'not_belly_up_count': self._not_belly_up_count,
-                        'body_up_cos': float(body_up_cos(state.imu_quat)),
-                    },
-                    run_id='post-fix',
-                )
-                # endregion
                 self._resume_policy(state)
             return
         self._not_belly_up_count = 0
@@ -388,19 +417,6 @@ class Go2Env:
         if (self._standup_active
                 and self._standup_step_count >= self.standup_timeout_steps):
             # Do not truncate the episode — abort and resume policy.
-            # region agent log
-            _debug_log(
-                'G',
-                'env.py:step',
-                'standup timeout abort',
-                {
-                    'standup_steps': self._standup_step_count,
-                    'still_belly_up': is_belly_up(state, self.cfg),
-                    'body_up_cos': float(body_up_cos(state.imu_quat)),
-                },
-                run_id='post-fix',
-            )
-            # endregion
             still_belly_up = is_belly_up(state, self.cfg)
             self._resume_policy(state)
             standup_timed_out = still_belly_up
@@ -410,19 +426,6 @@ class Go2Env:
             self._standup_stable_count = 0
             self._standup_step_count = 0
             self._not_belly_up_count = 0
-            # region agent log
-            _debug_log(
-                'G',
-                'env.py:step',
-                'terminal before recovery',
-                {
-                    'body_up_cos': float(body_up_cos(state.imu_quat)),
-                    'gravity_up_cos': float(gravity_up_cos(state)),
-                    'acc_z': float(gravity_acc_z(state)),
-                },
-                run_id='post-fix',
-            )
-            # endregion
 
         terminated = fallen or standup_timed_out or (policy_step and past_grace
                                                     and belly_up)

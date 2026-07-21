@@ -3,19 +3,19 @@
 from functools import partial
 from typing import Dict, Optional, Sequence, Tuple
 
-import gym
 import jax
 import jax.numpy as jnp
 import optax
 from flax import struct
 from flax.training.train_state import TrainState
 
-from rl.agents.agent import Agent
-from rl.agents.sac.temperature import Temperature
-from rl.data.dataset import DatasetDict
-from rl.distributions import TanhNormal
-from rl.networks import MLP, Ensemble, StateActionValue
-from rl.networks.common import soft_target_update
+from rl.droq._gym import gym
+from rl.droq.agents.agent import Agent
+from rl.droq.agents.sac.temperature import Temperature
+from rl.droq.data.dataset import DatasetDict
+from rl.droq.distributions import TanhNormal
+from rl.droq.networks import MLP, Ensemble, StateActionValue
+from rl.droq.networks.common import soft_target_update
 
 
 class SACLearner(Agent):

@@ -80,7 +80,7 @@ def create_envs(
         )
 
     elif env_type == "isaaclab":
-        from flash_rl.envs.isaaclab import make_isaaclab_env
+        from rl.flashsac.envs.isaaclab import make_isaaclab_env
 
         assert rescale_action is None, "Unused hyperparameter in IsaacLab."
         assert num_eval_envs is None, "Unused hyperparameter in IsaacLab."
@@ -96,7 +96,7 @@ def create_envs(
         record_env = train_env
 
     elif env_type == "maniskill":
-        from flash_rl.envs.maniskill import make_maniskill_env
+        from rl.flashsac.envs.maniskill import make_maniskill_env
 
         assert rescale_action is None, "Unused hyperparameter in ManiSkill."
         assert max_episode_steps is None, "Unused hyperparameter in ManiSkill."
@@ -114,7 +114,7 @@ def create_envs(
         )
 
     elif env_type == "mujoco_playground":
-        from flash_rl.envs.mujoco_playground import make_mujoco_playground_env
+        from rl.flashsac.envs.mujoco_playground import make_mujoco_playground_env
 
         assert rescale_action is None, "Unused hyperparameter in Mujoco Playground."
         assert "use_domain_randomization" in kwargs
@@ -145,7 +145,7 @@ def create_envs(
         )
 
     elif env_type == "genesis":
-        from flash_rl.envs.genesis import make_genesis_env
+        from rl.flashsac.envs.genesis import make_genesis_env
 
         assert num_eval_envs is None, "Unused hyperparameter in Genesis."
         assert num_record_envs is None, "Unused hyperparameter in Genesis."
@@ -181,27 +181,27 @@ def create_vec_env(
         **kwargs: Any,
     ) -> gym.Env[NDArray, NDArray]:
         if env_type == "mujoco":
-            from flash_rl.envs.mujoco import make_mujoco_env
+            from rl.flashsac.envs.mujoco import make_mujoco_env
 
             env = make_mujoco_env(env_name, seed, **kwargs)
         elif env_type == "d4rl":
-            from flash_rl.envs.d4rl import make_d4rl_env
+            from rl.flashsac.envs.d4rl import make_d4rl_env
 
             env = make_d4rl_env(env_name, seed)
         elif env_type == "dmc":
-            from flash_rl.envs.dmc import make_dmc_env
+            from rl.flashsac.envs.dmc import make_dmc_env
 
             env = make_dmc_env(env_name, seed, **kwargs)
         elif env_type == "humanoid_bench":
-            from flash_rl.envs.humanoid_bench import make_humanoid_env
+            from rl.flashsac.envs.humanoid_bench import make_humanoid_env
 
             env = make_humanoid_env(env_name, seed, **kwargs)
         elif env_type == "myosuite":
-            from flash_rl.envs.myosuite import make_myosuite_env
+            from rl.flashsac.envs.myosuite import make_myosuite_env
 
             env = make_myosuite_env(env_name, seed, **kwargs)
         elif env_type == "metaworld":
-            from flash_rl.envs.metaworld import make_metaworld_env
+            from rl.flashsac.envs.metaworld import make_metaworld_env
 
             env = make_metaworld_env(env_name, seed, **kwargs)
         else:
@@ -268,7 +268,7 @@ def create_vec_env(
 
 def create_dataset(env_type: str, env_name: str) -> list[dict[str, Any]]:
     if env_type == "d4rl":
-        from flash_rl.envs.d4rl import make_d4rl_dataset
+        from rl.flashsac.envs.d4rl import make_d4rl_dataset
 
         dataset = make_d4rl_dataset(env_name)
     else:
@@ -278,7 +278,7 @@ def create_dataset(env_type: str, env_name: str) -> list[dict[str, Any]]:
 
 def get_normalized_score(env_type: str, env_name: str, unnormalized_score: float) -> float:
     if env_type == "d4rl":
-        from flash_rl.envs.d4rl import get_d4rl_normalized_score
+        from rl.flashsac.envs.d4rl import get_d4rl_normalized_score
 
         score = get_d4rl_normalized_score(env_name, unnormalized_score)
     else:

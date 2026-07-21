@@ -2,9 +2,11 @@ from typing import Dict, Iterable, Optional, Union
 
 import numpy as np
 from flax.core import frozen_dict
-from gym.utils import seeding
 
-from rl.types import DataType
+from rl.droq._gym import gym
+from rl.droq.types import DataType
+
+seeding = gym.utils.seeding
 
 DatasetDict = Dict[str, DataType]
 

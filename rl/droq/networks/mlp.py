@@ -3,7 +3,7 @@ from typing import Callable, Optional, Sequence
 import flax.linen as nn
 import jax.numpy as jnp
 
-from rl.networks.common import default_init
+from rl.droq.networks.common import default_init
 
 
 class MLP(nn.Module):

@@ -6,8 +6,8 @@ from typing import Optional, cast
 import gymnasium as gym
 import numpy as np
 
-from flash_rl.buffers.base_buffer import BaseBuffer, Batch
-from flash_rl.types import NDArray, Tensor
+from rl.flashsac.buffers.base_buffer import BaseBuffer, Batch
+from rl.flashsac.types import NDArray, Tensor
 
 
 class NpyUniformBuffer(BaseBuffer):

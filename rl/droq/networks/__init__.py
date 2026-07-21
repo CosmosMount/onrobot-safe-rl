@@ -1,3 +1,3 @@
-from rl.networks.ensemble import Ensemble
-from rl.networks.mlp import MLP
-from rl.networks.state_action_value import StateActionValue
+from rl.droq.networks.ensemble import Ensemble
+from rl.droq.networks.mlp import MLP
+from rl.droq.networks.state_action_value import StateActionValue

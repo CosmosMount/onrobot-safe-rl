@@ -1,5 +1,0 @@
-# Upstream walk_in_the_park dense reward.
-
-reward_min_forward_vel: null
-reward_upright_min_cos: -1.0
-fall_terminal_penalty: 0.0

@@ -8,23 +8,23 @@ import torch
 import torch.optim as optim
 from torch.amp.grad_scaler import GradScaler
 
-from flash_rl.agents.base_agent import BaseAgent
-from flash_rl.agents.flashSAC.network import (
+from rl.flashsac.agents.base_agent import BaseAgent
+from rl.flashsac.agents.flashSAC.network import (
     FlashSACActor,
     FlashSACDoubleCritic,
     FlashSACTemperature,
 )
-from flash_rl.agents.flashSAC.update import (
+from rl.flashsac.agents.flashSAC.update import (
     update_actor,
     update_critic,
     update_target_network,
     update_temperature,
 )
-from flash_rl.agents.utils.network import Network
-from flash_rl.agents.utils.reward_normalization import RewardNormalizer
-from flash_rl.agents.utils.scheduler import warmup_cosine_decay_scheduler
-from flash_rl.buffers.torch_buffer import TorchUniformBuffer
-from flash_rl.types import NDArray, Tensor
+from rl.flashsac.agents.utils.network import Network
+from rl.flashsac.agents.utils.reward_normalization import RewardNormalizer
+from rl.flashsac.agents.utils.scheduler import warmup_cosine_decay_scheduler
+from rl.flashsac.buffers.torch_buffer import TorchUniformBuffer
+from rl.flashsac.types import NDArray, Tensor
 
 
 @dataclass

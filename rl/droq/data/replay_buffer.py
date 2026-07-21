@@ -1,10 +1,11 @@
 from typing import Optional, Union
 
-import gym
-import gym.spaces
+import jax
+import jax.numpy as jnp
 import numpy as np
 
-from rl.data.dataset import Dataset, DatasetDict
+from rl.droq._gym import gym
+from rl.droq.data.dataset import Dataset, DatasetDict
 
 
 def _init_replay_dict(obs_space: gym.Space,
@@ -69,3 +70,48 @@ class ReplayBuffer(Dataset):
 
         self._insert_index = (self._insert_index + 1) % self._capacity
         self._size = min(self._size + 1, self._capacity)
+
+    def sample_jax(self, batch_size: int):
+        batch = self.sample(batch_size)
+        return jax.tree_util.tree_map(jnp.asarray, batch)
+
+    def state_dict(self) -> dict:
+        return {
+            'capacity': self._capacity,
+            'size': self._size,
+            'insert_index': self._insert_index,
+            'dataset_dict': _slice_recursively(self.dataset_dict, self._size),
+        }
+
+    def load_state_dict(self, state: dict) -> 'ReplayBuffer':
+        if int(state['capacity']) != self._capacity:
+            raise ValueError(
+                f"capacity mismatch: checkpoint={state['capacity']} "
+                f'current={self._capacity}')
+        self._size = int(state['size'])
+        self._insert_index = int(state['insert_index'])
+        _load_recursively(self.dataset_dict, state['dataset_dict'], self._size)
+        return self
+
+
+def _slice_recursively(dataset_dict: DatasetDict,
+                       size: int) -> Union[np.ndarray, DatasetDict]:
+    if isinstance(dataset_dict, np.ndarray):
+        return dataset_dict[:size].copy()
+    if isinstance(dataset_dict, dict):
+        return {
+            key: _slice_recursively(value, size)
+            for key, value in dataset_dict.items()
+        }
+    raise TypeError()
+
+
+def _load_recursively(target: DatasetDict, source: DatasetDict, size: int) -> None:
+    if isinstance(target, np.ndarray) and isinstance(source, np.ndarray):
+        target[:size] = source[:size]
+    elif isinstance(target, dict) and isinstance(source, dict):
+        assert target.keys() == source.keys()
+        for key in target.keys():
+            _load_recursively(target[key], source[key], size)
+    else:
+        raise TypeError()

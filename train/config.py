@@ -9,7 +9,6 @@ from typing import Any, Optional
 
 import numpy as np
 import yaml
-from common.config_schema import load_layered_config, load_yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = REPO_ROOT / 'config/go2.yaml'
@@ -240,35 +239,9 @@ def parse_app_config(root: dict[str, Any]) -> tuple[Go2Config, TrainConfig,
     return robot_cfg, train_cfg, agent_cfgs
 
 
-def load_app_config(
-        path: str | Path | None = None,
-        *,
-        profile: str = 'go2') -> tuple[Go2Config, TrainConfig,
-                                       dict[str, dict[str, Any]]]:
-    if path is not None:
-        config_path = Path(path)
-        with config_path.open(encoding='utf-8') as f:
-            return parse_app_config(yaml.safe_load(f))
-
-    if profile == 'simulation':
-        overlay_path = REPO_ROOT / 'config/simulation.yaml'
-        overlay = load_yaml(overlay_path)
-        reward_profile = str(overlay.get('reward_profile', 'baseline'))
-        if reward_profile not in {'baseline', 'upstream'}:
-            raise ValueError(f'Unknown reward profile: {reward_profile}')
-        root = load_layered_config(
-            REPO_ROOT / 'config/common.yaml',
-            REPO_ROOT / f'config/rewards/{reward_profile}.yaml',
-            overlay_path,
-        )
-        return parse_app_config(root)
-    if profile == 'real_robot':
-        root = load_layered_config(REPO_ROOT / 'config/common.yaml',
-                                   REPO_ROOT / 'config/real_robot.yaml')
-        return parse_app_config(root)
-    if profile != 'go2':
-        raise ValueError(f'Unknown config profile: {profile}')
-
-    with DEFAULT_CONFIG_PATH.open(encoding='utf-8') as f:
+def load_app_config(path: str | Path | None = None) -> tuple[
+        Go2Config, TrainConfig, dict[str, dict[str, Any]]]:
+    config_path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
+    with config_path.open(encoding='utf-8') as f:
         root = yaml.safe_load(f)
     return parse_app_config(root)

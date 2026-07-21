@@ -1,8 +1,11 @@
 import copy
 
-import gym
 import numpy as np
-from gym.spaces import Box, Dict
+
+from rl.droq._gym import gym
+
+Box = gym.spaces.Box
+Dict = gym.spaces.Dict
 
 
 def _convert_space(obs_space):

@@ -32,8 +32,8 @@ imu:
 
 joint_tolerance: 0.20  # rad (L2 joint error)
 move_speed: 0.5        # m/s
-# Diagnostic baseline gates idle reward. Use config/rewards/upstream.yaml to
-# restore the dense walk_in_the_park reward.
+# Diagnostic baseline gates idle reward. Set reward_min_forward_vel: null and
+# reward_upright_min_cos: -1.0 here to restore the dense upstream-style reward.
 reward_min_forward_vel: 0.04
 reward_upright_min_cos: 0.8660254  # cos(30deg); no forward reward when not upright
 fall_terminal_penalty: -10.0      # added only on true failure, never on time limit
@@ -114,7 +114,7 @@ train:
   wandb: true
   wandb_project: go2_walk
   wandb_run_name: null
-  agent: droq
+  agent: flashsac
 
   droq:
     actor_lr: 3.0e-4

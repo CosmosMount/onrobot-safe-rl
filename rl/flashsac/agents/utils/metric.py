@@ -3,8 +3,8 @@ from typing import Any, Optional, Sequence, Union
 
 import torch
 
-from flash_rl.agents.utils.network import Network
-from flash_rl.agents.utils.tree import tree_filter, tree_leaves, tree_map
+from rl.flashsac.agents.utils.network import Network
+from rl.flashsac.agents.utils.tree import tree_filter, tree_leaves, tree_map
 
 # Additional typings
 Params = dict[str, Any]  # PyTorch uses regular dict instead of FrozenDict

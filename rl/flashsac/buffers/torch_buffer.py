@@ -6,8 +6,8 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-from flash_rl.buffers.base_buffer import BaseBuffer, Batch
-from flash_rl.types import NDArray
+from rl.flashsac.buffers.base_buffer import BaseBuffer, Batch
+from rl.flashsac.types import NDArray
 
 # Mapping from numpy dtypes to torch dtypes
 _NP_TO_TORCH_DTYPE: dict[np.dtype[Any], torch.dtype] = {

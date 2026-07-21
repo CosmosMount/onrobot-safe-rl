@@ -3,8 +3,8 @@ from typing import Any, Optional
 import torch
 from torch.amp.grad_scaler import GradScaler
 
-from flash_rl.agents.utils.network import Network
-from flash_rl.buffers import Batch
+from rl.flashsac.agents.utils.network import Network
+from rl.flashsac.buffers import Batch
 
 
 def add_prefix_to_keys(d: dict[str, Any], prefix: str) -> dict[str, Any]:
