@@ -9,10 +9,17 @@ import jax.numpy as jnp
 import numpy as np
 
 
+def _block_until_ready(value) -> None:
+    try:
+        jax.block_until_ready(value)
+    except TypeError:
+        return
+
+
 def warmup_agent(agent, env, batch_size: int, utd_ratio: int) -> tuple:
     """Compile sample_actions and update via dummy calls."""
     original_agent = agent
-    obs = np.asarray(env.observation_spec.zeros(), dtype=np.float32)
+    obs = np.zeros(env.observation_space.shape, dtype=np.float32)
     action, sampled_agent = agent.sample_actions(obs)
     _ = action
 
@@ -31,7 +38,7 @@ def warmup_agent(agent, env, batch_size: int, utd_ratio: int) -> tuple:
     for v in update_info.values():
         if hasattr(v, 'block_until_ready'):
             v.block_until_ready()
-    jax.block_until_ready(warm_agent)
+    _block_until_ready(warm_agent)
     compile_ms = (time.perf_counter() - compile_t0) * 1000.0
 
     steady_t0 = time.perf_counter()
@@ -39,7 +46,7 @@ def warmup_agent(agent, env, batch_size: int, utd_ratio: int) -> tuple:
     for v in update_info.values():
         if hasattr(v, 'block_until_ready'):
             v.block_until_ready()
-    jax.block_until_ready(warm_agent)
+    _block_until_ready(warm_agent)
     steady_ms = (time.perf_counter() - steady_t0) * 1000.0
 
     metrics = {

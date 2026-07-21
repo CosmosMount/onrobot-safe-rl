@@ -32,10 +32,11 @@ Unitree DDS: rt/lowcmd, rt/lowstate, rt/sportmodestate
 | --- | --- |
 | `controller/` | C++ 控制器，按 `realtime/transport/command/safety` 分层 |
 | `collector/` | Python collector 侧逻辑；当前包含 legacy env adapter |
-| `learner/` | Python/JAX learner 侧逻辑、checkpoint、UTD credit |
+| `learner/` | learner 编排、checkpoint、UTD credit |
 | `common/` | Python 协议、transition、配置合并 schema |
 | `train/` | 兼容 CLI 与 legacy wrappers；不再作为长期核心架构中心 |
-| `jaxrl/` | DroQ/SAC 算法实现 |
+| `rl/droq/` | walk_in_the_park 风格 DroQ/SAC 算法实现 |
+| `rl/flashsac/` | FlashSAC 风格 PyTorch 算法实现 |
 | `config/` | `common.yaml` + profile overlay + reward presets |
 | `mjcf/` | Go2 MuJoCo 模型资源 |
 

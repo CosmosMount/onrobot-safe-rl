@@ -20,7 +20,7 @@ from train.obs import (build_observation, body_up_cos, get_run_reward_from_state
                        is_belly_up, is_fallen, is_pose_stable,
                        quat_to_euler_xyz)
 from train.types import RobotState
-from jaxrl.env.specs import BoxSpec
+import gymnasium as gym
 
 try:
     from train._debug_agent_log import debug_log as _debug_log
@@ -81,12 +81,17 @@ class Go2Env:
         self.abort_on_unstable_reset = abort_on_unstable_reset
 
         n = self.cfg.num_joints
-        self.observation_space = BoxSpec(shape=(self.cfg.obs_dim,),
-                                         low=-np.inf,
-                                         high=np.inf)
-        self.action_space = BoxSpec(shape=(n,),
-                                    low=-np.ones(n, dtype=np.float32),
-                                    high=np.ones(n, dtype=np.float32))
+        self.observation_space = gym.spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(self.cfg.obs_dim,),
+            dtype=np.float32,
+        )
+        self.action_space = gym.spaces.Box(
+            low=-np.ones(n, dtype=np.float32),
+            high=np.ones(n, dtype=np.float32),
+            dtype=np.float32,
+        )
 
         self._state_reader: Optional[StateReader] = None
         self._policy_client: Optional[PolicyClient] = None
@@ -114,7 +119,14 @@ class Go2Env:
         if seed is None:
             seed = int(self._np_random.randint(0, 2**31 - 1))
         self._np_random.seed(seed)
+        if hasattr(self.action_space, 'seed'):
+            self.action_space.seed(seed)
+        if hasattr(self.observation_space, 'seed'):
+            self.observation_space.seed(seed)
         return seed
+
+    def sample_action(self) -> np.ndarray:
+        return np.asarray(self.action_space.sample(), dtype=np.float32)
 
     def _ensure_connected(self) -> None:
         if self._state_reader is None:
@@ -204,10 +216,22 @@ class Go2Env:
         self._policy_client.send_target(state.joint_q)
         return state
 
-    def reset(self, *, standup: bool = False,
+    def reset(self,
+              seed: Optional[int] = None,
+              options: Optional[dict] = None,
+              *,
+              standup: bool = False,
               with_recovery: bool = False,
               grace_period: bool = True,
-              preserve_policy_state: bool = False) -> np.ndarray:
+              preserve_policy_state: bool = False) -> tuple[np.ndarray, dict]:
+        if seed is not None:
+            self.seed(seed)
+        if options:
+            standup = bool(options.get('standup', standup))
+            with_recovery = bool(options.get('with_recovery', with_recovery))
+            grace_period = bool(options.get('grace_period', grace_period))
+            preserve_policy_state = bool(
+                options.get('preserve_policy_state', preserve_policy_state))
         self._ensure_connected()
         assert self._policy_client is not None
 
@@ -240,8 +264,14 @@ class Go2Env:
             if self._action_filter is not None and not preserve_policy_state:
                 self._action_filter.init_history(state.joint_q)
 
-        return build_observation(state, self._prev_requested_action, self.cfg,
-                                 self._prev_executed_action)
+        obs = build_observation(state, self._prev_requested_action, self.cfg,
+                                self._prev_executed_action)
+        return obs.astype(np.float32), {
+            'standup': standup,
+            'with_recovery': with_recovery,
+            'grace_period': grace_period,
+            'preserve_policy_state': preserve_policy_state,
+        }
 
     def _resume_policy(self, state: RobotState) -> None:
         """Leave standup mode and tell controller to track policy targets again."""
@@ -296,7 +326,7 @@ class Go2Env:
 
     def step(
         self, action: np.ndarray, during_hold=None
-    ) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
+    ) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         self._ensure_connected()
         assert self._policy_client is not None
         assert self._state_reader is not None
@@ -397,13 +427,12 @@ class Go2Env:
         terminated = fallen or standup_timed_out or (policy_step and past_grace
                                                     and belly_up)
         truncated = self._step_count >= self.max_episode_steps
-        done = terminated or truncated
         terminal_penalty = get_terminal_penalty(
             terminated=terminated, cfg=self.cfg)
         reward += terminal_penalty
         reward_info['terminal_penalty'] = float(terminal_penalty)
 
-        return obs, reward, done, {
+        return obs.astype(np.float32), float(reward), bool(terminated), bool(truncated), {
             'is_fallen': fallen,
             'is_belly_up': belly_up,
             'is_recovering': self._standup_active,

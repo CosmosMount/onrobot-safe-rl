@@ -87,8 +87,8 @@ class ControlScheduleTest(unittest.TestCase):
         clock = _Clock()
         callback = Mock(side_effect=lambda: clock.advance(0.015))
 
-        _, _, _, first_info = self._step(env, clock, callback)
-        _, _, _, second_info = self._step(env, clock)
+        _, _, _, _, first_info = self._step(env, clock, callback)
+        _, _, _, _, second_info = self._step(env, clock)
 
         callback.assert_called_once()
         self.assertAlmostEqual(clock.now, 0.100, places=6)
@@ -103,7 +103,7 @@ class ControlScheduleTest(unittest.TestCase):
         env = self._env()
         clock = _Clock()
 
-        _, _, _, info = self._step(
+        _, _, _, _, info = self._step(
             env, clock, lambda: clock.advance(0.060))
 
         self.assertAlmostEqual(clock.now, 0.060, places=6)
@@ -116,7 +116,7 @@ class ControlScheduleTest(unittest.TestCase):
         clock = _Clock()
         callback = Mock()
 
-        _, _, _, info = self._step(env, clock, callback)
+        _, _, _, _, info = self._step(env, clock, callback)
 
         callback.assert_not_called()
         self.assertFalse(info['policy_step'])

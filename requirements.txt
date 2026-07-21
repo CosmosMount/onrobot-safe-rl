@@ -1,6 +1,8 @@
 jax[cuda12]
 flax
 optax
+gymnasium
+torch
 numpy
 pyyaml
 scipy

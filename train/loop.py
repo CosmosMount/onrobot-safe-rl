@@ -17,11 +17,11 @@ from train.logging import TrainLogger
 from train.profiling import StepProfiler
 from train.rolling_metrics import RollingTrainingSummary
 from collector.transition_builder import build_transition
-from learner.checkpoint import (has_legacy_agent_checkpoint, latest_snapshot,
-                                load_training_snapshot_metadata,
-                                restore_training_snapshot,
-                                save_training_snapshot)
-from jaxrl.env.evaluation import evaluate
+from train.checkpoint import (has_legacy_agent_checkpoint, latest_snapshot,
+                              load_training_snapshot_metadata,
+                              restore_training_snapshot,
+                              save_training_snapshot)
+from train.evaluation import evaluate
 
 
 def _log(msg: str) -> None:
@@ -57,6 +57,7 @@ def _snapshot_metadata(cfg: TrainConfig, env=None) -> dict:
         'utd_ratio': cfg.utd_ratio,
         'terminal_replay_repeats': cfg.terminal_replay_repeats,
         'seed': cfg.seed,
+        'agent_type': cfg.agent,
     }
     if env is not None:
         metadata['obs_dim'] = int(env.observation_space.shape[0])
@@ -144,6 +145,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
         run_name=cfg.wandb_run_name,
         config={
             'experiment_name': cfg.experiment_name,
+            'agent': cfg.agent,
             'seed': cfg.seed,
             'max_steps': cfg.max_steps,
             'start_training': cfg.start_training,
@@ -158,7 +160,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
         },
     )
 
-    observation = env.reset()
+    observation, _ = env.reset()
     nan_policy_warned = False
     policy_corrupted = False
     _log(f'[train] env ready obs={observation.shape} '
@@ -240,8 +242,9 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                 if cfg.pipeline_updates and pending_update is not None
                 else None
             )
-            next_observation, reward, done, info = env.step(
+            next_observation, reward, terminated, truncated, info = env.step(
                 action, during_hold=hold_callback)
+            done = terminated or truncated
             profiler.record_step(time.perf_counter() - step_t0)
             if update_elapsed > 0.0:
                 profiler.record_update(update_elapsed)
@@ -398,7 +401,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                     if info.get('standup_timed_out'):
                         kind = f'standup-timeout ({kind})'
                     _log(f'[step {i}] reset: {kind}')
-                observation = env.reset(
+                observation, _ = env.reset(
                     standup=info.get('terminated', False)
                     or info.get('standup_timed_out', False),
                     with_recovery=info.get('is_belly_up', False),
@@ -422,7 +425,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                 _log(f'[step {i}] eval ({cfg.eval_episodes} ep)...')
                 eval_t0 = time.time()
                 eval_info = evaluate(agent, env, num_episodes=cfg.eval_episodes)
-                observation = env.reset()
+                observation, _ = env.reset()
                 done = False
                 episode_return = 0.0
                 episode_length = 0

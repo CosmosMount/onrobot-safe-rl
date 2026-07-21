@@ -4,8 +4,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from jaxrl.agents import DroQLearner
-from jaxrl.env.specs import BoxSpec
+import gymnasium as gym
+from rl.droq import DroQLearner
 
 
 def _batch(total_batch_size, obs_dim, action_dim):
@@ -46,7 +46,7 @@ def _sequential_update(agent, batch, utd_ratio):
     return new_agent, {**actor_info, **critic_info, **temp_info}
 
 
-class FusedUtdTest(unittest.TestCase):
+class WalkStyleDroQTest(unittest.TestCase):
 
     def setUp(self):
         self.obs_dim = 5
@@ -55,8 +55,17 @@ class FusedUtdTest(unittest.TestCase):
         self.mini_batch_size = 6
         self.agent = DroQLearner.create(
             42,
-            BoxSpec(shape=(self.obs_dim,), dtype=np.float32),
-            BoxSpec(shape=(self.action_dim,), dtype=np.float32),
+            gym.spaces.Box(
+                low=-np.inf,
+                high=np.inf,
+                shape=(self.obs_dim,),
+                dtype=np.float32,
+            ),
+            gym.spaces.Box(
+                low=-np.ones(self.action_dim, dtype=np.float32),
+                high=np.ones(self.action_dim, dtype=np.float32),
+                dtype=np.float32,
+            ),
             hidden_dims=(16, 16),
             critic_dropout_rate=0.01,
             critic_layer_norm=True,
@@ -68,7 +77,7 @@ class FusedUtdTest(unittest.TestCase):
             self.action_dim,
         )
 
-    def test_fused_update_matches_sequential_reference(self):
+    def test_update_matches_walk_sequential_reference(self):
         expected_agent, expected_info = _sequential_update(
             self.agent, self.batch, self.utd_ratio)
         actual_agent, actual_info = self.agent.update(

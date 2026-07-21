@@ -62,7 +62,7 @@ class Transition:
         return 0.0 if self.terminated else 1.0
 
     def replay_dict(self) -> dict[str, np.ndarray | float | bool]:
-        """Return the legacy replay fields used by the current DroQ learner."""
+        """Return the shared replay fields consumed by all agent backends."""
         return {
             'observations': self.observation,
             'actions': self.requested_action,

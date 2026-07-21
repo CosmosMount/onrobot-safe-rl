@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 
-from learner.learner import run_in_process, run_play, run_split
+from train.learner import run_in_process, run_play, run_split
 from train.config import load_app_config
 
 
@@ -44,11 +44,12 @@ def main(argv=None) -> int:
     os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
 
     args = _parse_args(argv)
-    robot_cfg, train_cfg, droq_cfg = load_app_config(
+    robot_cfg, train_cfg, agent_cfgs = load_app_config(
         profile=args.config_profile)
 
     print(f'[train] mode={args.mode} '
           f'profile={args.config_profile} '
+          f'agent={train_cfg.agent} '
           f'experiment={train_cfg.experiment_name} '
           f'config={robot_cfg.domain_id}/{robot_cfg.interface} '
           f'init_qpos={robot_cfg.init_qpos[:3]}... '
@@ -60,13 +61,13 @@ def main(argv=None) -> int:
           flush=True)
 
     if args.mode == 'split':
-        return run_split(robot_cfg, train_cfg, droq_cfg)
+        return run_split(robot_cfg, train_cfg, agent_cfgs)
     if args.mode == 'play':
         return run_play(
             robot_cfg,
             train_cfg,
-            droq_cfg,
+            agent_cfgs,
             checkpoint=args.checkpoint,
             episodes=args.play_episodes,
         )
-    return run_in_process(robot_cfg, train_cfg, droq_cfg)
+    return run_in_process(robot_cfg, train_cfg, agent_cfgs)

@@ -98,6 +98,7 @@ train:
   wandb: true
   wandb_project: go2_walk
   wandb_run_name: null
+  agent: droq
 
   droq:
     actor_lr: 3.0e-4
@@ -112,6 +113,34 @@ train:
     critic_layer_norm: true
     init_temperature: 0.1
     target_entropy: null
-    actor_q_reduction: min
-    target_q_min: -100.0
-    target_q_max: 1000.0
+    sampled_backup: true
+
+  flashsac:
+    device_type: cuda
+    buffer_device_type: cuda
+    normalize_reward: false
+    normalized_G_max: 10.0
+    asymmetric_observation: false
+    buffer_min_length: 1000
+    learning_rate_init: 1.0e-6
+    learning_rate_peak: 3.0e-4
+    learning_rate_end: 1.0e-6
+    learning_rate_warmup_step: 1000
+    learning_rate_decay_step: 1000000
+    actor_num_blocks: 2
+    actor_hidden_dim: 256
+    actor_bc_alpha: 0.0
+    actor_noise_zeta_mu: 2.0
+    actor_noise_zeta_max: 10
+    actor_update_period: 1
+    critic_num_blocks: 2
+    critic_hidden_dim: 256
+    critic_num_bins: 101
+    critic_min_v: -100.0
+    critic_max_v: 1000.0
+    temp_initial_value: 0.1
+    temp_target_sigma: 0.2
+    n_step: 1
+    use_compile: false
+    compile_mode: reduce-overhead
+    use_amp: false

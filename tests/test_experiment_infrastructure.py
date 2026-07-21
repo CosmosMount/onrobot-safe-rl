@@ -6,16 +6,36 @@ from pathlib import Path
 
 import numpy as np
 
-from jaxrl.data.replay_buffer import ReplayBuffer
-from jaxrl.env.specs import BoxSpec
-from learner.checkpoint import (restore_training_snapshot,
-                                save_training_snapshot)
+from rl.droq.data.replay_buffer import ReplayBuffer
+import gymnasium as gym
+from train.checkpoint import (restore_training_snapshot,
+                              save_training_snapshot)
 from train.rolling_metrics import RollingTrainingSummary
 
 
+class DummyAgent:
+    agent_type = 'dummy'
+
+    def __init__(self, weight: float):
+        self.weight = np.asarray([weight], dtype=np.float32)
+
+    def state_dict(self) -> dict:
+        return {'weight': self.weight.copy()}
+
+    def load_state_dict(self, state: dict) -> 'DummyAgent':
+        self.weight = np.asarray(state['weight'], dtype=np.float32)
+        return self
+
+
 def _replay(capacity: int = 100) -> ReplayBuffer:
-    obs = BoxSpec(shape=(3,), dtype=np.float32)
-    action = BoxSpec(shape=(2,), dtype=np.float32)
+    obs = gym.spaces.Box(low=-np.inf,
+                         high=np.inf,
+                         shape=(3,),
+                         dtype=np.float32)
+    action = gym.spaces.Box(low=-1.0,
+                            high=1.0,
+                            shape=(2,),
+                            dtype=np.float32)
     replay = ReplayBuffer(obs, action, capacity)
     replay.seed(7)
     return replay
@@ -42,7 +62,7 @@ class ExperimentInfrastructureTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = save_training_snapshot(
                 tmp,
-                agent={'weight': np.asarray([3.0])},
+                agent=DummyAgent(3.0),
                 replay_buffer=replay,
                 step=17,
                 metadata={'experiment_name': 'e00'},
@@ -50,12 +70,12 @@ class ExperimentInfrastructureTest(unittest.TestCase):
             restored_replay = _replay()
             payload = restore_training_snapshot(
                 path,
-                agent={'weight': np.asarray([0.0])},
+                agent=DummyAgent(0.0),
                 replay_buffer=restored_replay,
             )
 
             self.assertEqual(payload['step'], 17)
-            np.testing.assert_allclose(payload['agent']['weight'], [3.0])
+            np.testing.assert_allclose(payload['agent'].weight, [3.0])
             self.assertEqual(payload['metadata']['experiment_name'], 'e00')
             self.assertEqual(len(payload['replay_buffer']), 2)
             np.testing.assert_allclose(
