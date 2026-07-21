@@ -44,7 +44,7 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("artifacts/random_action_distribution.png"),
+        default=Path("train/artifacts/random_action_distribution.png"),
     )
     args = parser.parse_args()
 

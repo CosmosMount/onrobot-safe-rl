@@ -9,7 +9,6 @@ from typing import Any, Optional
 
 import numpy as np
 import yaml
-from common.config_schema import load_layered_config, load_yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = REPO_ROOT / 'config/go2.yaml'
@@ -70,6 +69,7 @@ class Go2Config:
 @dataclass
 class TrainConfig:
     experiment_name: str = 'default'
+    agent: str = 'droq'
     seed: int = 42
     control_frequency: float = 20.0
     max_episode_steps: int = 400
@@ -87,6 +87,7 @@ class TrainConfig:
     batch_size: int = 256
     utd_ratio: int = 20
     buffer_size: int = 1_000_000
+    terminal_replay_repeats: int = 1
     log_interval: int = 100
     metrics_interval: int = 1
     rolling_summary_window: int = 1000
@@ -171,11 +172,12 @@ def _parse_robot(root: dict[str, Any]) -> Go2Config:
     )
 
 
-def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, Any]]:
+def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, dict[str, Any]]]:
     train_node = dict(node)
     droq = train_node.pop('droq', {})
     if not droq:
         raise ValueError('train.droq section missing in config/go2.yaml')
+    flashsac = train_node.pop('flashsac', {})
 
     cfg = TrainConfig()
     for key, value in train_node.items():
@@ -186,54 +188,60 @@ def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, Any]]:
         elif key == 'wandb_run_name' and value == 'null':
             value = None
         setattr(cfg, key, value)
+    if cfg.agent not in {'droq', 'flashsac'}:
+        raise ValueError("train.agent must be one of {'droq', 'flashsac'}")
 
     droq_cfg = dict(droq)
     if 'hidden_dims' in droq_cfg:
         droq_cfg['hidden_dims'] = tuple(droq_cfg['hidden_dims'])
     if droq_cfg.get('target_entropy') == 'null':
         droq_cfg['target_entropy'] = None
-    return cfg, droq_cfg
+    allowed_droq = {
+        'actor_lr',
+        'critic_lr',
+        'temp_lr',
+        'hidden_dims',
+        'discount',
+        'tau',
+        'num_qs',
+        'num_min_qs',
+        'critic_dropout_rate',
+        'critic_layer_norm',
+        'target_entropy',
+        'init_temperature',
+        'sampled_backup',
+    }
+    droq_cfg = {key: value for key, value in droq_cfg.items()
+                if key in allowed_droq}
+
+    flashsac_cfg = dict(flashsac)
+    if 'hidden_dims' in flashsac_cfg:
+        flashsac_cfg['hidden_dims'] = tuple(flashsac_cfg['hidden_dims'])
+    if 'sample_batch_size' not in flashsac_cfg:
+        flashsac_cfg['sample_batch_size'] = cfg.batch_size
+    if 'buffer_max_length' not in flashsac_cfg:
+        flashsac_cfg['buffer_max_length'] = cfg.buffer_size
+    if 'gamma' not in flashsac_cfg:
+        flashsac_cfg['gamma'] = droq_cfg.get('discount', 0.99)
+    if 'critic_target_update_tau' not in flashsac_cfg:
+        flashsac_cfg['critic_target_update_tau'] = droq_cfg.get('tau', 0.005)
+    return cfg, {'droq': droq_cfg, 'flashsac': flashsac_cfg}
 
 
 def parse_app_config(root: dict[str, Any]) -> tuple[Go2Config, TrainConfig,
-                                                    dict[str, Any]]:
+                                                    dict[str, dict[str, Any]]]:
     train_node = root.get('train')
     if not train_node:
         raise ValueError('train section missing in config/go2.yaml')
 
     robot_cfg = _parse_robot(root)
-    train_cfg, droq_cfg = _parse_train(dict(train_node))
-    return robot_cfg, train_cfg, droq_cfg
+    train_cfg, agent_cfgs = _parse_train(dict(train_node))
+    return robot_cfg, train_cfg, agent_cfgs
 
 
-def load_app_config(
-        path: str | Path | None = None,
-        *,
-        profile: str = 'go2') -> tuple[Go2Config, TrainConfig, dict[str, Any]]:
-    if path is not None:
-        config_path = Path(path)
-        with config_path.open(encoding='utf-8') as f:
-            return parse_app_config(yaml.safe_load(f))
-
-    if profile == 'simulation':
-        overlay_path = REPO_ROOT / 'config/simulation.yaml'
-        overlay = load_yaml(overlay_path)
-        reward_profile = str(overlay.get('reward_profile', 'baseline'))
-        if reward_profile not in {'baseline', 'upstream'}:
-            raise ValueError(f'Unknown reward profile: {reward_profile}')
-        root = load_layered_config(
-            REPO_ROOT / 'config/common.yaml',
-            REPO_ROOT / f'config/rewards/{reward_profile}.yaml',
-            overlay_path,
-        )
-        return parse_app_config(root)
-    if profile == 'real_robot':
-        root = load_layered_config(REPO_ROOT / 'config/common.yaml',
-                                   REPO_ROOT / 'config/real_robot.yaml')
-        return parse_app_config(root)
-    if profile != 'go2':
-        raise ValueError(f'Unknown config profile: {profile}')
-
-    with DEFAULT_CONFIG_PATH.open(encoding='utf-8') as f:
+def load_app_config(path: str | Path | None = None) -> tuple[
+        Go2Config, TrainConfig, dict[str, dict[str, Any]]]:
+    config_path = Path(path) if path is not None else DEFAULT_CONFIG_PATH
+    with config_path.open(encoding='utf-8') as f:
         root = yaml.safe_load(f)
     return parse_app_config(root)

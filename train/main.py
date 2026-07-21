@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 
-from learner.learner import run_in_process, run_play, run_split
+from train.learner import run_in_process, run_play, run_split
 from train.config import load_app_config
 
 
@@ -20,11 +20,9 @@ def _parse_args(argv=None) -> argparse.Namespace:
               'play loads a saved policy and runs deterministic rollouts.'),
     )
     parser.add_argument(
-        '--config-profile',
-        choices=('go2', 'simulation', 'real_robot'),
-        default='go2',
-        help=('Configuration profile. go2 keeps the compatibility file; '
-              'simulation/real_robot use config/common.yaml overlays.'),
+        '--config',
+        default='config/go2.yaml',
+        help='Single YAML config shared by Python train and C++ controller.',
     )
     parser.add_argument(
         '--checkpoint',
@@ -44,13 +42,13 @@ def main(argv=None) -> int:
     os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
 
     args = _parse_args(argv)
-    robot_cfg, train_cfg, droq_cfg = load_app_config(
-        profile=args.config_profile)
+    robot_cfg, train_cfg, agent_cfgs = load_app_config(args.config)
 
     print(f'[train] mode={args.mode} '
-          f'profile={args.config_profile} '
+          f'config={args.config} '
+          f'agent={train_cfg.agent} '
           f'experiment={train_cfg.experiment_name} '
-          f'config={robot_cfg.domain_id}/{robot_cfg.interface} '
+          f'dds={robot_cfg.domain_id}/{robot_cfg.interface} '
           f'init_qpos={robot_cfg.init_qpos[:3]}... '
           f'standup=controller '
           f'explore_scale={train_cfg.explore_action_scale} '
@@ -60,13 +58,13 @@ def main(argv=None) -> int:
           flush=True)
 
     if args.mode == 'split':
-        return run_split(robot_cfg, train_cfg, droq_cfg)
+        return run_split(robot_cfg, train_cfg, agent_cfgs)
     if args.mode == 'play':
         return run_play(
             robot_cfg,
             train_cfg,
-            droq_cfg,
+            agent_cfgs,
             checkpoint=args.checkpoint,
             episodes=args.play_episodes,
         )
-    return run_in_process(robot_cfg, train_cfg, droq_cfg)
+    return run_in_process(robot_cfg, train_cfg, agent_cfgs)

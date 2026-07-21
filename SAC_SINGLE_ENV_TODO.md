@@ -9,12 +9,12 @@
 | 优先级 | 项目 | 当前状态 | 主要位置 |
 | --- | --- | --- | --- |
 | P0 | 缩小训练前随机探索 | 未解决；前 1000 步为 `[-1, 1]` 均匀采样 | `train/loop.py`, `config/*.yaml` |
-| P0 | 小方差 actor 初始化 | 未解决；初始 Gaussian `std=1` | `jaxrl/distributions/tanh_normal.py` |
+| P0 | 小方差 actor 初始化 | 未解决；初始 Gaussian `std=1` | `rl/droq/distributions/tanh_normal.py` |
 | P0 | reset 必须达到稳定姿态 | 已实现首版；失败时终止而不是放行倒置 policy transition | `train/env.py` |
 | P0 | 倒地 reward/terminal penalty | 未解决；当前 reward 没有 upright gate 或失败惩罚 | `train/obs.py`, `train/env.py` |
-| P0 | 稳定的 tanh log-prob | 未解决；当前从 clipped action 反算 pre-tanh 值 | `jaxrl/distributions/tanh_transformed.py` |
+| P0 | 稳定的 tanh log-prob | 未解决；当前从 clipped action 反算 pre-tanh 值 | `rl/droq/distributions/tanh_transformed.py` |
 | P0 | 确保 checkpoint 定期保存 | 有缺陷；当前保存逻辑位于 eval 分支内，`no_eval: true` 时不会定期保存 | `train/loop.py` |
-| P1 | n-step return | 未实现；当前是 one-step TD | `jaxrl/data/replay_buffer.py`, `jaxrl/agents/sac/droq/learner.py` |
+| P1 | n-step return | 未实现；当前是 one-step TD | `rl/droq/data/replay_buffer.py`, `rl/droq/agents/sac/sac_learner.py` |
 | P1 | action bounds 校准 | 部分完成；已有手工 `action_offset`，但没有从 soft joint limits 推导非对称边界 | `train/config.py`, `train/env.py` |
 | P1 | requested/projected/executed action 诊断 | schema 已有，但 replay 和日志没有完整利用 | `common/transition.py`, `train/loop.py` |
 | P2 | SAC 超参数复核 | 与论文差异较大，需要消融而非直接照抄 | `config/*.yaml` |
