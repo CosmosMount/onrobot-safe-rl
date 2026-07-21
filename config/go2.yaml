@@ -92,6 +92,7 @@ train:
   batch_size: 256
   utd_ratio: 5
   buffer_size: 1000000
+  terminal_replay_repeats: 4
   log_interval: 100
   metrics_interval: 1
   rolling_summary_window: 1000
@@ -121,8 +122,12 @@ train:
     hidden_dims: [256, 256]
     discount: 0.99
     tau: 0.005
-    num_qs: 2
+    num_qs: 5
+    num_min_qs: 2
     critic_dropout_rate: 0.01
     critic_layer_norm: true
     init_temperature: 0.1
     target_entropy: null
+    actor_q_reduction: min
+    target_q_min: -100.0
+    target_q_max: 1000.0

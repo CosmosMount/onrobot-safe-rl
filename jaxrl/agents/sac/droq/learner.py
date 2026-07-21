@@ -46,6 +46,9 @@ class DroQLearner(Agent):
     num_min_qs: Optional[int] = struct.field(
         pytree_node=False)  # See M in RedQ https://arxiv.org/abs/2101.05982
     sampled_backup: bool = struct.field(pytree_node=False)
+    actor_q_reduction: str = struct.field(pytree_node=False)
+    target_q_min: Optional[float] = struct.field(pytree_node=False)
+    target_q_max: Optional[float] = struct.field(pytree_node=False)
 
     @classmethod
     def create(cls,
@@ -64,13 +67,24 @@ class DroQLearner(Agent):
                critic_layer_norm: bool = False,
                target_entropy: Optional[float] = None,
                init_temperature: float = 1.0,
-               sampled_backup: bool = True):
+               sampled_backup: bool = True,
+               actor_q_reduction: str = 'mean',
+               target_q_min: Optional[float] = None,
+               target_q_max: Optional[float] = None):
         """
         An implementation of the version of Soft-Actor-Critic described in https://arxiv.org/abs/1812.05905
         """
 
         observation_spec = _flatten_obs_spec(observation_spec)
         action_dim = action_spec.shape[-1]
+        if actor_q_reduction not in ('mean', 'min'):
+            raise ValueError(
+                "actor_q_reduction must be one of {'mean', 'min'}")
+        if num_min_qs is not None and not 1 <= num_min_qs <= num_qs:
+            raise ValueError('num_min_qs must be in [1, num_qs]')
+        if (target_q_min is not None and target_q_max is not None
+                and target_q_min > target_q_max):
+            raise ValueError('target_q_min must be <= target_q_max')
         observations = observation_spec.zeros()
         actions = jnp.zeros((action_dim, ), dtype=jnp.float32)
 
@@ -133,7 +147,10 @@ class DroQLearner(Agent):
                 discount=discount,
                 num_qs=num_qs,
                 num_min_qs=num_min_qs,
-                sampled_backup=sampled_backup))
+                sampled_backup=sampled_backup,
+                actor_q_reduction=actor_q_reduction,
+                target_q_min=target_q_min,
+                target_q_max=target_q_max))
 
     @staticmethod
     @jax.jit
@@ -152,7 +169,10 @@ class DroQLearner(Agent):
                                        actions,
                                        True,
                                        rngs={'dropout': key2})  # training=True
-            q = qs.mean(axis=0)
+            if agent.actor_q_reduction == 'min':
+                q = qs.min(axis=0)
+            else:
+                q = qs.mean(axis=0)
             actor_loss = (log_probs *
                           agent.temp.apply_fn({'params': agent.temp.params}) -
                           q).mean()
@@ -233,6 +253,12 @@ class DroQLearner(Agent):
         if agent.sampled_backup:
             target_q -= agent.discount * batch['masks'] * agent.temp.apply_fn(
                 {'params': agent.temp.params}) * next_log_probs
+        if agent.target_q_min is not None or agent.target_q_max is not None:
+            lo = (-jnp.inf if agent.target_q_min is None
+                  else agent.target_q_min)
+            hi = (jnp.inf if agent.target_q_max is None
+                  else agent.target_q_max)
+            target_q = jnp.clip(target_q, lo, hi)
 
         key3, rng = jax.random.split(rng)
 
@@ -244,7 +270,15 @@ class DroQLearner(Agent):
                                        True,
                                        rngs={'dropout': key3})  # training=True
             critic_loss = ((qs - target_q)**2).mean()
-            return critic_loss, {'critic_loss': critic_loss, 'q': qs.mean()}
+            return critic_loss, {
+                'critic_loss': critic_loss,
+                'q': qs.mean(),
+                'q_min': qs.min(),
+                'q_max': qs.max(),
+                'target_q': target_q.mean(),
+                'target_q_min': target_q.min(),
+                'target_q_max': target_q.max(),
+            }
 
         grads, info = jax.grad(critic_loss_fn,
                                has_aux=True)(agent.critic.params)

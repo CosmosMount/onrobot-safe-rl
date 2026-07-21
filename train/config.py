@@ -87,6 +87,7 @@ class TrainConfig:
     batch_size: int = 256
     utd_ratio: int = 20
     buffer_size: int = 1_000_000
+    terminal_replay_repeats: int = 1
     log_interval: int = 100
     metrics_interval: int = 1
     rolling_summary_window: int = 1000

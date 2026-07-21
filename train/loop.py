@@ -55,6 +55,7 @@ def _snapshot_metadata(cfg: TrainConfig, env=None) -> dict:
         'start_training': cfg.start_training,
         'batch_size': cfg.batch_size,
         'utd_ratio': cfg.utd_ratio,
+        'terminal_replay_repeats': cfg.terminal_replay_repeats,
         'seed': cfg.seed,
     }
     if env is not None:
@@ -148,6 +149,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
             'start_training': cfg.start_training,
             'batch_size': cfg.batch_size,
             'utd_ratio': cfg.utd_ratio,
+            'terminal_replay_repeats': cfg.terminal_replay_repeats,
             'metrics_interval': cfg.metrics_interval,
             'explore_action_scale': cfg.explore_action_scale,
             'control_frequency': control_frequency,
@@ -163,6 +165,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
          f'start_training={cfg.start_training} '
          f'explore_action_scale={cfg.explore_action_scale} '
          f'log_interval={cfg.log_interval} utd_ratio={cfg.utd_ratio} '
+         f'terminal_replay_repeats={cfg.terminal_replay_repeats} '
          f'pipeline_updates={cfg.pipeline_updates} '
          f'no_eval={cfg.no_eval} profile={cfg.profile}')
 
@@ -260,7 +263,11 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                                                   'projected_action'),
                                               executed_q_target=info.get(
                                                   'executed_q_target'))
-                replay_buffer.insert(transition.replay_dict())
+                replay_item = transition.replay_dict()
+                repeats = max(1, int(cfg.terminal_replay_repeats)
+                              if transition.terminated else 1)
+                for _ in range(repeats):
+                    replay_buffer.insert(replay_item)
             elif i >= cfg.start_training:
                 skip_update = True
             observation = next_observation
