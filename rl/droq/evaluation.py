@@ -2,7 +2,7 @@ from typing import Dict
 
 import numpy as np
 
-from rl.droq._gym import gym
+import gymnasium as gym
 
 
 def evaluate(agent, env: gym.Env, num_episodes: int) -> Dict[str, float]:

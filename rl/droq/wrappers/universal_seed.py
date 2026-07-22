@@ -1,4 +1,4 @@
-from rl.droq._gym import gym
+import gymnasium as gym
 
 
 class UniversalSeed(gym.Wrapper):

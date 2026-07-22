@@ -2,7 +2,7 @@ import copy
 
 import numpy as np
 
-from rl.droq._gym import gym
+import gymnasium as gym
 
 Box = gym.spaces.Box
 Dict = gym.spaces.Dict

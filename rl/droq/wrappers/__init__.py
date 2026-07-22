@@ -1,9 +1,6 @@
-from rl.droq._gym import gym
+import gymnasium as gym
 
-try:
-    from gym.wrappers.flatten_observation import FlattenObservation
-except ModuleNotFoundError:
-    from gymnasium.wrappers import FlattenObservation
+from gymnasium.wrappers import FlattenObservation
 
 from rl.droq.wrappers.single_precision import SinglePrecision
 from rl.droq.wrappers.universal_seed import UniversalSeed

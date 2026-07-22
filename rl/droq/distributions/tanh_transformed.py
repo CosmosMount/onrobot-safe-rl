@@ -38,7 +38,7 @@ class TanhTransformedDistribution:
         pre_tanh = self.distribution.sample(seed)
         action = jnp.tanh(pre_tanh)
         log_prob = self.distribution.log_prob(pre_tanh)
-        log_prob -= _stable_tanh_log_det_jacobian(pre_tanh)
+        log_prob -= jnp.sum(2.0 * (jnp.log(2.0) - pre_tanh - jax.nn.softplus(-2.0 * pre_tanh)), axis=-1)
         return action, log_prob
 
     def log_prob(self, action: jnp.ndarray) -> jnp.ndarray:
@@ -51,7 +51,3 @@ class TanhTransformedDistribution:
     def mode(self) -> jnp.ndarray:
         return jnp.tanh(self.distribution.mode())
 
-
-def _stable_tanh_log_det_jacobian(pre_tanh: jnp.ndarray) -> jnp.ndarray:
-    log_det = 2.0 * (jnp.log(2.0) - pre_tanh - jax.nn.softplus(-2.0 * pre_tanh))
-    return jnp.sum(log_det, axis=-1)

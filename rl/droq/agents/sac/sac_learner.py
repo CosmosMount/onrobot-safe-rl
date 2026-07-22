@@ -9,7 +9,7 @@ import optax
 from flax import struct
 from flax.training.train_state import TrainState
 
-from rl.droq._gym import gym
+import gymnasium as gym
 from rl.droq.agents.agent import Agent
 from rl.droq.agents.sac.temperature import Temperature
 from rl.droq.data.dataset import DatasetDict

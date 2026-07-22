@@ -3,7 +3,7 @@ from typing import Dict, Iterable, Optional, Union
 import numpy as np
 from flax.core import frozen_dict
 
-from rl.droq._gym import gym
+import gymnasium as gym
 from rl.droq.types import DataType
 
 seeding = gym.utils.seeding
