@@ -76,6 +76,12 @@ recovery:
 train:
   experiment_name: default
   seed: 42
+  runtime_type: unitree_mujoco_dds
+  mdp_version: go2_walk_v2
+  observation_spec: deploy_safe_57
+  reward_spec: smooth_tracking_safety_v1
+  termination_spec: safe_tilt_v1
+  sensor_model_version: dds_canonical_v1
   control_frequency: 20.0
   max_episode_steps: 400      # policy steps only; standup/recovery excluded
   reset_grace_steps: 20       # policy steps before fallen_risk can trigger standup
@@ -91,8 +97,21 @@ train:
   start_training: 1000
   batch_size: 256
   utd_ratio: 5
+  updates_per_interaction_step: 1.0
   buffer_size: 1000000
-  terminal_replay_repeats: 4
+  terminal_replay_repeats: 1
+  reward_tracking_sigma: 0.25
+  reward_linear_velocity_weight: 2.0
+  reward_yaw_tracking_weight: 0.5
+  reward_orientation_cost_weight: 0.5
+  reward_action_rate_cost_weight: 0.01
+  reward_joint_limit_cost_weight: 0.5
+  reward_joint_velocity_cost_weight: 0.02
+  joint_velocity_safe_rad_s: 12.0
+  terminal_reward: -20.0
+  termination_warning_tilt_rad: 0.30
+  termination_tilt_rad: 0.40
+  termination_confirm_frames: 2
   log_interval: 100
   metrics_interval: 1
   rolling_summary_window: 1000
@@ -107,8 +126,6 @@ train:
   warmup: true
   profile: true
   pipeline_updates: true
-  split_update_interval_steps: 1
-  split_max_pending_updates: 2
   benchmark_only: false
   benchmark_steps: 200
   wandb: true

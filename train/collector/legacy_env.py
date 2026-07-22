@@ -28,5 +28,6 @@ def build_legacy_env(robot_cfg, train_cfg: TrainConfig, seed: int) -> Go2Env:
         recovery_stable_steps=train_cfg.recovery_stable_steps,
         standup_timeout_steps=train_cfg.standup_timeout_steps,
         abort_on_unstable_reset=train_cfg.abort_on_unstable_reset,
+        train_cfg=train_cfg,
         seed=seed,
     )

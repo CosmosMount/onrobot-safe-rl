@@ -160,6 +160,20 @@ class StateReader:
                 f'age={age:.3f}s max_age={max_age_s:.3f}s. '
                 'Refusing to train with implicit zero/stale body velocity.')
 
+    def require_fresh_state(self, max_age_s: float) -> None:
+        low_age = self.low_state_age()
+        sport_age = self.sport_state_age()
+        if not np.isfinite(low_age) or low_age > max_age_s:
+            raise RuntimeError(
+                'LowState joint/IMU data is missing or stale: '
+                f'age={low_age:.3f}s max_age={max_age_s:.3f}s. '
+                'Refusing to train with stale proprioception.')
+        if not np.isfinite(sport_age) or sport_age > max_age_s:
+            raise RuntimeError(
+                'SportModeState velocity is missing or stale: '
+                f'age={sport_age:.3f}s max_age={max_age_s:.3f}s. '
+                'Refusing to train with implicit zero/stale body velocity.')
+
     def wait_for_state(self, timeout: float = 5.0) -> RobotState:
         deadline = time.time() + timeout
         while time.time() < deadline:

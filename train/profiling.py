@@ -54,6 +54,9 @@ class StepProfiler:
             return {}
         loop_ms = self._loop_elapsed * 1000.0
         effective_hz = 1.0 / self._loop_elapsed if self._loop_elapsed > 0 else 0.0
+        real_time_factor = (
+            self.control_dt / self._loop_elapsed
+            if self._loop_elapsed > 0 else 0.0)
         critic_per_s = (
             self._updates_this_step * self.utd_ratio / self._loop_elapsed
             if self._loop_elapsed > 0 else 0.0)
@@ -66,6 +69,7 @@ class StepProfiler:
             'timing/update_ms': self._update_ms,
             'timing/loop_ms': loop_ms,
             'timing/effective_hz': effective_hz,
+            'timing/real_time_factor': real_time_factor,
             'timing/critic_updates_per_sec': critic_per_s,
             'timing/avg_critic_updates_per_sec': avg_hz,
         }

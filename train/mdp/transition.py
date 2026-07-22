@@ -1,4 +1,4 @@
-"""Build explicit transition records from environment step results."""
+"""Build explicit Go2 MDP transition records from step results."""
 
 from __future__ import annotations
 
@@ -28,19 +28,25 @@ def build_transition(observation: np.ndarray,
                      *,
                      projected_action: np.ndarray | None = None,
                      executed_q_target: np.ndarray | None = None,
+                     sent_q_target: np.ndarray | None = None,
                      policy_version: int = 0) -> Transition:
     action = np.asarray(action, dtype=np.float32)
     projected = action if projected_action is None else np.asarray(
         projected_action, dtype=np.float32)
     executed = np.zeros_like(action) if executed_q_target is None else np.asarray(
         executed_q_target, dtype=np.float32)
+    sent = executed if sent_q_target is None else np.asarray(
+        sent_q_target, dtype=np.float32)
+    costs = zero_costs()
+    costs.update(info.get('costs') or {})
     return Transition(
         observation=np.asarray(observation, dtype=np.float32),
         requested_action=action,
         projected_action=projected,
         executed_q_target=executed,
         reward=float(reward),
-        costs=zero_costs(),
+        sent_q_target=sent,
+        costs=costs,
         next_observation=np.asarray(next_observation, dtype=np.float32),
         terminated=bool(info.get('terminated', done and not info.get('truncated'))),
         truncated=bool(info.get('truncated', False)),

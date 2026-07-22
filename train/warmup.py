@@ -23,6 +23,13 @@ def warmup_agent(agent, env, batch_size: int, utd_ratio: int) -> tuple:
     action, sampled_agent = agent.sample_actions(obs)
     _ = action
 
+    if getattr(agent, 'owns_replay_buffer', False):
+        return original_agent, 0.0, {
+            'warmup_compile_ms': 0.0,
+            'warmup_steady_ms': 0.0,
+            'warmup_update_skipped': 1.0,
+        }
+
     total_batch = batch_size * utd_ratio
     dummy_batch = {
         'observations': jnp.tile(obs, (total_batch, 1)),

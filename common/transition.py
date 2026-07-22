@@ -45,6 +45,7 @@ class Transition:
     projected_action: np.ndarray
     executed_q_target: np.ndarray
     reward: float
+    sent_q_target: np.ndarray = field(default_factory=lambda: np.empty(0))
     costs: Mapping[str, float] = field(default_factory=zero_costs)
     next_observation: np.ndarray = field(default_factory=lambda: np.empty(0))
     terminated: bool = False
@@ -69,5 +70,21 @@ class Transition:
             'rewards': float(self.reward),
             'masks': float(self.mask),
             'dones': bool(self.done),
+            'terminateds': bool(self.terminated),
+            'truncateds': bool(self.truncated),
             'next_observations': self.next_observation,
+        }
+
+    def flashsac_dict(self) -> dict[str, np.ndarray]:
+        """Return the single-environment transition schema used by FlashSAC."""
+        return {
+            'observation': np.asarray(
+                self.observation, dtype=np.float32)[None, ...],
+            'action': np.asarray(
+                self.requested_action, dtype=np.float32)[None, ...],
+            'reward': np.asarray([self.reward], dtype=np.float32),
+            'terminated': np.asarray([self.terminated], dtype=np.float32),
+            'truncated': np.asarray([self.truncated], dtype=np.float32),
+            'next_observation': np.asarray(
+                self.next_observation, dtype=np.float32)[None, ...],
         }

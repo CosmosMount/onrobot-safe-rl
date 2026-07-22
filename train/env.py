@@ -13,12 +13,13 @@ from typing import Any, Dict, Optional, Tuple
 import numpy as np
 from scipy.signal import butter
 
-from train.config import Go2Config, load_app_config
+from train.config import Go2Config, TrainConfig, load_app_config
 from train.dds import DdsConfig, StateReader
 from train.ipc import PolicyClient
-from train.obs import (build_observation, get_run_reward_from_state,
-                       get_terminal_penalty, is_belly_up, is_fallen, is_pose_stable,
-                       quat_to_euler_xyz)
+from train.mdp import (TerminationState, action_to_qpos, build_observation,
+                       compute_reward, observation_dim, qpos_to_action,
+                       update_termination_state)
+from train.obs import is_belly_up, is_pose_stable, quat_to_euler_xyz
 from train.types import RobotState
 import gymnasium as gym
 
@@ -78,23 +79,12 @@ class ActionFilterButter:
         return y.astype(np.float32)
 
 
-def action_to_qpos(action: np.ndarray, cfg: Go2Config) -> np.ndarray:
-    action = np.clip(action, -1.0, 1.0)
-    return np.clip(cfg.init_qpos + action * cfg.action_offset,
-                   cfg.action_joint_min, cfg.action_joint_max)
-
-
-def qpos_to_action(q_target: np.ndarray, cfg: Go2Config) -> np.ndarray:
-    action = (np.asarray(q_target, dtype=np.float32) - cfg.init_qpos) / np.maximum(
-        cfg.action_offset, 1e-6)
-    return np.clip(action, -1.0, 1.0).astype(np.float32)
-
-
 class Go2Env:
 
     def __init__(self,
                  dds_config: DdsConfig,
                  go2_config: Go2Config | None = None,
+                 train_cfg: TrainConfig | None = None,
                  control_frequency: float = 20.0,
                  max_episode_steps: int = 400,
                  ipc_socket: str | None = None,
@@ -107,7 +97,9 @@ class Go2Env:
                  standup_timeout_steps: int = 200,
                  abort_on_unstable_reset: bool = True,
                  seed: int = 0):
-        self.cfg = go2_config or load_app_config()[0]
+        loaded_cfg, loaded_train_cfg, _ = load_app_config()
+        self.cfg = go2_config or loaded_cfg
+        self.train_cfg = train_cfg or loaded_train_cfg
         self.dds_config = dds_config
         self.control_dt = 1.0 / control_frequency
         self.control_frequency = control_frequency
@@ -126,7 +118,7 @@ class Go2Env:
         self.observation_space = gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(self.cfg.obs_dim,),
+            shape=(observation_dim(self.train_cfg.observation_spec, self.cfg),),
             dtype=np.float32,
         )
         self.action_space = gym.spaces.Box(
@@ -145,7 +137,8 @@ class Go2Env:
                 highcut=self.cfg.action_filter_highcut,
             )
         self._prev_requested_action = np.zeros(n, dtype=np.float32)
-        self._prev_executed_action = np.zeros(n, dtype=np.float32)
+        self._prev_sent_action = np.zeros(n, dtype=np.float32)
+        self._termination_state = TerminationState()
         self._step_count = 0
         self._steps_since_reset = 0
         self._standup_active = False
@@ -170,6 +163,9 @@ class Go2Env:
     def sample_action(self) -> np.ndarray:
         return np.asarray(self.action_space.sample(), dtype=np.float32)
 
+    def _command(self) -> np.ndarray:
+        return np.asarray([self.cfg.move_speed, 0.0, 0.0], dtype=np.float32)
+
     def _ensure_connected(self) -> None:
         if self._state_reader is None:
             self._state_reader = StateReader(
@@ -178,7 +174,7 @@ class Go2Env:
                                         self.dds_config.interface)
             self._state_reader.wait_for_state(timeout=10.0)
             time.sleep(0.5)
-            self._state_reader.require_fresh_sport_state(
+            self._state_reader.require_fresh_state(
                 self.cfg.sport_state_max_age_ms / 1000.0)
         if self._policy_client is None:
             self._policy_client = PolicyClient(self.ipc_socket)
@@ -289,12 +285,14 @@ class Go2Env:
         self._standup_step_count = 0
         self._belly_up_count = 0
         self._not_belly_up_count = 0
+        self._termination_state.reset()
         self._last_policy_send_time = None
         if not preserve_policy_state:
             self._prev_requested_action = np.zeros(self.cfg.num_joints,
                                                    dtype=np.float32)
-            self._prev_executed_action = np.zeros(self.cfg.num_joints,
-                                                  dtype=np.float32)
+            self._prev_sent_action = np.zeros(self.cfg.num_joints,
+                                              dtype=np.float32)
+            self._termination_state.reset()
             self._init_action_filter()
 
         if standup:
@@ -306,8 +304,14 @@ class Go2Env:
             if self._action_filter is not None and not preserve_policy_state:
                 self._action_filter.init_history(state.joint_q)
 
-        obs = build_observation(state, self._prev_requested_action, self.cfg,
-                                self._prev_executed_action)
+        obs = build_observation(
+            state,
+            self._prev_requested_action,
+            self._prev_sent_action,
+            self.cfg,
+            spec=self.train_cfg.observation_spec,
+            command=self._command(),
+        )
         return obs.astype(np.float32), {
             'standup': standup,
             'with_recovery': with_recovery,
@@ -361,7 +365,7 @@ class Go2Env:
         assert self._state_reader is not None
 
         state = self._state_reader.get_state()
-        executed_q_target = state.joint_q.copy()
+        sent_q_target = state.joint_q.copy()
         action_interval_ms = float('nan')
 
         if self._standup_active:
@@ -386,7 +390,7 @@ class Go2Env:
                 q_send = state.joint_q + delta
             else:
                 q_send = q_desired
-            executed_q_target = self._send_q_target(q_send)
+            sent_q_target = self._send_q_target(q_send)
 
         hold_start = time.perf_counter()
         if policy_step and during_hold is not None:
@@ -394,25 +398,27 @@ class Go2Env:
         hold_elapsed = time.perf_counter() - hold_start
         hold_overrun_s = max(0.0, hold_elapsed - self.control_dt)
         time.sleep(max(0.0, self.control_dt - hold_elapsed))
-        self._state_reader.require_fresh_sport_state(
+        self._state_reader.require_fresh_state(
             self.cfg.sport_state_max_age_ms / 1000.0)
         state = self._state_reader.get_state()
         belly_up = is_belly_up(state, self.cfg)
         if self._standup_active:
             self._tick_standup(state)
-        executed_action = (qpos_to_action(executed_q_target, self.cfg)
-                           if policy_step else policy_action)
-        self._prev_requested_action = policy_action
-        self._prev_executed_action = executed_action
-        obs = build_observation(state, policy_action, self.cfg,
-                                executed_action)
-        reward, reward_info = get_run_reward_from_state(state, self.cfg)
+        sent_action = (qpos_to_action(sent_q_target, self.cfg)
+                       if policy_step else policy_action)
+        obs = build_observation(
+            state,
+            policy_action,
+            sent_action,
+            self.cfg,
+            spec=self.train_cfg.observation_spec,
+            command=self._command(),
+        )
         self._steps_since_reset += 1
         if policy_step:
             self._step_count += 1
 
         past_grace = self._steps_since_reset > self.reset_grace_steps
-        fallen = past_grace and is_fallen(state, self.cfg)
         standup_timed_out = False
         if (self._standup_active
                 and self._standup_step_count >= self.standup_timeout_steps):
@@ -427,16 +433,35 @@ class Go2Env:
             self._standup_step_count = 0
             self._not_belly_up_count = 0
 
-        terminated = fallen or standup_timed_out or (policy_step and past_grace
-                                                    and belly_up)
+        terminated, truncated, termination_reason, termination_info = (
+            update_termination_state(
+                state,
+                self.cfg,
+                self.train_cfg,
+                self._termination_state,
+                past_grace=past_grace,
+                policy_step=policy_step,
+                step_count=self._step_count,
+            )
+        )
+        terminated = bool(terminated or standup_timed_out)
         truncated = self._step_count >= self.max_episode_steps
-        terminal_penalty = get_terminal_penalty(
-            terminated=terminated, cfg=self.cfg)
-        reward += terminal_penalty
-        reward_info['terminal_penalty'] = float(terminal_penalty)
+        if standup_timed_out:
+            termination_reason = 'standup_timeout'
+        reward, reward_info, costs = compute_reward(
+            state,
+            self.cfg,
+            self.train_cfg,
+            command=self._command(),
+            requested_action=policy_action,
+            previous_sent_action=self._prev_sent_action,
+            terminated=terminated,
+        )
+        self._prev_requested_action = policy_action
+        self._prev_sent_action = sent_action
 
         return obs.astype(np.float32), float(reward), bool(terminated), bool(truncated), {
-            'is_fallen': fallen,
+            'is_fallen': bool(terminated and not truncated),
             'is_belly_up': belly_up,
             'is_recovering': self._standup_active,
             'standup_with_recovery': self._standup_with_recovery,
@@ -444,14 +469,25 @@ class Go2Env:
             'policy_step': policy_step,
             'terminated': terminated,
             'truncated': truncated,
+            'termination_reason': termination_reason,
             'projected_action': policy_action.copy(),
-            'executed_q_target': executed_q_target.copy(),
-            'executed_q_target_norm': float(np.linalg.norm(executed_q_target)),
+            'sent_q_target': sent_q_target.copy(),
+            'executed_q_target': sent_q_target.copy(),
+            'sent_q_target_norm': float(np.linalg.norm(sent_q_target)),
+            'executed_q_target_norm': float(np.linalg.norm(sent_q_target)),
             'intervention_mask': bool(
-                policy_step and np.linalg.norm(executed_action - policy_action)
+                policy_step and np.linalg.norm(sent_action - policy_action)
                 > 1e-5),
+            'costs': costs,
             'sport_state_age_ms': float(
                 self._state_reader.sport_state_age() * 1000.0),
+            'low_state_age_ms': float(
+                self._state_reader.low_state_age() * 1000.0),
+            'state_sync_delta_ms': float(
+                abs(state.low_state_timestamp - state.sport_state_timestamp)
+                * 1000.0),
+            'low_state_count': float(state.low_state_count),
+            'sport_state_count': float(state.sport_state_count),
             'action_interval_ms': action_interval_ms,
             'action_frequency_hz': (
                 1000.0 / action_interval_ms
@@ -463,6 +499,7 @@ class Go2Env:
             'world_z': float(state.world_position[2]),
             'step_count': self._step_count,
             'standup_step_count': self._standup_step_count,
+            **termination_info,
             **reward_info,
         }
 

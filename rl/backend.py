@@ -10,6 +10,7 @@ import numpy as np
 @runtime_checkable
 class AgentBackend(Protocol):
     agent_type: str
+    owns_replay_buffer: bool
 
     def sample_actions(
             self, observation: np.ndarray) -> tuple[np.ndarray, 'AgentBackend']:
@@ -18,8 +19,16 @@ class AgentBackend(Protocol):
     def eval_actions(self, observation: np.ndarray) -> np.ndarray:
         ...
 
-    def update(self, batch: dict, utd_ratio: int) -> tuple['AgentBackend',
-                                                          dict[str, float]]:
+    def process_transition(self, transition: dict) -> None:
+        ...
+
+    def can_start_training(self) -> bool:
+        ...
+
+    def replay_size(self) -> int:
+        ...
+
+    def update(self, *args, **kwargs):
         ...
 
     def state_dict(self) -> dict:

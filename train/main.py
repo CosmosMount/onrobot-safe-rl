@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 
-from train.learner import run_in_process, run_play, run_split
+from train.learner import run_in_process, run_play
 from train.config import load_app_config
 
 
@@ -13,11 +13,10 @@ def _parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Go2 online training')
     parser.add_argument(
         '--mode',
-        choices=('in_process', 'split', 'play'),
+        choices=('in_process', 'play'),
         default='in_process',
-        help=('Runtime layout. in_process keeps collector and learner in one '
-              'process; split runs collector and learner on separate threads; '
-              'play loads a saved policy and runs deterministic rollouts.'),
+        help=('Runtime layout. in_process runs online training; play loads a '
+              'saved policy and runs deterministic rollouts.'),
     )
     parser.add_argument(
         '--config',
@@ -57,8 +56,6 @@ def main(argv=None) -> int:
           f'recovery_stable={train_cfg.recovery_stable_steps}',
           flush=True)
 
-    if args.mode == 'split':
-        return run_split(robot_cfg, train_cfg, agent_cfgs)
     if args.mode == 'play':
         return run_play(
             robot_cfg,

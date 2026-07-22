@@ -39,7 +39,7 @@ def has_legacy_agent_checkpoint(save_dir: str | Path) -> bool:
 def save_training_snapshot(save_dir: str | Path,
                            *,
                            agent: Any,
-                           replay_buffer: Any,
+                           replay_buffer: Any | None,
                            step: int,
                            metadata: dict[str, Any] | None = None) -> Path:
     root = Path(save_dir)
@@ -48,10 +48,11 @@ def save_training_snapshot(save_dir: str | Path,
     payload = {
         'agent_type': getattr(agent, 'agent_type', None),
         'agent_state': agent.state_dict(),
-        'replay_buffer_state': replay_buffer.state_dict(),
         'step': step,
         'metadata': metadata or {},
     }
+    if replay_buffer is not None:
+        payload['replay_buffer_state'] = replay_buffer.state_dict()
     temporary = path.with_suffix(path.suffix + '.tmp')
     try:
         with temporary.open('wb') as f:
@@ -96,11 +97,13 @@ def restore_training_snapshot(path: str | Path,
     elif 'agent' not in payload:
         raise ValueError(
             f'Incomplete training snapshot {path}: missing agent state')
+    owns_replay_buffer = bool(getattr(payload.get('agent'), 'owns_replay_buffer',
+                                      False))
     if 'replay_buffer_state' in payload:
         if replay_buffer is not None:
             replay_buffer.load_state_dict(payload['replay_buffer_state'])
             payload['replay_buffer'] = replay_buffer
-    elif 'replay_buffer' not in payload:
+    elif 'replay_buffer' not in payload and not owns_replay_buffer:
         raise ValueError(
             f'Incomplete training snapshot {path}: missing replay buffer state')
     return payload

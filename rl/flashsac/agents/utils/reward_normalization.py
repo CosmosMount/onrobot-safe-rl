@@ -143,11 +143,23 @@ class RewardNormalizer:
             path (str): The full file path (e.g. "checkpoints/reward_normalizer.pt").
         """
         state = torch.load(path, map_location=self.device)
-        self.G_r = state["G_r"]
-        self.G_r_max = state["G_r_max"]
-        self.G_rms.mean = state["G_rms_mean"]
-        self.G_rms.var = state["G_rms_var"]
-        self.G_rms.count = state["G_rms_count"]
+        self.load_state_dict(state)
+
+    def state_dict(self) -> dict[str, torch.Tensor]:
+        return {
+            "G_r": self.G_r.detach().cpu(),
+            "G_r_max": self.G_r_max.detach().cpu(),
+            "G_rms_mean": self.G_rms.mean.detach().cpu(),
+            "G_rms_var": self.G_rms.var.detach().cpu(),
+            "G_rms_count": self.G_rms.count.detach().cpu(),
+        }
+
+    def load_state_dict(self, state: dict[str, torch.Tensor]) -> None:
+        self.G_r = state["G_r"].to(self.device)
+        self.G_r_max = state["G_r_max"].to(self.device)
+        self.G_rms.mean = state["G_rms_mean"].to(self.device)
+        self.G_rms.var = state["G_rms_var"].to(self.device)
+        self.G_rms.count = state["G_rms_count"].to(self.device)
 
 
 class RunningMeanStd:

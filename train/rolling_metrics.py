@@ -58,6 +58,8 @@ class RollingTrainingSummary:
             'update_ms': float(timing.get('timing/update_ms', np.nan)),
             'loop_ms': float(timing.get('timing/loop_ms', np.nan)),
             'effective_hz': float(timing.get('timing/effective_hz', np.nan)),
+            'real_time_factor': float(
+                timing.get('timing/real_time_factor', np.nan)),
         })
 
     def record_episode(self, episode_return: float, episode_length: int) -> None:
@@ -92,7 +94,7 @@ class RollingTrainingSummary:
         }
         for name in ('critic_loss', 'q', 'actor_loss', 'entropy',
                      'temperature', 'step_ms', 'update_ms', 'loop_ms',
-                     'effective_hz'):
+                     'effective_hz', 'real_time_factor'):
             metrics[f'rolling/{name}_mean'] = _nanmean(
                 [step[name] for step in steps])
         for joint in range(self.action_dim):

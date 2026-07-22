@@ -1,4 +1,4 @@
-"""Online DROQ training loop."""
+"""Online single-process training loop."""
 
 from __future__ import annotations
 
@@ -16,12 +16,12 @@ from train.config import TrainConfig
 from train.logging import TrainLogger
 from train.profiling import StepProfiler
 from train.rolling_metrics import RollingTrainingSummary
-from train.collector.transition_builder import build_transition
 from train.checkpoint import (has_legacy_agent_checkpoint, latest_snapshot,
                               load_training_snapshot_metadata,
                               restore_training_snapshot,
                               save_training_snapshot)
 from train.evaluation import evaluate
+from train.mdp import build_transition, observation_spec_hash
 
 
 def _log(msg: str) -> None:
@@ -49,22 +49,42 @@ def _batch_is_finite(batch: dict) -> bool:
     return True
 
 
+def _agent_owns_replay(agent) -> bool:
+    return bool(getattr(agent, 'owns_replay_buffer', False))
+
+
+def _replay_size(agent, replay_buffer) -> int:
+    if replay_buffer is not None:
+        return len(replay_buffer)
+    replay_size = getattr(agent, 'replay_size', None)
+    return int(replay_size()) if replay_size is not None else 0
+
+
 def _snapshot_metadata(cfg: TrainConfig, env=None) -> dict:
     metadata = {
         'experiment_name': cfg.experiment_name,
+        'runtime_type': cfg.runtime_type,
+        'mdp_version': cfg.mdp_version,
+        'observation_spec': cfg.observation_spec,
+        'observation_spec_hash': observation_spec_hash(cfg.observation_spec),
+        'reward_spec': cfg.reward_spec,
+        'termination_spec': cfg.termination_spec,
+        'sensor_model_version': cfg.sensor_model_version,
         'start_training': cfg.start_training,
         'batch_size': cfg.batch_size,
         'utd_ratio': cfg.utd_ratio,
+        'updates_per_interaction_step': cfg.updates_per_interaction_step,
         'terminal_replay_repeats': cfg.terminal_replay_repeats,
         'seed': cfg.seed,
         'agent_type': cfg.agent,
+        'policy_dt': 1.0 / float(cfg.control_frequency),
     }
     if env is not None:
         metadata['obs_dim'] = int(env.observation_space.shape[0])
     return metadata
 
 
-def _validate_snapshot_metadata(path, metadata: dict, env) -> None:
+def _validate_snapshot_metadata(path, metadata: dict, env, cfg: TrainConfig) -> None:
     snapshot_obs_dim = metadata.get('obs_dim')
     if snapshot_obs_dim is None:
         return
@@ -75,17 +95,41 @@ def _validate_snapshot_metadata(path, metadata: dict, env) -> None:
             f'{path} has obs_dim={snapshot_obs_dim}, '
             f'current obs_dim={current_obs_dim}. Start a new save_dir or '
             'switch back to the code/config that produced this snapshot.')
+    expected = {
+        'mdp_version': cfg.mdp_version,
+        'observation_spec': cfg.observation_spec,
+        'observation_spec_hash': observation_spec_hash(cfg.observation_spec),
+        'reward_spec': cfg.reward_spec,
+        'termination_spec': cfg.termination_spec,
+        'sensor_model_version': cfg.sensor_model_version,
+    }
+    mismatches = {
+        key: (metadata.get(key), value)
+        for key, value in expected.items()
+        if metadata.get(key) is not None and metadata.get(key) != value
+    }
+    if mismatches:
+        details = ', '.join(
+            f'{key}: snapshot={old!r} current={new!r}'
+            for key, (old, new) in mismatches.items())
+        raise RuntimeError(
+            'Refusing to restore a snapshot with incompatible MDP metadata: '
+            f'{path} differs in {details}. Start a new save_dir or restore '
+            'with the matching MDP config.')
 
 
 def _apply_agent_update(agent, batch, cfg: TrainConfig, source_step: int):
     """Apply one complete UTD update and report whether the agent corrupted."""
     update_t0 = time.perf_counter()
-    if not _batch_is_finite(batch):
+    if batch is not None and not _batch_is_finite(batch):
         _log(f'[train] WARNING: non-finite batch at step {source_step}, '
              'skip update')
         return agent, None, False, time.perf_counter() - update_t0
 
-    agent, update_info = agent.update(batch, cfg.utd_ratio)
+    if _agent_owns_replay(agent):
+        update_info = agent.update()
+    else:
+        agent, update_info = agent.update(batch, cfg.utd_ratio)
     corrupted = (
         update_info is not None
         and not all(
@@ -108,7 +152,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
         latest = latest_snapshot(cfg.save_dir)
         if latest is not None:
             metadata = load_training_snapshot_metadata(latest)
-            _validate_snapshot_metadata(latest, metadata, env)
+            _validate_snapshot_metadata(latest, metadata, env, cfg)
             snapshot_experiment = metadata.get('experiment_name')
             if snapshot_experiment not in (None, cfg.experiment_name):
                 raise RuntimeError(
@@ -118,7 +162,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
             snapshot = restore_training_snapshot(
                 latest, agent=agent, replay_buffer=replay_buffer)
             agent = snapshot['agent']
-            replay_buffer = snapshot['replay_buffer']
+            replay_buffer = snapshot.get('replay_buffer', replay_buffer)
             start_i = int(snapshot['step'])
             _log(f'[train] resumed complete snapshot {latest} step {start_i}')
         elif has_legacy_agent_checkpoint(cfg.save_dir):
@@ -132,12 +176,13 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
         if latest is not None:
             _log(f'[train] starting from scratch; ignoring checkpoint {latest}')
 
+    owns_replay = _agent_owns_replay(agent)
     update_batch_size = cfg.batch_size * cfg.utd_ratio
     inner = getattr(env, '_env', env)
     control_dt = inner.control_dt
     control_frequency = inner.control_frequency
     profiler = StepProfiler(control_dt=control_dt,
-                            utd_ratio=cfg.utd_ratio,
+                            utd_ratio=1 if owns_replay else cfg.utd_ratio,
                             enabled=cfg.profile or cfg.benchmark_only)
     logger = TrainLogger(
         enabled=cfg.wandb and not cfg.benchmark_only,
@@ -146,11 +191,18 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
         config={
             'experiment_name': cfg.experiment_name,
             'agent': cfg.agent,
+            'runtime_type': cfg.runtime_type,
+            'mdp_version': cfg.mdp_version,
+            'observation_spec': cfg.observation_spec,
+            'reward_spec': cfg.reward_spec,
+            'termination_spec': cfg.termination_spec,
+            'sensor_model_version': cfg.sensor_model_version,
             'seed': cfg.seed,
             'max_steps': cfg.max_steps,
             'start_training': cfg.start_training,
             'batch_size': cfg.batch_size,
             'utd_ratio': cfg.utd_ratio,
+            'updates_per_interaction_step': cfg.updates_per_interaction_step,
             'terminal_replay_repeats': cfg.terminal_replay_repeats,
             'metrics_interval': cfg.metrics_interval,
             'explore_action_scale': cfg.explore_action_scale,
@@ -167,6 +219,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
          f'start_training={cfg.start_training} '
          f'explore_action_scale={cfg.explore_action_scale} '
          f'log_interval={cfg.log_interval} utd_ratio={cfg.utd_ratio} '
+         f'updates_per_interaction_step={cfg.updates_per_interaction_step} '
          f'terminal_replay_repeats={cfg.terminal_replay_repeats} '
          f'pipeline_updates={cfg.pipeline_updates} '
          f'no_eval={cfg.no_eval} profile={cfg.profile}')
@@ -181,6 +234,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
     )
     done = False
     pending_update = None
+    flash_update_credit = 0.0
 
     def apply_pending_update():
         nonlocal agent, pending_update, policy_corrupted
@@ -265,17 +319,35 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                                               projected_action=info.get(
                                                   'projected_action'),
                                               executed_q_target=info.get(
-                                                  'executed_q_target'))
-                replay_item = transition.replay_dict()
-                repeats = max(1, int(cfg.terminal_replay_repeats)
-                              if transition.terminated else 1)
-                for _ in range(repeats):
-                    replay_buffer.insert(replay_item)
+                                                  'executed_q_target'),
+                                              sent_q_target=info.get(
+                                                  'sent_q_target'))
+                if owns_replay:
+                    agent.process_transition(transition.flashsac_dict())
+                    if i >= cfg.start_training:
+                        flash_update_credit += float(
+                            cfg.updates_per_interaction_step)
+                else:
+                    replay_item = transition.replay_dict()
+                    repeats = max(1, int(cfg.terminal_replay_repeats)
+                                  if transition.terminated else 1)
+                    for _ in range(repeats):
+                        replay_buffer.insert(replay_item)
             elif i >= cfg.start_training:
                 skip_update = True
             observation = next_observation
 
-            if (not skip_update and i >= cfg.start_training
+            if (owns_replay and not skip_update and i >= cfg.start_training
+                    and agent.can_start_training()):
+                while flash_update_credit >= 1.0:
+                    agent, update_info, corrupted, update_elapsed = (
+                        _apply_agent_update(agent, None, cfg, i))
+                    flash_update_credit -= 1.0
+                    if corrupted:
+                        policy_corrupted = True
+                        break
+                    profiler.record_update(update_elapsed)
+            elif (not owns_replay and not skip_update and i >= cfg.start_training
                     and len(replay_buffer) > 0):
                 batch = replay_buffer.sample_jax(update_batch_size)
                 if cfg.pipeline_updates:
@@ -309,7 +381,8 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                      f'|action|={float(np.linalg.norm(action)):.2f} '
                      f'recovering={info.get("is_recovering", False)} '
                      f'policy_len={info.get("step_count", 0)} '
-                     f'ep_return={episode_return:.2f} buffer={len(replay_buffer)}')
+                     f'ep_return={episode_return:.2f} '
+                     f'buffer={_replay_size(agent, replay_buffer)}')
 
             metrics_due = (
                 cfg.metrics_interval <= 1
@@ -318,7 +391,8 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                 or i == max_steps - 1
             )
             rolling_metrics = (
-                rolling.metrics(len(replay_buffer)) if metrics_due else {})
+                rolling.metrics(_replay_size(agent, replay_buffer))
+                if metrics_due else {})
             if metrics_due:
                 log_metrics: dict[str, float] = {
                     'env/reward': float(reward),
@@ -342,7 +416,37 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                         info.get('action_frequency_hz', np.nan)),
                     'env/control_hold_overrun_ms': float(
                         info.get('control_hold_overrun_ms', 0.0)),
+                    'env/low_state_age_ms': float(
+                        info.get('low_state_age_ms', np.nan)),
+                    'env/sport_state_age_ms': float(
+                        info.get('sport_state_age_ms', np.nan)),
+                    'env/state_sync_delta_ms': float(
+                        info.get('state_sync_delta_ms', np.nan)),
+                    'env/low_state_count': float(
+                        info.get('low_state_count', 0.0)),
+                    'env/sport_state_count': float(
+                        info.get('sport_state_count', 0.0)),
+                    'env/safety_penalty': float(
+                        info.get('safety_penalty', 0.0)),
+                    'env/tracking_lin_vel': float(
+                        info.get('tracking_lin_vel', 0.0)),
+                    'env/tracking_yaw': float(
+                        info.get('tracking_yaw', 0.0)),
+                    'env/orientation_cost': float(
+                        info.get('orientation_cost', 0.0)),
+                    'env/action_rate_cost': float(
+                        info.get('action_rate_cost', 0.0)),
+                    'env/joint_limit_cost': float(
+                        info.get('joint_limit_cost', 0.0)),
+                    'env/joint_velocity_cost': float(
+                        info.get('joint_velocity_cost', 0.0)),
+                    'env/roll': float(info.get('roll', 0.0)),
+                    'env/pitch': float(info.get('pitch', 0.0)),
+                    'env/tilt_violation_frames': float(
+                        info.get('tilt_violation_frames', 0.0)),
                 }
+                for cost_key, cost_value in (info.get('costs') or {}).items():
+                    log_metrics[f'cost/{cost_key}'] = float(cost_value)
                 if update_info is not None:
                     for k, v in update_info.items():
                         fv = float(v) if hasattr(v, 'item') else float(v)
@@ -367,6 +471,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                     _log(f'[step {i}] timing step_ms={timing["timing/step_ms"]:.1f} '
                          f'update_ms={timing["timing/update_ms"]:.1f} '
                          f'effective_hz={timing["timing/effective_hz"]:.1f} '
+                         f'rtf={timing["timing/real_time_factor"]:.2f} '
                          f'critic/s={timing["timing/critic_updates_per_sec"]:.0f}')
             if i % cfg.log_interval == 0 and rolling_metrics:
                 _log(
@@ -377,6 +482,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                     f'action_sat={rolling_metrics["rolling/action_saturation_rate"]:.3f} '
                     f'falls={int(rolling_metrics["rolling/falls_total"])} '
                     f'loop_hz={rolling_metrics["rolling/effective_hz_mean"]:.1f} '
+                    f'rtf={rolling_metrics["rolling/real_time_factor_mean"]:.2f} '
                     f'action_hz={rolling_metrics["rolling/action_frequency_hz_mean"]:.1f}')
 
             if done:
@@ -471,6 +577,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
         _log('[benchmark] done')
         if timing:
             _log(f'[benchmark] effective_hz={timing["timing/effective_hz"]:.2f} '
+                 f'rtf={timing["timing/real_time_factor"]:.2f} '
                  f'update_ms={timing["timing/update_ms"]:.1f} '
                  f'critic/s={timing["timing/avg_critic_updates_per_sec"]:.0f}')
 

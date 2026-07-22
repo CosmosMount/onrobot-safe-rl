@@ -224,5 +224,37 @@ class TorchUniformBuffer(BaseBuffer):
         # At most (n_step - 1) in-flight transitions are lost, which is negligible.
         self._n_step_transitions.clear()
 
+    def state_dict(self) -> dict[str, Any]:
+        n = self._num_in_buffer
+        return {
+            "observation": self._observations[:n].detach().cpu(),
+            "action": self._actions[:n].detach().cpu(),
+            "reward": self._rewards[:n].detach().cpu(),
+            "terminated": self._terminateds[:n].detach().cpu(),
+            "truncated": self._truncateds[:n].detach().cpu(),
+            "next_observation": self._next_observations[:n].detach().cpu(),
+            "num_in_buffer": self._num_in_buffer,
+            "current_idx": self._current_idx,
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> "TorchUniformBuffer":
+        n = int(state["num_in_buffer"])
+        if n > self._max_length:
+            raise ValueError(
+                f"buffer size mismatch: checkpoint={n} "
+                f"current_capacity={self._max_length}")
+
+        self._observations[:n] = state["observation"].to(self._device)
+        self._next_observations[:n] = state["next_observation"].to(self._device)
+        self._actions[:n] = state["action"].to(self._device)
+        self._rewards[:n] = state["reward"].to(self._device)
+        self._terminateds[:n] = state["terminated"].to(self._device)
+        self._truncateds[:n] = state["truncated"].to(self._device)
+
+        self._num_in_buffer = n
+        self._current_idx = int(state["current_idx"])
+        self._n_step_transitions.clear()
+        return self
+
     def get_observations(self) -> torch.Tensor:
         return self._observations[: self._num_in_buffer]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any
+from typing import Any, Mapping
 
 import gymnasium as gym
 import numpy as np
@@ -61,6 +61,7 @@ def _as_numpy(value: Any) -> np.ndarray:
 
 class FlashSACBackend:
     agent_type = 'flashsac'
+    owns_replay_buffer = True
 
     def __init__(
         self,
@@ -106,15 +107,25 @@ class FlashSACBackend:
         )[0]
         return np.asarray(action, dtype=np.float32)
 
-    def update(self, batch: dict, utd_ratio: int) -> tuple['FlashSACBackend', dict[str, float]]:
-        transition = self._transition_from_batch(batch)
-        self._agent.process_transition(transition)
+    def process_transition(self, transition: Mapping[str, Any]) -> None:
+        self._agent.process_transition(
+            self._normalize_transition_shape(transition))
 
-        metrics: dict[str, float] = {}
-        if self._agent.can_start_training():
-            for _ in range(int(utd_ratio)):
-                metrics.update(self._agent.update())
-        return self, metrics
+    def can_start_training(self) -> bool:
+        return self._agent.can_start_training()
+
+    def replay_size(self) -> int:
+        return len(self._agent._replay_buffer)
+
+    def update(self, *args: Any, **kwargs: Any) -> dict[str, float]:
+        if args or kwargs:
+            raise RuntimeError(
+                'FlashSAC updates from its internal replay buffer. '
+                'Call process_transition() once per environment step, '
+                'then call update() without external batches.')
+        if not self._agent.can_start_training():
+            return {}
+        return self._agent.update()
 
     def state_dict(self) -> dict:
         agent = self._agent
@@ -126,6 +137,7 @@ class FlashSACBackend:
             'target_critic': self._network_state(agent._target_critic),
             'temperature': self._network_state(agent._temperature),
             'grad_scaler': deepcopy(agent._grad_scaler.state_dict()),
+            'replay_buffer': agent._replay_buffer.state_dict(),
         }
         if agent.reward_normalizer is not None:
             state['reward_normalizer'] = deepcopy(agent.reward_normalizer.state_dict())
@@ -140,20 +152,34 @@ class FlashSACBackend:
         self._load_network_state(agent._target_critic, state['target_critic'])
         self._load_network_state(agent._temperature, state['temperature'])
         agent._grad_scaler.load_state_dict(state.get('grad_scaler', {}))
+        if 'replay_buffer' in state:
+            agent._replay_buffer.load_state_dict(state['replay_buffer'])
+        if (agent.reward_normalizer is not None
+                and 'reward_normalizer' in state):
+            agent.reward_normalizer.load_state_dict(state['reward_normalizer'])
         return self
 
     @staticmethod
-    def _transition_from_batch(batch: dict) -> dict[str, np.ndarray]:
-        rewards = _as_numpy(batch['rewards']).astype(np.float32)
-        dones = _as_numpy(batch.get('dones', np.zeros_like(rewards))).astype(bool)
-        return {
-            'observation': _as_numpy(batch['observations']).astype(np.float32),
-            'action': _as_numpy(batch['actions']).astype(np.float32),
-            'reward': rewards,
-            'terminated': dones.astype(np.float32),
-            'truncated': np.zeros_like(rewards, dtype=np.float32),
-            'next_observation': _as_numpy(batch['next_observations']).astype(np.float32),
-        }
+    def _normalize_transition_shape(
+            transition: Mapping[str, Any]) -> dict[str, np.ndarray]:
+        normalized: dict[str, np.ndarray] = {}
+        for key in (
+                'observation',
+                'action',
+                'reward',
+                'terminated',
+                'truncated',
+                'next_observation'):
+            if key not in transition:
+                raise KeyError(f'Missing FlashSAC transition field: {key}')
+            value = _as_numpy(transition[key]).astype(np.float32)
+            if key in {'observation', 'action', 'next_observation'}:
+                if value.ndim == 1:
+                    value = value[None, ...]
+            elif value.ndim == 0:
+                value = value[None]
+            normalized[key] = value
+        return normalized
 
     @staticmethod
     def _network_state(network) -> dict:

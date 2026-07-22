@@ -54,6 +54,8 @@ class ReplayBuffer(Dataset):
             rewards=np.empty((capacity, ), dtype=np.float32),
             masks=np.empty((capacity, ), dtype=np.float32),
             dones=np.empty((capacity, ), dtype=bool),
+            terminateds=np.empty((capacity, ), dtype=bool),
+            truncateds=np.empty((capacity, ), dtype=bool),
         )
 
         super().__init__(dataset_dict)
@@ -110,8 +112,12 @@ def _load_recursively(target: DatasetDict, source: DatasetDict, size: int) -> No
     if isinstance(target, np.ndarray) and isinstance(source, np.ndarray):
         target[:size] = source[:size]
     elif isinstance(target, dict) and isinstance(source, dict):
-        assert target.keys() == source.keys()
         for key in target.keys():
-            _load_recursively(target[key], source[key], size)
+            if key in source:
+                _load_recursively(target[key], source[key], size)
+            elif key in ('terminateds', 'truncateds'):
+                target[key][:size] = False
+            else:
+                raise KeyError(f'Missing replay field in checkpoint: {key}')
     else:
         raise TypeError()
