@@ -45,6 +45,13 @@ class Go2Config:
     reward_upright_min_cos: float    # minimum body-up cosine for forward reward
     fall_terminal_penalty: float     # reward added on true failure termination
     action_filter_highcut: float     # Hz
+    safety_joint_limit_margin_rad: float = 0.10
+    safety_joint_velocity_rad_s: float = 25.0
+    safety_torque_nm: float = 35.0
+    safety_power_w: float = 350.0
+    safety_impact_accel_m_s2: float = 8.0
+    safety_angular_velocity_rad_s: float = 5.0
+    safety_base_height_m: float = 0.18
     sport_state_max_age_ms: float = 250.0
     sport_velocity_world_frame: bool = True  # unitree_mujoco framelinvel is world frame
 
@@ -87,6 +94,33 @@ class TrainConfig:
     batch_size: int = 256
     utd_ratio: int = 20
     buffer_size: int = 1_000_000
+    safety_replay_enabled: bool = True
+    safety_recent_capacity: int = 20_000
+    safety_failure_capacity: int = 20_000
+    safety_boundary_capacity: int = 20_000
+    safety_recovery_capacity: int = 10_000
+    safety_failure_history: int = 32
+    safety_critic_enabled: bool = True
+    safety_critic_batch_size: int = 256
+    safety_critic_update_interval: int = 1
+    safety_critic_learning_rate: float = 3e-4
+    safety_critic_hidden_dims: tuple[int, ...] = (256, 256)
+    safety_discount: float = 0.99
+    safety_critic_tau: float = 0.005
+    safety_critic_n_step: int = 8
+    safety_future_loss_weight: float = 0.5
+    safety_eval_horizon: int = 32
+    safety_eval_output_dir: str = 'saved/safety_evaluation'
+    safety_eval_min_auroc: float = 0.70
+    safety_eval_min_warning_delta: float = 0.05
+    safety_collection_action_noise_std: float = 0.35
+    safety_mask_num_candidates: int = 32
+    safety_mask_epsilon: float = 0.30
+    safety_mask_local_action_std: float = 0.15
+    safety_mask_risk_penalty: float = 1.0
+    safety_mask_action_delta_penalty: float = 1.0
+    safety_mask_fallback_contraction: float = 0.9
+    safety_mask_fallback_emergency_risk: float = 0.5
     log_interval: int = 100
     metrics_interval: int = 1
     rolling_summary_window: int = 1000
@@ -136,6 +170,8 @@ def _parse_robot(root: dict[str, Any]) -> Go2Config:
 
     imu_node = root.get('imu') or {}
 
+    safety_node = root.get('safety_logging') or {}
+
     return Go2Config(
         init_qpos=init_qpos,
         action_offset=action_offset,
@@ -164,6 +200,18 @@ def _parse_robot(root: dict[str, Any]) -> Go2Config:
         fall_terminal_penalty=float(
             root.get('fall_terminal_penalty', -10.0)),
         action_filter_highcut=float(root.get('action_filter_highcut', 4.0)),
+        safety_joint_limit_margin_rad=float(
+            safety_node.get('joint_limit_margin_rad', 0.10)),
+        safety_joint_velocity_rad_s=float(
+            safety_node.get('joint_velocity_rad_s', 25.0)),
+        safety_torque_nm=float(safety_node.get('torque_nm', 35.0)),
+        safety_power_w=float(safety_node.get('power_w', 350.0)),
+        safety_impact_accel_m_s2=float(
+            safety_node.get('impact_accel_m_s2', 8.0)),
+        safety_angular_velocity_rad_s=float(
+            safety_node.get('angular_velocity_rad_s', 5.0)),
+        safety_base_height_m=float(
+            safety_node.get('base_height_m', 0.18)),
         sport_state_max_age_ms=float(root.get('sport_state_max_age_ms',
                                               250.0)),
         sport_velocity_world_frame=bool(
@@ -185,6 +233,8 @@ def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, Any]]:
             value = _optional_float(value)
         elif key == 'wandb_run_name' and value == 'null':
             value = None
+        elif key == 'safety_critic_hidden_dims':
+            value = tuple(value)
         setattr(cfg, key, value)
 
     droq_cfg = dict(droq)

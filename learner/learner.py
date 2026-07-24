@@ -10,11 +10,15 @@ import time
 from pathlib import Path
 
 import numpy as np
+import jax
 
 from collector.legacy_env import build_legacy_env
-from collector.transition_builder import build_transition
+from collector.transition_builder import build_transition, reason_from_info
 from jaxrl.agents import DroQLearner
+from jaxrl.agents.safety_critic import SafetyCritic
+from jaxrl.agents.action_masking import select_masked_action
 from jaxrl.data import ReplayBuffer
+from jaxrl.data.safety_replay import SafetyReplayManager
 from jaxrl.env.env import prepare_env
 from learner.checkpoint import (latest_snapshot, load_training_snapshot_metadata,
                                 restore_training_snapshot,
@@ -26,6 +30,8 @@ from train.loop import (_apply_agent_update, _is_finite_array,
 from train.profiling import StepProfiler
 from train.rolling_metrics import RollingTrainingSummary
 from train.warmup import warmup_agent
+from train.safety_evaluation import (SafetyEvalRecord, analyze_records,
+                                     write_evaluation_artifacts)
 
 
 class UpdateCredit:
@@ -64,7 +70,6 @@ def run_in_process(robot_cfg, train_cfg, droq_cfg) -> int:
     env = prepare_env(build_legacy_env(robot_cfg, train_cfg, train_cfg.seed),
                       rescale_actions=False,
                       seed=train_cfg.seed)
-
     def _shutdown_handler(signum, frame):
         print(f'\n[train] shutting down (signal {signum}), closing IPC...',
               flush=True)
@@ -156,13 +161,359 @@ def run_play(robot_cfg,
     return 0
 
 
+def run_safety_eval(robot_cfg,
+                    train_cfg,
+                    droq_cfg,
+                    *,
+                    checkpoint: str | None = None,
+                    episodes: int = 10,
+                    action_noise_std: float = 0.0,
+                    rollout_seed: int | None = None,
+                    safety_mask: bool = False,
+                    safety_mask_epsilon: float | None = None) -> int:
+    """Evaluate Q_safe without changing the policy or executed action."""
+    env = prepare_env(build_legacy_env(robot_cfg, train_cfg, train_cfg.seed),
+                      rescale_actions=False, seed=train_cfg.seed)
+    agent = DroQLearner.create(
+        train_cfg.seed, env.observation_spec, env.action_spec, **droq_cfg)
+    safety_critic = SafetyCritic.create(
+        seed=train_cfg.seed + 10_000,
+        observation_dim=int(env.observation_space.shape[0]),
+        action_dim=int(env.action_space.shape[0]),
+        hidden_dims=train_cfg.safety_critic_hidden_dims,
+        learning_rate=train_cfg.safety_critic_learning_rate,
+        discount=train_cfg.safety_discount,
+        tau=train_cfg.safety_critic_tau,
+        future_loss_weight=train_cfg.safety_future_loss_weight)
+    path = Path(checkpoint) if checkpoint else latest_snapshot(
+        train_cfg.save_dir)
+    if path is None:
+        raise RuntimeError('No checkpoint available for safety evaluation.')
+    snapshot = restore_training_snapshot(
+        path, agent=agent, safety_critic=safety_critic)
+    if 'safety_critic_state' not in snapshot:
+        env.close()
+        raise RuntimeError(
+            f'{path} contains a policy but no trained Q_safe. Resume Stage 1 '
+            'training with the Step 4 code before running safety_eval.')
+    agent = snapshot['agent']
+    safety_critic = snapshot['safety_critic']
+    records: list[SafetyEvalRecord] = []
+    eval_seed = (
+        train_cfg.seed + 30_000 if rollout_seed is None else rollout_seed)
+    rng = np.random.default_rng(eval_seed)
+    mask_rng = jax.random.PRNGKey(eval_seed + 1)
+    mask_epsilon = (
+        train_cfg.safety_mask_epsilon
+        if safety_mask_epsilon is None else float(safety_mask_epsilon))
+    # A previous process may have exited immediately after a fall. Start every
+    # independent evaluation from the existing scripted standup boundary.
+    reset_kwargs = {'standup': True, 'grace_period': True}
+    try:
+        for episode in range(episodes):
+            observation = env.reset(**reset_kwargs)
+            reset_kwargs = {}
+            done = False
+            step = 0
+            last_info = {}
+            previous_action = np.zeros(
+                env.action_space.shape, dtype=np.float32)
+            while not done:
+                # Deterministic converged policy; Q_safe is read-only.
+                mask_info = {}
+                if safety_mask:
+                    action, mask_info, mask_rng = select_masked_action(
+                        agent, safety_critic, observation, mask_rng,
+                        num_candidates=train_cfg.safety_mask_num_candidates,
+                        epsilon_safe=mask_epsilon,
+                        # The shield selects a commanded action before the
+                        # target-setting actuator disturbance is realized.
+                        action_noise_std=0.0,
+                        previous_action=previous_action,
+                        local_action_std=(
+                            train_cfg.safety_mask_local_action_std),
+                        risk_penalty=train_cfg.safety_mask_risk_penalty,
+                        action_delta_penalty=(
+                            train_cfg.safety_mask_action_delta_penalty),
+                        fallback_contraction=(
+                            train_cfg.safety_mask_fallback_contraction),
+                        fallback_emergency_risk=(
+                            train_cfg.safety_mask_fallback_emergency_risk))
+                else:
+                    action = np.clip(
+                        agent.eval_actions(observation), -1.0, 1.0)
+                if action_noise_std > 0.0:
+                    action = np.clip(
+                        action + rng.normal(
+                            0.0, action_noise_std, size=action.shape),
+                        -1.0, 1.0).astype(np.float32)
+                q_safe = float(safety_critic.predict(
+                    np.asarray(observation)[None],
+                    np.asarray(action)[None])[0])
+                observation, reward, done, info = env.step(action)
+                last_info = info
+                if info.get('policy_step', True):
+                    records.append(SafetyEvalRecord(
+                        episode=episode, step=step, q_safe=q_safe,
+                        unsafe=bool(info.get('unsafe_label', False)),
+                        boundary=bool(info.get('near_failure_label', False)),
+                        intervention=bool(info.get('intervention_mask', False)),
+                        termination_reason=int(reason_from_info(info)),
+                        reward=float(reward),
+                        mask_rejected_fraction=float(
+                            mask_info.get('mask_rejected_fraction', 0.0)),
+                        no_safe_candidate=bool(
+                            mask_info.get('no_safe_candidate', False)),
+                        selected_q_safe=float(
+                            mask_info.get('selected_Q_safe', q_safe)),
+                        selected_action_delta=float(
+                            mask_info.get('selected_action_delta', 0.0)),
+                        fallback_previous=bool(
+                            mask_info.get('fallback_previous', False)),
+                        fallback_min_risk=bool(
+                            mask_info.get('fallback_min_risk', False))))
+                    step += 1
+                    previous_action = np.asarray(
+                        action, dtype=np.float32).copy()
+            reset_kwargs = {
+                'standup': bool(last_info.get('terminated', False)
+                                or last_info.get('standup_timed_out', False)),
+                'with_recovery': bool(last_info.get('is_belly_up', False)),
+                'grace_period': not bool(last_info.get('truncated', False)),
+                'preserve_policy_state': bool(
+                    last_info.get('truncated', False)),
+            }
+            print(f'[safety_eval] episode={episode + 1}/{episodes} '
+                  f'steps={step} unsafe={last_info.get("unsafe_label", False)}',
+                  flush=True)
+        if not records:
+            raise RuntimeError('Safety evaluation collected no policy steps.')
+        report = analyze_records(
+            records, train_cfg.safety_eval_horizon,
+            train_cfg.safety_eval_min_auroc,
+            train_cfg.safety_eval_min_warning_delta)
+        paths = write_evaluation_artifacts(
+            records, report, train_cfg.safety_eval_output_dir)
+        print(f'[safety_eval] {report["gate"]["decision"]}', flush=True)
+        print(f'[safety_eval] action_noise_std={action_noise_std}', flush=True)
+        print(f'[safety_eval] rollout_seed={eval_seed}', flush=True)
+        print(f'[safety_eval] safety_mask={safety_mask} '
+              f'K={train_cfg.safety_mask_num_candidates} '
+              f'epsilon={mask_epsilon}', flush=True)
+        print(f'[safety_eval] report={paths["report"]} '
+              f'figure={paths["figure"]} csv={paths["csv"]}', flush=True)
+    finally:
+        env.close()
+    return 0
+
+
+def run_safety_collection(robot_cfg,
+                          train_cfg,
+                          droq_cfg,
+                          *,
+                          checkpoint: str | None = None,
+                          episodes: int = 5,
+                          action_noise_std: float | None = None,
+                          rollout_seed: int | None = None,
+                          safety_mask: bool = False,
+                          safety_mask_epsilon: float | None = None) -> int:
+    """Collect perturbed rollouts while freezing the SAC reward learner."""
+    env = prepare_env(build_legacy_env(robot_cfg, train_cfg, train_cfg.seed),
+                      rescale_actions=False, seed=train_cfg.seed)
+    inner = getattr(env, '_env', env)
+    agent, replay_buffer = build_agent_and_replay(env, train_cfg, droq_cfg)
+    safety_replay = SafetyReplayManager(
+        recent_capacity=train_cfg.safety_recent_capacity,
+        failure_capacity=train_cfg.safety_failure_capacity,
+        boundary_capacity=train_cfg.safety_boundary_capacity,
+        recovery_capacity=train_cfg.safety_recovery_capacity,
+        all_capacity=train_cfg.buffer_size,
+        failure_history=train_cfg.safety_failure_history,
+        n_step=train_cfg.safety_critic_n_step,
+        seed=train_cfg.seed)
+    safety_critic = SafetyCritic.create(
+        seed=train_cfg.seed + 10_000,
+        observation_dim=int(env.observation_space.shape[0]),
+        action_dim=int(env.action_space.shape[0]),
+        hidden_dims=train_cfg.safety_critic_hidden_dims,
+        learning_rate=train_cfg.safety_critic_learning_rate,
+        discount=train_cfg.safety_discount,
+        tau=train_cfg.safety_critic_tau,
+        future_loss_weight=train_cfg.safety_future_loss_weight)
+    path = Path(checkpoint) if checkpoint else latest_snapshot(
+        train_cfg.save_dir)
+    if path is None:
+        env.close()
+        raise RuntimeError('No checkpoint available for safety collection.')
+    snapshot = restore_training_snapshot(
+        path, agent=agent, replay_buffer=replay_buffer,
+        safety_replay=safety_replay, safety_critic=safety_critic)
+    agent = snapshot['agent']
+    replay_buffer = snapshot.get('replay_buffer', replay_buffer)
+    safety_critic = snapshot.get('safety_critic', safety_critic)
+    start_step = int(snapshot['step'])
+    collection_seed = (
+        train_cfg.seed + 20_000 if rollout_seed is None else rollout_seed)
+    rng = np.random.default_rng(collection_seed)
+    noise_std = (
+        train_cfg.safety_collection_action_noise_std
+        if action_noise_std is None else float(action_noise_std))
+    mask_epsilon = (
+        train_cfg.safety_mask_epsilon
+        if safety_mask_epsilon is None else float(safety_mask_epsilon))
+    mask_rng = jax.random.PRNGKey(collection_seed + 1)
+    collected = 0
+    failures = 0
+    boundaries = 0
+    rejected_fraction_sum = 0.0
+    masked_steps = 0
+    no_safe_steps = 0
+    fallback_previous_steps = 0
+    fallback_min_risk_steps = 0
+    # Do not label a simulator pose left fallen by a previous process as a new
+    # policy failure trajectory.
+    reset_kwargs = {'standup': True, 'grace_period': True}
+    try:
+        for episode in range(episodes):
+            observation = env.reset(**reset_kwargs)
+            reset_kwargs = {}
+            done = False
+            last_info = {}
+            episode_steps = 0
+            previous_action = np.zeros(
+                env.action_space.shape, dtype=np.float32)
+            while not done:
+                mask_info = {}
+                if safety_mask:
+                    policy_action, mask_info, mask_rng = select_masked_action(
+                        agent, safety_critic, observation, mask_rng,
+                        num_candidates=train_cfg.safety_mask_num_candidates,
+                        epsilon_safe=mask_epsilon,
+                        action_noise_std=0.0,
+                        previous_action=previous_action,
+                        local_action_std=(
+                            train_cfg.safety_mask_local_action_std),
+                        risk_penalty=train_cfg.safety_mask_risk_penalty,
+                        action_delta_penalty=(
+                            train_cfg.safety_mask_action_delta_penalty),
+                        fallback_contraction=(
+                            train_cfg.safety_mask_fallback_contraction),
+                        fallback_emergency_risk=(
+                            train_cfg.safety_mask_fallback_emergency_risk))
+                else:
+                    policy_action = agent.eval_actions(observation)
+                noise = rng.normal(
+                    0.0, noise_std,
+                    size=policy_action.shape)
+                action = np.clip(policy_action + noise, -1.0, 1.0).astype(
+                    np.float32)
+                next_observation, reward, done, info = env.step(action)
+                last_info = info
+                if info.get('policy_step', True):
+                    transition = build_transition(
+                        observation, action, reward, next_observation,
+                        done, info,
+                        projected_action=info.get('projected_action'),
+                        executed_q_target=info.get('executed_q_target'))
+                    safety_replay.insert(
+                        transition, policy_step=True,
+                        behavior_noise_std=noise_std)
+                    batch = safety_replay.sample_mixed(
+                        train_cfg.safety_critic_batch_size)
+                    safety_critic, safety_info = SafetyCritic.update(
+                        safety_critic, agent.actor, batch)
+                    collected += 1
+                    episode_steps += 1
+                    failures += int(transition.unsafe_label)
+                    boundaries += int(
+                        transition.near_failure_label
+                        and not transition.unsafe_label)
+                    rejected = float(
+                        mask_info.get('mask_rejected_fraction', 0.0))
+                    rejected_fraction_sum += rejected
+                    masked_steps += int(rejected > 0.0)
+                    no_safe_steps += int(
+                        bool(mask_info.get('no_safe_candidate', False)))
+                    fallback_previous_steps += int(
+                        bool(mask_info.get('fallback_previous', False)))
+                    fallback_min_risk_steps += int(
+                        bool(mask_info.get('fallback_min_risk', False)))
+                    previous_action = action.copy()
+                observation = next_observation
+            reset_kwargs = {
+                'standup': bool(last_info.get('terminated', False)
+                                or last_info.get('standup_timed_out', False)),
+                'with_recovery': bool(last_info.get('is_belly_up', False)),
+                'grace_period': not bool(last_info.get('truncated', False)),
+                'preserve_policy_state': bool(
+                    last_info.get('truncated', False)),
+            }
+            print(
+                f'[safety_collect] episode={episode + 1}/{episodes} '
+                f'steps={episode_steps} failures={failures} '
+                f'boundaries={boundaries} '
+                f'Q_loss={float(safety_info["safety_critic_loss"]):.4f} '
+                f'TD={float(safety_info["safety_td_loss"]):.4f} '
+                f'future_BCE={float(safety_info["safety_future_bce"]):.4f} '
+                f'n_step={float(safety_info["safety_n_step_mean"]):.2f} '
+                f'backup_noise={float(safety_info["safety_backup_noise_std_mean"]):.2f} '
+                f'mask_step_rate={masked_steps / max(collected, 1):.3f} '
+                f'no_safe_rate={no_safe_steps / max(collected, 1):.3f}',
+                flush=True)
+            # Long recovery-heavy batches may exceed an interactive run
+            # timeout. Persist every completed policy episode.
+            save_training_snapshot(
+                path.parent, agent=agent, replay_buffer=replay_buffer,
+                safety_replay=safety_replay, safety_critic=safety_critic,
+                step=start_step + collected,
+                metadata=_snapshot_metadata(train_cfg, env))
+        for recovery_transition in inner.drain_recovery_transitions():
+            safety_replay.insert(recovery_transition, policy_step=False)
+        output_dir = path.parent
+        output_step = start_step + collected
+        output = save_training_snapshot(
+            output_dir, agent=agent, replay_buffer=replay_buffer,
+            safety_replay=safety_replay, safety_critic=safety_critic,
+            step=output_step, metadata=_snapshot_metadata(train_cfg, env))
+        print(f'[safety_collect] frozen_policy=true noise_std='
+              f'{noise_std} '
+              f'rollout_seed={collection_seed} '
+              f'safety_mask={safety_mask} epsilon={mask_epsilon} '
+              f'collected={collected} failures={failures} '
+              f'boundaries={boundaries} '
+              f'mask_rate={rejected_fraction_sum / max(collected, 1):.3f} '
+              f'mask_step_rate={masked_steps / max(collected, 1):.3f} '
+              f'no_safe_rate={no_safe_steps / max(collected, 1):.3f} '
+              f'fallback_previous_rate='
+              f'{fallback_previous_steps / max(collected, 1):.3f} '
+              f'fallback_min_risk_rate='
+              f'{fallback_min_risk_steps / max(collected, 1):.3f} '
+              f'checkpoint={output}', flush=True)
+    finally:
+        env.close()
+    return 0
+
+
 def run_split(robot_cfg, train_cfg, droq_cfg) -> int:
     """Run a 20 Hz collector loop with learner updates on a background thread."""
     os.makedirs(train_cfg.save_dir, exist_ok=True)
     env = prepare_env(build_legacy_env(robot_cfg, train_cfg, train_cfg.seed),
                       rescale_actions=False,
                       seed=train_cfg.seed)
+    inner = getattr(env, '_env', env)
     agent, replay_buffer = build_agent_and_replay(env, train_cfg, droq_cfg)
+    safety_replay = None
+    if train_cfg.safety_replay_enabled:
+        safety_replay = SafetyReplayManager(
+            recent_capacity=train_cfg.safety_recent_capacity,
+            failure_capacity=train_cfg.safety_failure_capacity,
+            boundary_capacity=train_cfg.safety_boundary_capacity,
+            recovery_capacity=train_cfg.safety_recovery_capacity,
+            all_capacity=train_cfg.buffer_size,
+            failure_history=train_cfg.safety_failure_history,
+            n_step=train_cfg.safety_critic_n_step,
+            seed=train_cfg.seed,
+        )
 
     start_i = 0
     if (train_cfg.save_checkpoints and train_cfg.resume_checkpoint
@@ -178,7 +529,8 @@ def run_split(robot_cfg, train_cfg, droq_cfg) -> int:
                     f'snapshot={snapshot_experiment!r} '
                     f'current={train_cfg.experiment_name!r}')
             snapshot = restore_training_snapshot(
-                latest, agent=agent, replay_buffer=replay_buffer)
+                latest, agent=agent, replay_buffer=replay_buffer,
+                safety_replay=safety_replay)
             agent = snapshot['agent']
             replay_buffer = snapshot['replay_buffer']
             start_i = int(snapshot['step'])
@@ -347,20 +699,27 @@ def run_split(robot_cfg, train_cfg, droq_cfg) -> int:
                 episode_length += 1
 
             policy_step = info.get('policy_step', True)
-            insert_ok = (policy_step
-                         and _is_finite_array(observation)
-                         and _is_finite_array(next_observation)
-                         and _is_finite_array(action)
-                         and np.isfinite(reward))
-            if insert_ok:
+            transition_ok = (_is_finite_array(observation)
+                             and _is_finite_array(next_observation)
+                             and _is_finite_array(action)
+                             and np.isfinite(reward))
+            insert_ok = policy_step and transition_ok
+            if transition_ok:
                 transition = build_transition(
                     observation, action, reward, next_observation, done, info,
                     projected_action=info.get('projected_action'),
                     executed_q_target=info.get('executed_q_target'),
                     policy_version=local_policy_version)
+                if safety_replay is not None:
+                    safety_replay.insert(transition,
+                                         policy_step=policy_step)
                 with replay_lock:
-                    replay_buffer.insert(transition.replay_dict())
+                    if policy_step:
+                        replay_buffer.insert(transition.replay_dict())
                     replay_size = len(replay_buffer)
+            else:
+                replay_size = len(replay_buffer)
+            if insert_ok:
                 update_due = (
                     i >= train_cfg.start_training
                     and train_cfg.split_update_interval_steps > 0
@@ -453,6 +812,15 @@ def run_split(robot_cfg, train_cfg, droq_cfg) -> int:
                             log_metrics[f'training/{k}'] = fv
                 log_metrics.update(timing_metrics)
                 log_metrics.update(rolling_metrics)
+                if safety_replay is not None:
+                    sizes = safety_replay.sizes
+                    log_metrics.update({
+                        'safety_replay/recent_size': float(sizes.recent),
+                        'safety_replay/failure_size': float(sizes.failure),
+                        'safety_replay/boundary_size': float(sizes.boundary),
+                        'safety_replay/recovery_size': float(sizes.recovery),
+                        'safety_replay/all_size': float(sizes.all),
+                    })
                 logger.log(log_metrics, step=i)
 
             if i % train_cfg.log_interval == 0 and rolling_metrics:
@@ -488,6 +856,11 @@ def run_split(robot_cfg, train_cfg, droq_cfg) -> int:
                     grace_period=not info.get('truncated', False),
                     preserve_policy_state=info.get('truncated', False),
                 )
+                if safety_replay is not None:
+                    for recovery_transition in (
+                            inner.drain_recovery_transitions()):
+                        safety_replay.insert(recovery_transition,
+                                             policy_step=False)
                 if not _is_finite_array(observation):
                     observation = np.zeros(env.observation_space.shape,
                                            dtype=np.float32)
@@ -505,6 +878,7 @@ def run_split(robot_cfg, train_cfg, droq_cfg) -> int:
                         train_cfg.save_dir,
                         agent=checkpoint_agent,
                         replay_buffer=replay_buffer,
+                        safety_replay=safety_replay,
                         step=completed_step,
                         metadata=_snapshot_metadata(train_cfg, env),
                     )
@@ -524,6 +898,7 @@ def run_split(robot_cfg, train_cfg, droq_cfg) -> int:
                     train_cfg.save_dir,
                     agent=checkpoint_agent,
                     replay_buffer=replay_buffer,
+                    safety_replay=safety_replay,
                     step=completed_step,
                     metadata=_snapshot_metadata(train_cfg, env),
                 )

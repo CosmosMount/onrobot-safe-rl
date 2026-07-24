@@ -15,6 +15,8 @@ class RobotState:
         default_factory=lambda: np.zeros(NUM_JOINTS, np.float32))       # rad
     joint_dq: np.ndarray = field(
         default_factory=lambda: np.zeros(NUM_JOINTS, np.float32))      # rad/s
+    joint_tau: np.ndarray = field(
+        default_factory=lambda: np.zeros(NUM_JOINTS, np.float32))      # Nm
     imu_quat: np.ndarray = field(
         default_factory=lambda: np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
     imu_gyro: np.ndarray = field(

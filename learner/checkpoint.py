@@ -43,6 +43,8 @@ def save_training_snapshot(save_dir: str | Path,
                            *,
                            agent: Any,
                            replay_buffer: Any,
+                           safety_replay: Any | None = None,
+                           safety_critic: Any | None = None,
                            step: int,
                            metadata: dict[str, Any] | None = None) -> Path:
     root = Path(save_dir)
@@ -57,6 +59,11 @@ def save_training_snapshot(save_dir: str | Path,
         'step': step,
         'metadata': metadata or {},
     }
+    if safety_replay is not None:
+        payload['safety_replay_state'] = safety_replay.state_dict()
+    if safety_critic is not None:
+        payload['safety_critic_state'] = serialization.to_state_dict(
+            safety_critic)
     temporary = path.with_suffix(path.suffix + '.tmp')
     try:
         with temporary.open('wb') as f:
@@ -78,7 +85,9 @@ def load_training_snapshot_metadata(path: str | Path) -> dict[str, Any]:
 
 def restore_training_snapshot(path: str | Path,
                               agent: Any | None = None,
-                              replay_buffer: Any | None = None) -> dict[str, Any]:
+                              replay_buffer: Any | None = None,
+                              safety_replay: Any | None = None,
+                              safety_critic: Any | None = None) -> dict[str, Any]:
     with Path(path).open('rb') as f:
         payload = pickle.load(f)
     required = {'step'}
@@ -101,4 +110,10 @@ def restore_training_snapshot(path: str | Path,
     elif 'replay_buffer' not in payload:
         raise ValueError(
             f'Incomplete training snapshot {path}: missing replay buffer state')
+    if 'safety_replay_state' in payload and safety_replay is not None:
+        safety_replay.load_state_dict(payload['safety_replay_state'])
+        payload['safety_replay'] = safety_replay
+    if 'safety_critic_state' in payload and safety_critic is not None:
+        payload['safety_critic'] = serialization.from_state_dict(
+            safety_critic, payload['safety_critic_state'])
     return payload

@@ -18,6 +18,8 @@ class RollingTrainingSummary:
     total_falls: int = 0
     total_recoveries: int = 0
     total_timeouts: int = 0
+    total_near_failures: int = 0
+    total_interventions: int = 0
 
     def __post_init__(self) -> None:
         if self.window <= 0:
@@ -38,7 +40,12 @@ class RollingTrainingSummary:
             self.total_recoveries += 1
         if info.get('truncated') or info.get('standup_timed_out'):
             self.total_timeouts += 1
+        if info.get('near_failure_label'):
+            self.total_near_failures += 1
+        if info.get('intervention_mask'):
+            self.total_interventions += 1
         update = update_info or {}
+        costs = info.get('costs') or {}
         self._steps.append({
             'forward_velocity': float(info.get(
                 'forward_velocity', info.get('x_velocity', 0.0))),
@@ -58,6 +65,9 @@ class RollingTrainingSummary:
             'update_ms': float(timing.get('timing/update_ms', np.nan)),
             'loop_ms': float(timing.get('timing/loop_ms', np.nan)),
             'effective_hz': float(timing.get('timing/effective_hz', np.nan)),
+            'near_failure': float(bool(info.get('near_failure_label'))),
+            'intervention': float(bool(info.get('intervention_mask'))),
+            'safety_cost': float(sum(float(v) for v in costs.values())),
         })
 
     def record_episode(self, episode_return: float, episode_length: int) -> None:
@@ -85,6 +95,14 @@ class RollingTrainingSummary:
             'rolling/falls_total': float(self.total_falls),
             'rolling/recoveries_total': float(self.total_recoveries),
             'rolling/timeouts_total': float(self.total_timeouts),
+            'rolling/near_failures_total': float(self.total_near_failures),
+            'rolling/near_failure_rate': _nanmean(
+                [step['near_failure'] for step in steps]),
+            'rolling/interventions_total': float(self.total_interventions),
+            'rolling/intervention_rate': _nanmean(
+                [step['intervention'] for step in steps]),
+            'rolling/safety_cost_mean': _nanmean(
+                [step['safety_cost'] for step in steps]),
             'rolling/action_mean': float(np.mean(actions)),
             'rolling/action_std': float(np.std(actions)),
             'rolling/action_saturation_rate': float(

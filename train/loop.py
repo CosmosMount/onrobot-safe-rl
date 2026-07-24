@@ -22,6 +22,9 @@ from learner.checkpoint import (has_legacy_agent_checkpoint, latest_snapshot,
                                 restore_training_snapshot,
                                 save_training_snapshot)
 from jaxrl.env.evaluation import evaluate
+from jaxrl.data.safety_replay import SafetyReplayManager
+from jaxrl.agents.safety_critic import (SafetyCritic,
+                                        binary_prediction_metrics)
 
 
 def _log(msg: str) -> None:
@@ -33,6 +36,8 @@ def _to_float_dict(info: dict) -> dict[str, float]:
     for k, v in info.items():
         if isinstance(v, (int, float, np.floating)):
             out[k] = float(v)
+        elif np.asarray(v).shape == ():
+            out[k] = float(np.asarray(v))
     return out
 
 
@@ -101,6 +106,32 @@ def _apply_agent_update(agent, batch, cfg: TrainConfig, source_step: int):
 def run_training(agent, env, replay_buffer, cfg: TrainConfig):
     os.makedirs(cfg.save_dir, exist_ok=True)
 
+    safety_replay = None
+    if cfg.safety_replay_enabled:
+        safety_replay = SafetyReplayManager(
+            recent_capacity=cfg.safety_recent_capacity,
+            failure_capacity=cfg.safety_failure_capacity,
+            boundary_capacity=cfg.safety_boundary_capacity,
+            recovery_capacity=cfg.safety_recovery_capacity,
+            all_capacity=cfg.buffer_size,
+            failure_history=cfg.safety_failure_history,
+            n_step=cfg.safety_critic_n_step,
+            seed=cfg.seed,
+        )
+    safety_critic = None
+    if cfg.safety_critic_enabled:
+        if safety_replay is None:
+            raise ValueError('safety_critic_enabled requires safety replay')
+        safety_critic = SafetyCritic.create(
+            seed=cfg.seed + 10_000,
+            observation_dim=int(env.observation_space.shape[0]),
+            action_dim=int(env.action_space.shape[0]),
+            hidden_dims=cfg.safety_critic_hidden_dims,
+            learning_rate=cfg.safety_critic_learning_rate,
+            discount=cfg.safety_discount,
+            tau=cfg.safety_critic_tau,
+            future_loss_weight=cfg.safety_future_loss_weight)
+
     start_i = 0
     if cfg.save_checkpoints and cfg.resume_checkpoint and not cfg.benchmark_only:
         latest = latest_snapshot(cfg.save_dir)
@@ -114,9 +145,11 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                     f'snapshot={snapshot_experiment!r} '
                     f'current={cfg.experiment_name!r}')
             snapshot = restore_training_snapshot(
-                latest, agent=agent, replay_buffer=replay_buffer)
+                latest, agent=agent, replay_buffer=replay_buffer,
+                safety_replay=safety_replay, safety_critic=safety_critic)
             agent = snapshot['agent']
             replay_buffer = snapshot['replay_buffer']
+            safety_critic = snapshot.get('safety_critic', safety_critic)
             start_i = int(snapshot['step'])
             _log(f'[train] resumed complete snapshot {latest} step {start_i}')
         elif has_legacy_agent_checkpoint(cfg.save_dir):
@@ -168,6 +201,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
 
     episode_return = 0.0
     episode_length = 0
+    episode_safety_cost = 0.0
     completed_step = start_i
     last_saved_step = start_i if latest_snapshot(cfg.save_dir) else -1
     rolling = RollingTrainingSummary(
@@ -176,6 +210,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
     )
     done = False
     pending_update = None
+    latest_safety_info = None
 
     def apply_pending_update():
         nonlocal agent, pending_update, policy_corrupted
@@ -248,20 +283,42 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                 episode_length += 1
 
             policy_step = info.get('policy_step', True)
-            insert_ok = (policy_step
-                         and _is_finite_array(observation)
-                         and _is_finite_array(next_observation)
-                         and _is_finite_array(action)
-                         and np.isfinite(reward))
-            if insert_ok:
+            step_costs = info.get('costs') or {}
+            if policy_step:
+                episode_safety_cost += sum(float(v)
+                                           for v in step_costs.values())
+            transition_ok = (_is_finite_array(observation)
+                             and _is_finite_array(next_observation)
+                             and _is_finite_array(action)
+                             and np.isfinite(reward))
+            insert_ok = policy_step and transition_ok
+            if transition_ok:
                 transition = build_transition(observation, action, reward,
                                               next_observation, done, info,
                                               projected_action=info.get(
                                                   'projected_action'),
                                               executed_q_target=info.get(
                                                   'executed_q_target'))
-                replay_buffer.insert(transition.replay_dict())
-            elif i >= cfg.start_training:
+                if safety_replay is not None:
+                    safety_replay.insert(transition,
+                                         policy_step=policy_step)
+                if policy_step:
+                    replay_buffer.insert(transition.replay_dict())
+
+            if (safety_critic is not None and safety_replay is not None
+                    and len(safety_replay) > 0
+                    and cfg.safety_critic_update_interval > 0
+                    and i % cfg.safety_critic_update_interval == 0):
+                safety_batch = safety_replay.sample_mixed(
+                    cfg.safety_critic_batch_size)
+                safety_critic, safety_info = SafetyCritic.update(
+                    safety_critic, agent.actor, safety_batch)
+                latest_safety_info = _to_float_dict(safety_info)
+                predictions = safety_critic.predict(
+                    safety_batch['observations'], safety_batch['actions'])
+                latest_safety_info.update(binary_prediction_metrics(
+                    safety_batch['future_failure_labels'], predictions))
+            if not insert_ok and i >= cfg.start_training:
                 skip_update = True
             observation = next_observation
 
@@ -332,14 +389,39 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                         info.get('action_frequency_hz', np.nan)),
                     'env/control_hold_overrun_ms': float(
                         info.get('control_hold_overrun_ms', 0.0)),
+                    'safety/unsafe_label': float(
+                        bool(info.get('unsafe_label', False))),
+                    'safety/near_failure_label': float(
+                        bool(info.get('near_failure_label', False))),
+                    'safety/intervention_mask': float(
+                        bool(info.get('intervention_mask', False))),
+                    'safety/step_cost': float(
+                        sum(float(v) for v in step_costs.values())),
+                    'safety/episode_cost_return': float(
+                        episode_safety_cost),
                 }
+                for cost_key, cost_value in step_costs.items():
+                    log_metrics[f'safety/{cost_key}'] = float(cost_value)
                 if update_info is not None:
                     for k, v in update_info.items():
                         fv = float(v) if hasattr(v, 'item') else float(v)
                         if np.isfinite(fv):
                             log_metrics[f'training/{k}'] = fv
+                if latest_safety_info is not None:
+                    for key, value in latest_safety_info.items():
+                        if np.isfinite(value):
+                            log_metrics[f'safety_critic/{key}'] = value
                 log_metrics.update(timing_metrics)
                 log_metrics.update(rolling_metrics)
+                if safety_replay is not None:
+                    sizes = safety_replay.sizes
+                    log_metrics.update({
+                        'safety_replay/recent_size': float(sizes.recent),
+                        'safety_replay/failure_size': float(sizes.failure),
+                        'safety_replay/boundary_size': float(sizes.boundary),
+                        'safety_replay/recovery_size': float(sizes.recovery),
+                        'safety_replay/all_size': float(sizes.all),
+                    })
                 logger.log(log_metrics, step=i)
 
             if update_info is not None and (
@@ -358,6 +440,17 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                          f'update_ms={timing["timing/update_ms"]:.1f} '
                          f'effective_hz={timing["timing/effective_hz"]:.1f} '
                          f'critic/s={timing["timing/critic_updates_per_sec"]:.0f}')
+            if (latest_safety_info is not None
+                    and (i % cfg.log_interval == 0
+                         or i == cfg.start_training)):
+                _log(
+                    f'[step {i}] Q_safe '
+                    f'loss={latest_safety_info["safety_critic_loss"]:.4f} '
+                    f'mean={latest_safety_info["mean_Q_safe"]:.4f} '
+                    f'failure={latest_safety_info["Q_safe_failure"]:.4f} '
+                    f'boundary={latest_safety_info["Q_safe_boundary"]:.4f} '
+                    f'normal={latest_safety_info["Q_safe_normal"]:.4f} '
+                    f'auroc={latest_safety_info["Q_safe_AUROC"]:.3f}')
             if i % cfg.log_interval == 0 and rolling_metrics:
                 _log(
                     f'[step {i}] rolling n={int(rolling_metrics["rolling/window_steps"])} '
@@ -383,6 +476,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                 logger.log({
                     'training/return': episode_return,
                     'training/length': float(episode_length),
+                    'training/safety_cost_return': episode_safety_cost,
                 }, step=i)
                 if info.get('terminated') or info.get('standup_timed_out'):
                     kind = ('belly-up recovery→standup'
@@ -398,12 +492,18 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                     grace_period=not info.get('truncated', False),
                     preserve_policy_state=info.get('truncated', False),
                 )
+                if safety_replay is not None:
+                    for recovery_transition in (
+                            inner.drain_recovery_transitions()):
+                        safety_replay.insert(recovery_transition,
+                                             policy_step=False)
                 if not _is_finite_array(observation):
                     observation = np.zeros(env.observation_space.shape,
                                            dtype=np.float32)
                 done = False
                 episode_return = 0.0
                 episode_length = 0
+                episode_safety_cost = 0.0
 
             train_step = i - cfg.start_training
             if (not cfg.no_eval and not cfg.benchmark_only
@@ -419,6 +519,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                 done = False
                 episode_return = 0.0
                 episode_length = 0
+                episode_safety_cost = 0.0
                 _log(f'[step {i}] eval {time.time() - eval_t0:.1f}s '
                      f'return={eval_info["return"]:.2f} '
                      f'length={eval_info["length"]:.1f}')
@@ -436,6 +537,8 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                     cfg.save_dir,
                     agent=agent,
                     replay_buffer=replay_buffer,
+                    safety_replay=safety_replay,
+                    safety_critic=safety_critic,
                     step=completed_step,
                     metadata=_snapshot_metadata(cfg, env),
                 )
@@ -450,6 +553,8 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                 cfg.save_dir,
                 agent=agent,
                 replay_buffer=replay_buffer,
+                safety_replay=safety_replay,
+                safety_critic=safety_critic,
                 step=completed_step,
                 metadata=_snapshot_metadata(cfg, env),
             )

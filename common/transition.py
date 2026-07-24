@@ -51,6 +51,8 @@ class Transition:
     truncated: bool = False
     termination_reason: TerminationReason = TerminationReason.NONE
     intervention_mask: bool = False
+    unsafe_label: bool = False
+    near_failure_label: bool = False
     policy_version: int = 0
 
     @property
@@ -70,4 +72,16 @@ class Transition:
             'masks': float(self.mask),
             'dones': bool(self.done),
             'next_observations': self.next_observation,
+        }
+
+    def safety_replay_dict(self) -> dict[str, object]:
+        """Return auxiliary fields without changing the legacy SAC replay."""
+        return {
+            **self.replay_dict(),
+            'costs': {key: float(self.costs.get(key, 0.0))
+                      for key in COST_KEYS},
+            'unsafe_labels': float(self.unsafe_label),
+            'near_failure_labels': float(self.near_failure_label),
+            'termination_reasons': int(self.termination_reason),
+            'intervention_masks': bool(self.intervention_mask),
         }

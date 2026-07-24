@@ -20,6 +20,8 @@ from train.obs import (build_observation, body_up_cos, get_run_reward_from_state
                        is_belly_up, is_fallen, is_pose_stable,
                        quat_to_euler_xyz)
 from train.types import RobotState
+from train.safety import safety_signals
+from common.transition import Transition
 from jaxrl.env.specs import BoxSpec
 
 try:
@@ -109,6 +111,7 @@ class Go2Env:
         self._not_belly_up_count = 0
         self._last_policy_send_time: float | None = None
         self._np_random = np.random.RandomState(seed)
+        self._recovery_transitions: list[Transition] = []
 
     def seed(self, seed: Optional[int] = None) -> int:
         if seed is None:
@@ -158,10 +161,12 @@ class Go2Env:
             stable_count = 0
             phase_state = initial_state
             for _ in range(self.reset_hold_steps):
+                previous_state = phase_state
                 self._send_standup_request(
                     with_recovery=request_recovery)
                 time.sleep(self.control_dt)
                 phase_state = self._state_reader.get_state()
+                self._record_recovery_transition(previous_state, phase_state)
                 if is_pose_stable(
                         phase_state,
                         self.cfg,
@@ -204,12 +209,52 @@ class Go2Env:
         self._policy_client.send_target(state.joint_q)
         return state
 
+    def _record_recovery_transition(self, previous_state: RobotState,
+                                    state: RobotState) -> None:
+        """Capture scripted motion frames for D_recovery only."""
+        required_state = ('joint_q', 'joint_dq', 'joint_tau', 'imu_quat',
+                          'imu_gyro', 'imu_accel', 'body_velocity',
+                          'world_position')
+        if (not all(hasattr(previous_state, name) for name in required_state)
+                or not all(hasattr(state, name) for name in required_state)
+                or not hasattr(self.cfg, 'obs_dim')):
+            return
+        zeros = np.zeros(getattr(self.cfg, 'num_joints',
+                                 len(state.joint_q)), dtype=np.float32)
+        signals = safety_signals(
+            state, self.cfg, terminated=False, recovering=True,
+            intervention_mask=True)
+        if not hasattr(self, '_recovery_transitions'):
+            self._recovery_transitions = []
+        self._recovery_transitions.append(Transition(
+            observation=build_observation(previous_state, zeros, self.cfg,
+                                          zeros),
+            requested_action=zeros.copy(),
+            projected_action=zeros.copy(),
+            executed_q_target=state.joint_q.copy(),
+            reward=0.0,
+            costs=signals['costs'],
+            next_observation=build_observation(state, zeros, self.cfg, zeros),
+            intervention_mask=True,
+            unsafe_label=bool(signals['unsafe_label']),
+            near_failure_label=bool(signals['near_failure_label']),
+        ))
+
+    def drain_recovery_transitions(self) -> list[Transition]:
+        transitions = self._recovery_transitions
+        self._recovery_transitions = []
+        return transitions
+
     def reset(self, *, standup: bool = False,
               with_recovery: bool = False,
               grace_period: bool = True,
               preserve_policy_state: bool = False) -> np.ndarray:
         self._ensure_connected()
         assert self._policy_client is not None
+
+        # The previous reset's scripted frames should have been drained by the
+        # collector. Never mix them across logical episode boundaries.
+        self._recovery_transitions = []
 
         self._step_count = 0
         # A time-limit truncation is only a logical episode boundary: physics
@@ -403,6 +448,23 @@ class Go2Env:
         reward += terminal_penalty
         reward_info['terminal_penalty'] = float(terminal_penalty)
 
+        intervention_mask = bool(
+            terminated or self._standup_active
+            or (policy_step and np.linalg.norm(
+                executed_action - policy_action) > 1e-5))
+        sport_state_age_ms = float(
+            self._state_reader.sport_state_age() * 1000.0)
+        safety_info = safety_signals(
+            state,
+            self.cfg,
+            terminated=terminated,
+            recovering=self._standup_active,
+            intervention_mask=intervention_mask,
+            communication_fault=(
+                not np.isfinite(sport_state_age_ms)
+                or sport_state_age_ms > self.cfg.sport_state_max_age_ms),
+        )
+
         return obs, reward, done, {
             'is_fallen': fallen,
             'is_belly_up': belly_up,
@@ -415,11 +477,8 @@ class Go2Env:
             'projected_action': policy_action.copy(),
             'executed_q_target': executed_q_target.copy(),
             'executed_q_target_norm': float(np.linalg.norm(executed_q_target)),
-            'intervention_mask': bool(
-                policy_step and np.linalg.norm(executed_action - policy_action)
-                > 1e-5),
-            'sport_state_age_ms': float(
-                self._state_reader.sport_state_age() * 1000.0),
+            'intervention_mask': intervention_mask,
+            'sport_state_age_ms': sport_state_age_ms,
             'action_interval_ms': action_interval_ms,
             'action_frequency_hz': (
                 1000.0 / action_interval_ms
@@ -431,6 +490,7 @@ class Go2Env:
             'world_z': float(state.world_position[2]),
             'step_count': self._step_count,
             'standup_step_count': self._standup_step_count,
+            **safety_info,
             **reward_info,
         }
 

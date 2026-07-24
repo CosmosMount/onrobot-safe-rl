@@ -64,6 +64,10 @@ class StateReader:
             for i in range(NUM_JOINTS):
                 self._state.joint_q[i] = msg.motor_state[i].q
                 self._state.joint_dq[i] = msg.motor_state[i].dq
+                # Unitree LowState exposes estimated motor torque as tau_est.
+                # Keep a zero fallback for SDK/simulator versions without it.
+                self._state.joint_tau[i] = float(
+                    getattr(msg.motor_state[i], 'tau_est', 0.0))
             self._state.imu_quat[:] = np.asarray(msg.imu_state.quaternion[:4],
                                                  dtype=np.float32)
             self._state.imu_gyro[:] = np.asarray(msg.imu_state.gyroscope[:3],
@@ -106,6 +110,7 @@ class StateReader:
             return RobotState(
                 joint_q=self._state.joint_q.copy(),
                 joint_dq=self._state.joint_dq.copy(),
+                joint_tau=self._state.joint_tau.copy(),
                 imu_quat=self._state.imu_quat.copy(),
                 imu_gyro=self._state.imu_gyro.copy(),
                 imu_accel=self._state.imu_accel.copy(),

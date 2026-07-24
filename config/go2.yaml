@@ -39,6 +39,16 @@ reward_upright_min_cos: 0.8660254  # cos(30deg); no forward reward when not upri
 fall_terminal_penalty: -10.0      # added only on true failure, never on time limit
 action_filter_highcut: 4.0
 
+# Auxiliary safety logging only; these thresholds do not alter control/reward.
+safety_logging:
+  joint_limit_margin_rad: 0.10
+  joint_velocity_rad_s: 25.0
+  torque_nm: 35.0
+  power_w: 350.0
+  impact_accel_m_s2: 8.0
+  angular_velocity_rad_s: 5.0
+  base_height_m: 0.18
+
 stand_up:
   pose_1: [0.0, 1.36, -2.65, 0.0, 1.36, -2.65, -0.2, 1.36, -2.65, 0.2, 1.36, -2.65]
   pose_2: [0.05, 0.7, -1.4, 0.05, 0.7, -1.4, 0.05, 0.7, -1.4, 0.05, 0.7, -1.4]
@@ -92,6 +102,36 @@ train:
   batch_size: 256
   utd_ratio: 5
   buffer_size: 1000000
+  safety_replay_enabled: true
+  safety_recent_capacity: 20000
+  safety_failure_capacity: 20000
+  safety_boundary_capacity: 20000
+  safety_recovery_capacity: 10000
+  safety_failure_history: 32
+  # Auxiliary only: Q_safe never changes actor/actions in Stage 1.
+  safety_critic_enabled: true
+  safety_critic_batch_size: 256
+  safety_critic_update_interval: 1
+  safety_critic_learning_rate: 3.0e-4
+  safety_critic_hidden_dims: [256, 256]
+  safety_discount: 0.99
+  safety_critic_tau: 0.005
+  safety_critic_n_step: 8
+  safety_future_loss_weight: 0.5
+  safety_eval_horizon: 32
+  safety_eval_output_dir: saved/safety_evaluation
+  safety_eval_min_auroc: 0.70
+  safety_eval_min_warning_delta: 0.05
+  # Used only by --mode safety_collect; reward learner remains frozen.
+  safety_collection_action_noise_std: 0.35
+  # Stage 2 wrapper; disabled unless --safety-mask is passed.
+  safety_mask_num_candidates: 32
+  safety_mask_epsilon: 0.30
+  safety_mask_local_action_std: 0.15
+  safety_mask_risk_penalty: 1.0
+  safety_mask_action_delta_penalty: 1.0
+  safety_mask_fallback_contraction: 0.9
+  safety_mask_fallback_emergency_risk: 0.5
   log_interval: 100
   metrics_interval: 1
   rolling_summary_window: 1000
