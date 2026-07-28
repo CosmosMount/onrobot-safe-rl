@@ -19,17 +19,17 @@ class BaseBuffer(ABC):
         min_length: int,
         sample_batch_size: int,
     ):
-        """
-        A generic buffer class.
-
-        args:
-            observation_shape
-            action_shapce
-            max_length: maximum length of buffer (max number of experiences stored within the state).
-            min_length: minimum number of experiences saved in the buffer state before we can sample.
-            add_sequences: indiciator of whether we will be adding data in sequences to the buffer?
-            sample_batch_size: batch size of data that is sampled from a single sampling call.
-        """
+        """A generic transition replay buffer."""
+        if n_step < 1:
+            raise ValueError("n_step must be greater than or equal to 1.")
+        if not 0.0 <= gamma <= 1.0:
+            raise ValueError("gamma must be in the range [0.0, 1.0].")
+        if max_length <= 0:
+            raise ValueError("max_length must be greater than 0.")
+        if min_length < 0 or min_length > max_length:
+            raise ValueError("min_length must satisfy 0 <= min_length <= max_length.")
+        if sample_batch_size <= 0:
+            raise ValueError("sample_batch_size must be greater than 0.")
 
         self._observation_space = observation_space
         self._action_space = action_space
@@ -49,6 +49,12 @@ class BaseBuffer(ABC):
 
     @abstractmethod
     def add(self, transition: MutableMapping[str, Tensor]) -> None:
+        """Add one transition without a leading batch dimension."""
+        pass
+
+    @abstractmethod
+    def add_batch(self, transitions: MutableMapping[str, Tensor]) -> None:
+        """Add transitions with an explicit leading batch dimension."""
         pass
 
     @abstractmethod
@@ -56,11 +62,23 @@ class BaseBuffer(ABC):
         pass
 
     @abstractmethod
-    def sample(self, sample_idxs: Optional[NDArray] = None) -> Batch:
+    def sample(
+        self,
+        batch_size: Optional[int] = None,
+        sample_idxs: Optional[Tensor] = None,
+    ) -> Batch:
         pass
 
     @abstractmethod
     def save(self, path: str) -> None:
+        pass
+
+    @abstractmethod
+    def flush(self) -> None:
+        pass
+
+    @abstractmethod
+    def load(self, path: str) -> None:
         pass
 
     @abstractmethod

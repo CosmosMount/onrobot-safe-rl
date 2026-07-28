@@ -301,8 +301,6 @@ def _update_networks(
         min_v=cfg.critic_min_v,
         max_v=cfg.critic_max_v,
         num_bins=cfg.critic_num_bins,
-        gamma=cfg.gamma,
-        n_step=cfg.n_step,
         device=device,
         use_amp=cfg.use_amp,
         grad_scaler=grad_scaler,
@@ -458,7 +456,7 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
 
     def process_transition(self, transition: MutableMapping[str, Tensor]) -> None:
         # add to replay buffer
-        self._replay_buffer.add(transition)
+        self._replay_buffer.add_batch(transition)
 
         # update reward normalizer
         if self._cfg.normalize_reward:

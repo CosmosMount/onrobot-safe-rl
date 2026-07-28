@@ -31,9 +31,8 @@ def _select_min_q_log_probs(
 def _compute_categorical_td_target(
     target_log_probs: torch.Tensor,  # (B, num_bins)
     reward: torch.Tensor,  # (B,)
-    done: torch.Tensor,  # (B,)
+    discount: torch.Tensor,  # (B,)
     actor_entropy: torch.Tensor,  # (B,)
-    gamma: float,
     num_bins: int,
     min_v: float,
     max_v: float,
@@ -41,7 +40,7 @@ def _compute_categorical_td_target(
     batch_size = reward.shape[0]
 
     reward = reward.reshape(-1, 1)
-    done = done.reshape(-1, 1)
+    discount = discount.reshape(-1, 1)
     actor_entropy = actor_entropy.reshape(-1, 1)
 
     # Compute target value buckets
@@ -51,7 +50,7 @@ def _compute_categorical_td_target(
     ).view(1, -1)
 
     # target_bin_values
-    target_bin_values = reward + gamma * (bin_values - actor_entropy) * (1.0 - done)
+    target_bin_values = reward + discount * (bin_values - actor_entropy)
     target_bin_values = torch.clamp(target_bin_values, min_v, max_v)
 
     # update indices
@@ -171,8 +170,6 @@ def update_critic(
     min_v: float,
     max_v: float,
     num_bins: int,
-    gamma: float,
-    n_step: int,
     device: torch.device,
     use_amp: bool,
     grad_scaler: Optional[GradScaler],
@@ -188,8 +185,6 @@ def update_critic(
         min_v: Minimum value for categorical distribution.
         max_v: Maximum value for categorical distribution.
         num_bins: Number of bins for categorical distribution.
-        gamma: Discount factor.
-        n_step: N-step return.
         device: Device to use.
         use_amp: Whether to use automatic mixed precision.
         grad_scaler: GradScaler for FP16 AMP.
@@ -227,9 +222,8 @@ def update_critic(
             target_probs = _compute_categorical_td_target(
                 target_log_probs=next_q_log_probs,
                 reward=batch["reward"],  # type: ignore
-                done=batch["terminated"],  # type: ignore
+                discount=batch["discount"],  # type: ignore
                 actor_entropy=next_actor_entropy,
-                gamma=gamma**n_step,
                 num_bins=num_bins,
                 min_v=min_v,
                 max_v=max_v,
