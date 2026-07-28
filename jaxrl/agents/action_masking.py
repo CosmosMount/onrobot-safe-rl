@@ -1,4 +1,8 @@
-"""SQRL-style candidate action masking without policy modification."""
+"""Legacy SQRL-style action masking (withdrawn from the active pipeline).
+
+Kept for unit tests and historical experiments. Runtime entrypoints reject
+``--safety-mask``; use Q_safe-only ``safety_eval`` / ``safety_collect``.
+"""
 
 from __future__ import annotations
 
@@ -9,12 +13,13 @@ import jax.numpy as jnp
 import numpy as np
 
 
-@partial(jax.jit, static_argnames=('num_candidates',))
+@partial(jax.jit, static_argnames=('num_candidates', 'allow_min_risk_fallback'))
 def _select(agent, safety_critic, observation, rng, *,
             num_candidates: int, epsilon_safe: float,
             action_noise_std: float, local_action_std: float,
             risk_penalty: float, action_delta_penalty: float,
             fallback_contraction: float, fallback_emergency_risk: float,
+            allow_min_risk_fallback: bool,
             previous_action):
     sample_key, local_key, noise_key, rng = jax.random.split(rng, 4)
     observations = jnp.repeat(
@@ -56,11 +61,28 @@ def _select(agent, safety_critic, observation, rng, *,
     safe = risks <= epsilon_safe
     safe_score = jnp.where(safe, score, -jnp.inf)
     safe_index = jnp.argmax(safe_score)
-    fallback_index = jnp.argmin(risks)
+    min_risk_index = jnp.argmin(risks)
     no_safe = ~jnp.any(safe)
-    previous_acceptable = risks[1] <= fallback_emergency_risk
-    no_safe_index = jnp.where(
-        previous_acceptable, jnp.asarray(1), fallback_index)
+    mean_ok = risks[0] <= fallback_emergency_risk
+    previous_ok = risks[1] <= fallback_emergency_risk
+    contracted_ok = risks[2] <= fallback_emergency_risk
+    # Prefer temporally conservative recoveries over jumping to an arbitrary
+    # min-risk candidate that may still be far above epsilon_safe.
+    conservative_index = jnp.where(
+        previous_ok, jnp.asarray(1),
+        jnp.where(
+            contracted_ok, jnp.asarray(2),
+            jnp.where(mean_ok, jnp.asarray(0), jnp.asarray(1))))
+    if allow_min_risk_fallback:
+        no_safe_index = jnp.where(
+            previous_ok | contracted_ok | mean_ok,
+            conservative_index, min_risk_index)
+        used_min_risk = no_safe & ~(previous_ok | contracted_ok | mean_ok)
+        used_hold = jnp.asarray(False)
+    else:
+        no_safe_index = conservative_index
+        used_min_risk = jnp.asarray(False)
+        used_hold = no_safe & ~(previous_ok | contracted_ok | mean_ok)
     selected_index = jnp.where(no_safe, no_safe_index, safe_index)
     return (
         candidates[selected_index],
@@ -75,9 +97,14 @@ def _select(agent, safety_critic, observation, rng, *,
                 jnp.sum(jnp.square(
                     candidates[selected_index] - previous_action))),
             'fallback_previous': (
-                no_safe & previous_acceptable).astype(jnp.float32),
-            'fallback_min_risk': (
-                no_safe & ~previous_acceptable).astype(jnp.float32),
+                no_safe & previous_ok).astype(jnp.float32),
+            'fallback_contracted': (
+                no_safe & ~previous_ok & contracted_ok).astype(jnp.float32),
+            'fallback_policy_mean': (
+                no_safe & ~previous_ok & ~contracted_ok & mean_ok
+            ).astype(jnp.float32),
+            'fallback_hold_previous': used_hold.astype(jnp.float32),
+            'fallback_min_risk': used_min_risk.astype(jnp.float32),
         },
         rng,
     )
@@ -92,7 +119,8 @@ def select_masked_action(agent, safety_critic, observation, rng, *,
                          risk_penalty: float = 1.0,
                          action_delta_penalty: float = 1.0,
                          fallback_contraction: float = 0.9,
-                         fallback_emergency_risk: float = 0.5):
+                         fallback_emergency_risk: float = 0.5,
+                         allow_min_risk_fallback: bool = False):
     if num_candidates < 3:
         raise ValueError('num_candidates must be at least 3')
     if previous_action is None:
@@ -108,6 +136,7 @@ def select_masked_action(agent, safety_critic, observation, rng, *,
         action_delta_penalty=float(action_delta_penalty),
         fallback_contraction=float(fallback_contraction),
         fallback_emergency_risk=float(fallback_emergency_risk),
+        allow_min_risk_fallback=bool(allow_min_risk_fallback),
         previous_action=jnp.asarray(previous_action))
     return np.asarray(action), {
         key: float(np.asarray(value)) for key, value in info.items()

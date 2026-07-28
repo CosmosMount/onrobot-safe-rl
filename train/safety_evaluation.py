@@ -25,6 +25,9 @@ class SafetyEvalRecord:
     selected_q_safe: float = float('nan')
     selected_action_delta: float = 0.0
     fallback_previous: bool = False
+    fallback_contracted: bool = False
+    fallback_policy_mean: bool = False
+    fallback_hold_previous: bool = False
     fallback_min_risk: bool = False
     future_failure: bool = False
     time_to_failure: int = -1
@@ -152,6 +155,12 @@ def analyze_records(records: list[SafetyEvalRecord], horizon: int,
         'selected_action_delta_mean': float(selected_delta.mean()),
         'fallback_previous_rate': float(np.mean(
             [r.fallback_previous for r in records])),
+        'fallback_contracted_rate': float(np.mean(
+            [r.fallback_contracted for r in records])),
+        'fallback_policy_mean_rate': float(np.mean(
+            [r.fallback_policy_mean for r in records])),
+        'fallback_hold_previous_rate': float(np.mean(
+            [r.fallback_hold_previous for r in records])),
         'fallback_min_risk_rate': float(np.mean(
             [r.fallback_min_risk for r in records])),
         'time_to_failure_curve': time_curve,
@@ -159,11 +168,11 @@ def analyze_records(records: list[SafetyEvalRecord], horizon: int,
             'minimum_auroc': min_auc,
             'minimum_warning_delta': min_warning_delta,
             'has_positive_and_negative_samples': enough_classes,
-            'ready_for_shield': passes,
+            'ready_for_shield': passes,  # legacy key; means Q_safe gate pass
             'decision': (
-                'PASS: Q_safe may proceed to shield experiments'
+                'PASS: Q_safe monitoring quality acceptable'
                 if passes else
-                'BLOCK: improve labels/data/Q_safe before action masking'),
+                'BLOCK: improve labels/data/Q_safe before relying on risk scores'),
         },
     }
 

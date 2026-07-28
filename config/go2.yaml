@@ -108,23 +108,30 @@ train:
   safety_boundary_capacity: 20000
   safety_recovery_capacity: 10000
   safety_failure_history: 32
+  safety_failure_horizons: [8, 16, 32]
   # Auxiliary only: Q_safe never changes actor/actions in Stage 1.
   safety_critic_enabled: true
   safety_critic_batch_size: 256
   safety_critic_update_interval: 1
   safety_critic_learning_rate: 3.0e-4
   safety_critic_hidden_dims: [256, 256]
+  safety_critic_ensemble_size: 1
   safety_discount: 0.99
   safety_critic_tau: 0.005
   safety_critic_n_step: 8
   safety_future_loss_weight: 0.5
+  # CSC/CQL-style risk overestimation; 0 keeps the existing Q_safe baseline.
+  safety_conservative_weight: 0.0
+  safety_conservative_num_actions: 4
+  safety_calibration_interval: 100
+  safety_calibration_min_samples: 128
   safety_eval_horizon: 32
   safety_eval_output_dir: saved/safety_evaluation
   safety_eval_min_auroc: 0.70
   safety_eval_min_warning_delta: 0.05
   # Used only by --mode safety_collect; reward learner remains frozen.
   safety_collection_action_noise_std: 0.35
-  # Stage 2 wrapper; disabled unless --safety-mask is passed.
+  # Legacy Stage-2 heuristic shield knobs (withdrawn).
   safety_mask_num_candidates: 32
   safety_mask_epsilon: 0.30
   safety_mask_local_action_std: 0.15
@@ -132,6 +139,53 @@ train:
   safety_mask_action_delta_penalty: 1.0
   safety_mask_fallback_contraction: 0.9
   safety_mask_fallback_emergency_risk: 0.5
+  # SQRL Route A (see SAFE_RL_PIPELINE.md). Enabled by --mode sqrl_*.
+  sqrl_enabled: false
+  sqrl_phase: pretrain
+  sqrl_epsilon: 0.20
+  sqrl_num_candidates: 64
+  sqrl_lagrange_lr: 1.0e-4
+  sqrl_qsafe_recent_only: true
+  sqrl_activation_steps: 1000
+  sqrl_min_auroc: 0.70
+  sqrl_min_pos_neg_gap: 0.05
+  sqrl_max_ece: 0.15
+  sqrl_max_brier: 0.20
+  sqrl_min_gate_samples: 128
+  sqrl_gate_candidate_window: 128
+  sqrl_max_no_safe_rate: 0.50
+  sqrl_min_candidate_range: 0.02
+  sqrl_epsilon_start: 0.80
+  sqrl_epsilon_anneal_steps: 1000
+  sqrl_train_candidate_noise_std: 0.0
+  sqrl_local_candidate_count: 8
+  sqrl_local_action_std: 0.10
+  sqrl_fallback_contraction: 0.90
+  sqrl_fallback_emergency_risk: 0.80
+  sqrl_uncertainty_penalty: 1.0
+  # Optional action-support gate. Disabled preserves the historical selector.
+  sqrl_support_gate_enabled: false
+  sqrl_min_behavior_log_prob_per_dim: -4.0
+  sqrl_max_nominal_action_distance: 1.0
+  sqrl_double_critic_enabled: false
+  sqrl_validation_improvement_margin: 0.02
+  # SQRL control remains gated until evaluate_branch_qsafe.py writes this.
+  sqrl_control_gate_required: true
+  sqrl_control_metrics_path: null
+  sqrl_control_min_pairwise_accuracy: 0.65
+  sqrl_control_max_false_safe_rate: 0.10
+  sqrl_control_min_coverage: 0.10
+  sqrl_control_min_failure_reduction: 0.01
+  # Performance-gated multi-speed curriculum. Each promotion is <=0.05 m/s.
+  cmd_speed_increment: 0.05
+  cmd_speed_frontier_probability: 0.50
+  cmd_speed_promotion_window: 8
+  cmd_speed_min_episode_length: 300
+  cmd_speed_min_velocity_ratio: 0.75
+  cmd_speed_max_fall_rate: 0.125
+  cmd_speed_new_stage_exploration_scale: 0.50
+  cmd_speed_exploration_recovery_episodes: 4
+  warm_start_checkpoint: null
   log_interval: 100
   metrics_interval: 1
   rolling_summary_window: 1000

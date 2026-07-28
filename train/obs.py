@@ -69,6 +69,9 @@ def build_observation(state: RobotState,
     if previous_executed_action is None:
         previous_executed_action = previous_requested_action
     quat = normalize_quat(state.imu_quat)
+    scale = float(getattr(cfg, 'cmd_speed_obs_scale', 1.0) or 1.0)
+    cmd = np.asarray(
+        [float(cfg.move_speed) / scale], dtype=np.float32)
     obs = np.concatenate([
         state.joint_q.astype(np.float32),
         state.joint_dq.astype(np.float32),
@@ -77,6 +80,7 @@ def build_observation(state: RobotState,
         state.imu_gyro.astype(np.float32),
         state.body_velocity.astype(np.float32),
         quat,
+        cmd,
     ])
     assert obs.shape == (cfg.obs_dim,), obs.shape
     return sanitize_observation(obs, cfg)

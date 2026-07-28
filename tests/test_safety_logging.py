@@ -100,6 +100,9 @@ class SafetyLoggingTest(unittest.TestCase):
         self.assertEqual(safety['costs']['tilt_cost'], 0.25)
         self.assertEqual(safety['unsafe_labels'], 1.0)
         self.assertEqual(safety['near_failure_labels'], 1.0)
+        self.assertIn('episode_ids', safety)
+        self.assertIn('policy_versions', safety)
+        self.assertIn('command_speeds', safety)
 
     def test_explicit_failure_reason_cannot_be_overridden_by_false_label(self):
         transition = build_transition(

@@ -54,6 +54,8 @@ class Transition:
     unsafe_label: bool = False
     near_failure_label: bool = False
     policy_version: int = 0
+    episode_id: int = 0
+    command_speed: float = 0.0
 
     @property
     def done(self) -> bool:
@@ -84,4 +86,7 @@ class Transition:
             'near_failure_labels': float(self.near_failure_label),
             'termination_reasons': int(self.termination_reason),
             'intervention_masks': bool(self.intervention_mask),
+            'policy_versions': int(self.policy_version),
+            'episode_ids': int(self.episode_id),
+            'command_speeds': float(self.command_speed),
         }

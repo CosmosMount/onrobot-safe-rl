@@ -116,7 +116,7 @@ class UnstableResetTest(unittest.TestCase):
         env._state_reader.get_state.return_value = _state()
 
         with patch("train.env.build_observation",
-                   return_value=np.zeros(58, dtype=np.float32)):
+                   return_value=np.zeros(59, dtype=np.float32)):
             env.reset(standup=False, grace_period=False)
 
         self.assertEqual(env._steps_since_reset, 21)

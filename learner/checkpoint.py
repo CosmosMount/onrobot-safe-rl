@@ -32,6 +32,18 @@ def latest_snapshot(save_dir: str | Path) -> Path | None:
     return snapshots[-1] if snapshots else None
 
 
+def experiments_compatible(snapshot_name: str | None,
+                           current_name: str | None) -> bool:
+    """True if a snapshot may be resumed under the current experiment name.
+
+    SQRL Route A intentionally continues from ``sqrl_pretrain`` into
+    ``sqrl_finetune`` in the same ``save_dir``.
+    """
+    if snapshot_name in (None, current_name):
+        return True
+    return {snapshot_name, current_name} == {'sqrl_pretrain', 'sqrl_finetune'}
+
+
 def has_legacy_agent_checkpoint(save_dir: str | Path) -> bool:
     root = Path(save_dir)
     if not root.exists():
@@ -45,6 +57,7 @@ def save_training_snapshot(save_dir: str | Path,
                            replay_buffer: Any,
                            safety_replay: Any | None = None,
                            safety_critic: Any | None = None,
+                           safety_validator: Any | None = None,
                            step: int,
                            metadata: dict[str, Any] | None = None) -> Path:
     root = Path(save_dir)
@@ -64,6 +77,9 @@ def save_training_snapshot(save_dir: str | Path,
     if safety_critic is not None:
         payload['safety_critic_state'] = serialization.to_state_dict(
             safety_critic)
+    if safety_validator is not None:
+        payload['safety_validator_state'] = serialization.to_state_dict(
+            safety_validator)
     temporary = path.with_suffix(path.suffix + '.tmp')
     try:
         with temporary.open('wb') as f:
@@ -87,7 +103,8 @@ def restore_training_snapshot(path: str | Path,
                               agent: Any | None = None,
                               replay_buffer: Any | None = None,
                               safety_replay: Any | None = None,
-                              safety_critic: Any | None = None) -> dict[str, Any]:
+                              safety_critic: Any | None = None,
+                              safety_validator: Any | None = None) -> dict[str, Any]:
     with Path(path).open('rb') as f:
         payload = pickle.load(f)
     required = {'step'}
@@ -98,8 +115,15 @@ def restore_training_snapshot(path: str | Path,
         if agent is None:
             raise ValueError(
                 'An agent template is required to restore state snapshots')
-        payload['agent'] = serialization.from_state_dict(
-            agent, payload['agent_state'])
+        agent_state = payload['agent_state']
+        # Older SAC snapshots predate the SQRL Lagrange multiplier field.
+        if (isinstance(agent_state, dict)
+                and 'safety_lagrange' not in agent_state
+                and hasattr(agent, 'safety_lagrange')):
+            template_state = serialization.to_state_dict(agent)
+            agent_state = dict(agent_state)
+            agent_state['safety_lagrange'] = template_state['safety_lagrange']
+        payload['agent'] = serialization.from_state_dict(agent, agent_state)
     elif 'agent' not in payload:
         raise ValueError(
             f'Incomplete training snapshot {path}: missing agent state')
@@ -114,6 +138,28 @@ def restore_training_snapshot(path: str | Path,
         safety_replay.load_state_dict(payload['safety_replay_state'])
         payload['safety_replay'] = safety_replay
     if 'safety_critic_state' in payload and safety_critic is not None:
+        safety_state = payload['safety_critic_state']
+        # Safety calibration was added after the original Stage-1 snapshots.
+        # Preserve those checkpoints by taking the neutral T=1 value from the
+        # current template when the serialized field is absent.
+        if (isinstance(safety_state, dict)
+                and 'calibration_temperature' not in safety_state
+                and hasattr(safety_critic, 'calibration_temperature')):
+            template_state = serialization.to_state_dict(safety_critic)
+            safety_state = dict(safety_state)
+            safety_state['calibration_temperature'] = (
+                template_state['calibration_temperature'])
         payload['safety_critic'] = serialization.from_state_dict(
-            safety_critic, payload['safety_critic_state'])
+            safety_critic, safety_state)
+    if ('safety_validator_state' in payload
+            and safety_validator is not None):
+        validator_state = payload['safety_validator_state']
+        if (isinstance(validator_state, dict)
+                and 'calibration_temperature' not in validator_state):
+            template_state = serialization.to_state_dict(safety_validator)
+            validator_state = dict(validator_state)
+            validator_state['calibration_temperature'] = (
+                template_state['calibration_temperature'])
+        payload['safety_validator'] = serialization.from_state_dict(
+            safety_validator, validator_state)
     return payload

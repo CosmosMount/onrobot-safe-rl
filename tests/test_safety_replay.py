@@ -26,6 +26,9 @@ def _transition(value: float, *, unsafe: bool = False,
         truncated=done and not unsafe,
         unsafe_label=unsafe,
         near_failure_label=boundary or unsafe,
+        policy_version=int(value),
+        episode_id=17,
+        command_speed=0.6,
     )
 
 
@@ -37,6 +40,16 @@ def _manager(history: int = 3) -> SafetyReplayManager:
 
 
 class SafetyReplayTest(unittest.TestCase):
+
+    def test_sample_recent_balanced_half_positives(self):
+        replay = _manager(history=3)
+        for value in range(20):
+            replay.insert(_transition(float(value)))
+        replay.insert(_transition(20.0, unsafe=True, done=True))
+        batch = replay.sample_recent_balanced(32)
+        rate = float(np.mean(batch['future_failure_labels']))
+        self.assertGreaterEqual(rate, 0.4)
+        self.assertLessEqual(rate, 0.6)
 
     def test_failure_buffer_backfills_h_preceding_steps(self):
         replay = _manager(history=3)
@@ -58,6 +71,26 @@ class SafetyReplayTest(unittest.TestCase):
             item['future_failure_labels'] for item in replay.recent._items
         ]
         self.assertEqual(recent_labels, [0.0, 0.0, 1.0, 1.0, 1.0, 1.0])
+
+    def test_multi_horizon_labels_and_metadata(self):
+        replay = _manager(history=20)
+        for value in range(12):
+            replay.insert(_transition(float(value)))
+        replay.insert(_transition(12.0, unsafe=True, done=True))
+
+        items = list(replay.recent._items)
+        oldest = items[0]
+        eight_steps_before = items[4]
+        failure = items[-1]
+        self.assertEqual(int(oldest['time_to_failure_steps']), 12)
+        self.assertEqual(oldest['future_failure_h8'], 0.0)
+        self.assertEqual(oldest['future_failure_h16'], 1.0)
+        self.assertEqual(eight_steps_before['future_failure_h8'], 1.0)
+        self.assertEqual(int(failure['time_to_failure_steps']), 0)
+        self.assertEqual(failure['future_failure_h8'], 1.0)
+        self.assertEqual(int(failure['episode_ids']), 17)
+        self.assertEqual(int(failure['policy_versions']), 12)
+        self.assertAlmostEqual(float(failure['command_speeds']), 0.6)
 
     def test_boundary_and_recovery_are_isolated(self):
         replay = _manager()
@@ -103,6 +136,17 @@ class SafetyReplayTest(unittest.TestCase):
         self.assertEqual(batch['unsafe_labels'].shape, (100,))
         self.assertEqual(batch['future_failure_labels'].shape, (100,))
 
+    def test_sample_recent_only_uses_recent_buffer(self):
+        replay = _manager()
+        replay.insert(_transition(0.0))
+        replay.insert(_transition(1.0, boundary=True))
+        replay.insert(_transition(2.0, unsafe=True, done=True))
+        batch = replay.sample_recent(16)
+        self.assertEqual(batch['observations'].shape, (16, 3))
+        self.assertTrue(np.all(batch['source_ids'] == 0))
+        with self.assertRaises(ValueError):
+            _manager().sample_recent(4)
+
     def test_sparse_sources_fall_back_without_reducing_batch(self):
         replay = _manager()
         replay.insert(_transition(0.0))
@@ -118,6 +162,25 @@ class SafetyReplayTest(unittest.TestCase):
         restored.load_state_dict(replay.state_dict())
         self.assertEqual(restored.sizes, replay.sizes)
         self.assertEqual(restored.failure_history, replay.failure_history)
+
+    def test_legacy_state_adds_metadata_and_horizon_defaults(self):
+        replay = _manager(history=3)
+        replay.insert(_transition(1.0))
+        state = replay.state_dict()
+        state.pop('failure_horizons')
+        for name in ('recent', 'failure', 'boundary', 'recovery', 'all'):
+            for item in state[name]['items']:
+                for key in (
+                        'episode_ids', 'policy_versions', 'command_speeds',
+                        'time_to_failure_steps', 'future_failure_h8',
+                        'future_failure_h16', 'future_failure_h32'):
+                    item.pop(key, None)
+        restored = _manager(history=3)
+        restored.load_state_dict(state)
+        item = restored.recent._items[0]
+        self.assertIn('episode_ids', item)
+        self.assertIn('time_to_failure_steps', item)
+        self.assertIn('future_failure_h8', item)
 
     def test_training_checkpoint_restores_safety_replay(self):
         replay = _manager()

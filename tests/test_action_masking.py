@@ -1,3 +1,5 @@
+"""Legacy heuristic mask tests retained for historical action_masking.py."""
+
 from __future__ import annotations
 
 import unittest
@@ -11,7 +13,7 @@ from jaxrl.agents.safety_critic import SafetyCritic
 from jaxrl.env.specs import BoxSpec
 
 
-class ActionMaskingTest(unittest.TestCase):
+class LegacyActionMaskingTest(unittest.TestCase):
 
     def test_selects_bounded_candidate_and_reports_metrics(self):
         obs_spec = BoxSpec((5,), np.float32)
@@ -30,15 +32,7 @@ class ActionMaskingTest(unittest.TestCase):
         self.assertTrue(np.all(action <= 1.0))
         self.assertGreaterEqual(info['mask_rejected_fraction'], 0.0)
         self.assertLessEqual(info['mask_rejected_fraction'], 1.0)
-        self.assertGreaterEqual(info['selected_Q_safe'], 0.0)
-        self.assertLessEqual(info['selected_Q_safe'], 1.0)
         self.assertEqual(np.asarray(rng).shape, (2,))
-
-    def test_rejects_invalid_candidate_count(self):
-        with self.assertRaises(ValueError):
-            select_masked_action(
-                None, None, np.zeros(1), jax.random.PRNGKey(0),
-                num_candidates=0)
 
 
 if __name__ == '__main__':

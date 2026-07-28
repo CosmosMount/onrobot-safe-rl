@@ -10,6 +10,7 @@ from flax import struct
 from flax.training.train_state import TrainState
 
 from jaxrl.agents.agent import Agent
+from jaxrl.agents.sac.safety_lagrange import SafetyLagrange
 from jaxrl.agents.sac.temperature import Temperature
 from jaxrl.data.dataset import DatasetDict
 from jaxrl.distributions import TanhNormal
@@ -39,6 +40,7 @@ class DroQLearner(Agent):
     critic: TrainState
     target_critic: TrainState
     temp: TrainState
+    safety_lagrange: TrainState
     tau: float
     discount: float
     target_entropy: float
@@ -55,6 +57,7 @@ class DroQLearner(Agent):
                actor_lr: float = 3e-4,
                critic_lr: float = 3e-4,
                temp_lr: float = 3e-4,
+               safety_lagrange_lr: float = 3e-4,
                hidden_dims: Sequence[int] = (256, 256),
                discount: float = 0.99,
                tau: float = 0.005,
@@ -64,6 +67,7 @@ class DroQLearner(Agent):
                critic_layer_norm: bool = False,
                target_entropy: Optional[float] = None,
                init_temperature: float = 1.0,
+               init_safety_lagrange: float = 1.0,
                sampled_backup: bool = True):
         """
         An implementation of the version of Soft-Actor-Critic described in https://arxiv.org/abs/1812.05905
@@ -78,7 +82,7 @@ class DroQLearner(Agent):
             target_entropy = -action_dim / 2
 
         rng = jax.random.PRNGKey(seed)
-        rng, actor_key, critic_key, temp_key = jax.random.split(rng, 4)
+        rng, actor_key, critic_key, temp_key, nu_key = jax.random.split(rng, 5)
 
         actor_base_cls = partial(MLP,
                                  hidden_dims=hidden_dims,
@@ -122,12 +126,23 @@ class DroQLearner(Agent):
                                      optax.adam(learning_rate=temp_lr),
                                  ))
 
+        nu_def = SafetyLagrange(init_safety_lagrange)
+        nu_params = nu_def.init(nu_key)['params']
+        safety_lagrange = TrainState.create(
+            apply_fn=nu_def.apply,
+            params=nu_params,
+            tx=optax.chain(
+                optax.clip_by_global_norm(1.0),
+                optax.adam(learning_rate=safety_lagrange_lr),
+            ))
+
         return _normalize_agent_tree(
             cls(rng=rng,
                 actor=actor,
                 critic=critic,
                 target_critic=target_critic,
                 temp=temp,
+                safety_lagrange=safety_lagrange,
                 target_entropy=target_entropy,
                 tau=tau,
                 discount=discount,
@@ -168,6 +183,73 @@ class DroQLearner(Agent):
         agent = agent.replace(actor=actor, rng=rng)
 
         return agent, actor_info
+
+    @staticmethod
+    @jax.jit
+    def update_actor_sqrl(agent, batch: DatasetDict, safety_critic,
+                          epsilon_safe: float
+                          ) -> Tuple[Agent, Dict[str, float]]:
+        """SAC actor update with SQRL Lagrange safety term (fine-tune)."""
+        key, rng = jax.random.split(agent.rng)
+        key2, rng = jax.random.split(rng)
+
+        def actor_loss_fn(
+                actor_params) -> Tuple[jnp.ndarray, Dict[str, float]]:
+            dist = agent.actor.apply_fn({'params': actor_params},
+                                        batch['observations'])
+            actions, log_probs = dist.sample_and_log_prob(seed=key)
+            qs = agent.critic.apply_fn({'params': agent.critic.params},
+                                       batch['observations'],
+                                       actions,
+                                       True,
+                                       rngs={'dropout': key2})
+            q = qs.mean(axis=0)
+            q_safe = safety_critic.critic.apply_fn(
+                {'params': safety_critic.critic.params},
+                batch['observations'], actions)
+            nu = agent.safety_lagrange.apply_fn(
+                {'params': agent.safety_lagrange.params})
+            # Cap effective multiplier so a sharp Q_safe does not freeze gait.
+            nu = jnp.minimum(nu, 2.0)
+            alpha = agent.temp.apply_fn({'params': agent.temp.params})
+            # Minimize: alpha log pi - Q_r + nu (Q_safe - eps)
+            actor_loss = (
+                alpha * log_probs - q + nu * (q_safe - epsilon_safe)).mean()
+            return actor_loss, {
+                'actor_loss': actor_loss,
+                'entropy': -log_probs.mean(),
+                'sqrl_q_safe_mean': q_safe.mean(),
+                'sqrl_nu': nu,
+            }
+
+        grads, actor_info = jax.grad(actor_loss_fn,
+                                     has_aux=True)(agent.actor.params)
+        actor = agent.actor.apply_gradients(grads=grads)
+        agent = agent.replace(actor=actor, rng=rng)
+        return agent, actor_info
+
+    @staticmethod
+    @jax.jit
+    def update_safety_lagrange(agent, q_safe_mean: float,
+                               epsilon_safe: float
+                               ) -> Tuple[Agent, Dict[str, float]]:
+        """Dual ascent on nu for E[Q_safe] <= epsilon_safe."""
+
+        def nu_loss_fn(nu_params):
+            nu = agent.safety_lagrange.apply_fn({'params': nu_params})
+            # Minimize -nu*(eps - Q) <=> ascent when Q > eps.
+            nu_loss = -nu * (epsilon_safe - q_safe_mean)
+            return nu_loss, {
+                'sqrl_nu': nu,
+                'sqrl_nu_loss': nu_loss,
+                'sqrl_constraint_violation': q_safe_mean - epsilon_safe,
+            }
+
+        grads, nu_info = jax.grad(nu_loss_fn,
+                                  has_aux=True)(agent.safety_lagrange.params)
+        safety_lagrange = agent.safety_lagrange.apply_gradients(grads=grads)
+        agent = agent.replace(safety_lagrange=safety_lagrange)
+        return agent, nu_info
 
     @staticmethod
     @jax.jit
@@ -263,16 +345,19 @@ class DroQLearner(Agent):
         return new_agent, info
 
     @staticmethod
-    @partial(jax.jit, static_argnames=('utd_ratio', ))
-    def _update_fused(agent, batch: DatasetDict, utd_ratio: int):
-        """Run one UTD update as a single compiled program."""
-
+    def _split_mini_batches(batch: DatasetDict, utd_ratio: int):
         def split_utd_axis(x):
             assert x.shape[0] % utd_ratio == 0
             mini_batch_size = x.shape[0] // utd_ratio
             return x.reshape((utd_ratio, mini_batch_size, *x.shape[1:]))
 
-        mini_batches = jax.tree_util.tree_map(split_utd_axis, batch)
+        return jax.tree_util.tree_map(split_utd_axis, batch)
+
+    @staticmethod
+    @partial(jax.jit, static_argnames=('utd_ratio', ))
+    def _update_fused(agent, batch: DatasetDict, utd_ratio: int):
+        """Run one UTD update as a single compiled program."""
+        mini_batches = DroQLearner._split_mini_batches(batch, utd_ratio)
 
         def critic_step(carry, mini_batch):
             return DroQLearner.update_critic(carry, mini_batch)
@@ -281,15 +366,45 @@ class DroQLearner(Agent):
             critic_step, agent, mini_batches)
         critic_info = jax.tree_util.tree_map(lambda x: x[-1], critic_infos)
         actor_batch = jax.tree_util.tree_map(lambda x: x[-1], mini_batches)
-
         new_agent, actor_info = DroQLearner.update_actor(
             new_agent, actor_batch)
         new_agent, temp_info = DroQLearner.update_temperature(
             new_agent, actor_info['entropy'])
-
         return new_agent, {**actor_info, **critic_info, **temp_info}
 
-    def update(self, batch: DatasetDict, utd_ratio: int):
-        new_agent, info = DroQLearner._update_fused(
-            self, batch, utd_ratio)
+    @staticmethod
+    @partial(jax.jit, static_argnames=('utd_ratio', ))
+    def _update_fused_sqrl(agent, batch: DatasetDict, utd_ratio: int,
+                           safety_critic, epsilon_safe: float):
+        """UTD update with SQRL Lagrange actor term (fine-tune phase)."""
+        mini_batches = DroQLearner._split_mini_batches(batch, utd_ratio)
+
+        def critic_step(carry, mini_batch):
+            return DroQLearner.update_critic(carry, mini_batch)
+
+        new_agent, critic_infos = jax.lax.scan(
+            critic_step, agent, mini_batches)
+        critic_info = jax.tree_util.tree_map(lambda x: x[-1], critic_infos)
+        actor_batch = jax.tree_util.tree_map(lambda x: x[-1], mini_batches)
+        new_agent, actor_info = DroQLearner.update_actor_sqrl(
+            new_agent, actor_batch, safety_critic, epsilon_safe)
+        new_agent, nu_info = DroQLearner.update_safety_lagrange(
+            new_agent, actor_info['sqrl_q_safe_mean'], epsilon_safe)
+        new_agent, temp_info = DroQLearner.update_temperature(
+            new_agent, actor_info['entropy'])
+        return new_agent, {
+            **actor_info, **nu_info, **critic_info, **temp_info}
+
+    def update(self, batch: DatasetDict, utd_ratio: int, *,
+               safety_critic=None, epsilon_safe: float = 0.10,
+               sqrl_use_lagrange: bool = False):
+        if sqrl_use_lagrange:
+            if safety_critic is None:
+                raise ValueError(
+                    'sqrl_use_lagrange requires a safety_critic')
+            new_agent, info = DroQLearner._update_fused_sqrl(
+                self, batch, utd_ratio, safety_critic, float(epsilon_safe))
+        else:
+            new_agent, info = DroQLearner._update_fused(
+                self, batch, utd_ratio)
         return _normalize_agent_tree(new_agent), info

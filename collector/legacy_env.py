@@ -29,4 +29,11 @@ def build_legacy_env(robot_cfg, train_cfg: TrainConfig, seed: int) -> Go2Env:
         standup_timeout_steps=train_cfg.standup_timeout_steps,
         abort_on_unstable_reset=train_cfg.abort_on_unstable_reset,
         seed=seed,
+        cmd_speed_curriculum=bool(train_cfg.cmd_speed_curriculum),
+        cmd_speed_min=float(train_cfg.cmd_speed_min),
+        cmd_speed_max=float(train_cfg.cmd_speed_max),
+        cmd_speed_curriculum_steps=int(train_cfg.cmd_speed_curriculum_steps),
+        cmd_speed_increment=float(train_cfg.cmd_speed_increment),
+        cmd_speed_frontier_probability=float(
+            train_cfg.cmd_speed_frontier_probability),
     )

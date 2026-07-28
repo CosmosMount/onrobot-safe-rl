@@ -72,7 +72,7 @@ class ControlScheduleTest(unittest.TestCase):
             patch('train.env.qpos_to_action',
                   return_value=np.zeros(12, dtype=np.float32)),
             patch('train.env.build_observation',
-                  return_value=np.zeros(58, dtype=np.float32)),
+                  return_value=np.zeros(59, dtype=np.float32)),
             patch('train.env.get_run_reward_from_state',
                   return_value=(0.0, {'forward_velocity': 0.0})),
             patch('train.env.get_terminal_penalty', return_value=0.0),

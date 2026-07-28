@@ -6,6 +6,7 @@ module only as the in-process compatibility adapter for `python -m train`.
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from typing import Any, Dict, Optional, Tuple
 
@@ -66,7 +67,13 @@ class Go2Env:
                  recovery_stable_steps: int = 10,
                  standup_timeout_steps: int = 200,
                  abort_on_unstable_reset: bool = True,
-                 seed: int = 0):
+                 seed: int = 0,
+                 cmd_speed_curriculum: bool = False,
+                 cmd_speed_min: float = 0.30,
+                 cmd_speed_max: float = 1.0,
+                 cmd_speed_curriculum_steps: int = 12_000,
+                 cmd_speed_increment: float = 0.05,
+                 cmd_speed_frontier_probability: float = 0.50):
         self.cfg = go2_config or load_app_config()[0]
         self.dds_config = dds_config
         self.control_dt = 1.0 / control_frequency
@@ -81,6 +88,15 @@ class Go2Env:
         self.recovery_stable_steps = recovery_stable_steps
         self.standup_timeout_steps = standup_timeout_steps
         self.abort_on_unstable_reset = abort_on_unstable_reset
+        self.cmd_speed_curriculum = bool(cmd_speed_curriculum)
+        self.cmd_speed_min = float(cmd_speed_min)
+        self.cmd_speed_max = float(cmd_speed_max)
+        self.cmd_speed_curriculum_steps = max(int(cmd_speed_curriculum_steps), 1)
+        self.cmd_speed_increment = float(cmd_speed_increment)
+        self.cmd_speed_frontier_probability = float(
+            cmd_speed_frontier_probability)
+        self._curriculum_step = 0
+        self._curriculum_upper_speed = self.cmd_speed_min
 
         n = self.cfg.num_joints
         self.observation_space = BoxSpec(shape=(self.cfg.obs_dim,),
@@ -118,6 +134,35 @@ class Go2Env:
             seed = int(self._np_random.randint(0, 2**31 - 1))
         self._np_random.seed(seed)
         return seed
+
+    def set_curriculum_step(self, step: int) -> None:
+        """Retained for compatibility with old checkpoints and split mode."""
+        self._curriculum_step = max(int(step), 0)
+
+    def set_curriculum_upper_speed(self, speed: float) -> None:
+        self._curriculum_upper_speed = float(np.clip(
+            speed, self.cmd_speed_min, self.cmd_speed_max))
+
+    def _cmd_speed_upper(self) -> float:
+        if not self.cmd_speed_curriculum:
+            return float(self.cfg.move_speed)
+        return float(self._curriculum_upper_speed)
+
+    def _sample_episode_cmd_speed(self) -> float:
+        if not self.cmd_speed_curriculum:
+            return float(self.cfg.move_speed)
+        lo = float(self.cmd_speed_min)
+        hi = max(lo, self._cmd_speed_upper())
+        if hi <= lo + 1e-9:
+            return lo
+        if self._np_random.uniform() < self.cmd_speed_frontier_probability:
+            return hi
+        count = int(np.floor((hi - lo) / self.cmd_speed_increment + 1e-6))
+        stage = int(self._np_random.randint(0, max(count, 1)))
+        return float(min(hi, lo + stage * self.cmd_speed_increment))
+
+    def _set_move_speed(self, speed: float) -> None:
+        self.cfg = dataclasses.replace(self.cfg, move_speed=float(speed))
 
     def _ensure_connected(self) -> None:
         if self._state_reader is None:
@@ -255,6 +300,9 @@ class Go2Env:
         # The previous reset's scripted frames should have been drained by the
         # collector. Never mix them across logical episode boundaries.
         self._recovery_transitions = []
+
+        if getattr(self, 'cmd_speed_curriculum', False):
+            self._set_move_speed(self._sample_episode_cmd_speed())
 
         self._step_count = 0
         # A time-limit truncation is only a logical episode boundary: physics
@@ -490,6 +538,7 @@ class Go2Env:
             'world_z': float(state.world_position[2]),
             'step_count': self._step_count,
             'standup_step_count': self._standup_step_count,
+            'cmd_speed': float(getattr(self.cfg, 'move_speed', float('nan'))),
             **safety_info,
             **reward_info,
         }

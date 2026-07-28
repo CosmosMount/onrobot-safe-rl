@@ -43,7 +43,9 @@ def build_transition(observation: np.ndarray,
                      *,
                      projected_action: np.ndarray | None = None,
                      executed_q_target: np.ndarray | None = None,
-                     policy_version: int = 0) -> Transition:
+                     policy_version: int = 0,
+                     episode_id: int = 0,
+                     command_speed: float | None = None) -> Transition:
     action = np.asarray(action, dtype=np.float32)
     projected = action if projected_action is None else np.asarray(
         projected_action, dtype=np.float32)
@@ -60,6 +62,13 @@ def build_transition(observation: np.ndarray,
                   or reason in unsafe_reasons
                   or info.get('is_belly_up')
                   or info.get('hard_fall'))
+    if command_speed is None:
+        command_speed = info.get(
+            'cmd_speed',
+            float(observation[-1]) if np.asarray(observation).size else 0.0)
+    command_speed = float(command_speed)
+    if not np.isfinite(command_speed):
+        command_speed = 0.0
     return Transition(
         observation=np.asarray(observation, dtype=np.float32),
         requested_action=action,
@@ -75,5 +84,7 @@ def build_transition(observation: np.ndarray,
         unsafe_label=unsafe,
         near_failure_label=bool(info.get('near_failure_label', False)
                                 or unsafe),
-        policy_version=policy_version,
+        policy_version=int(policy_version),
+        episode_id=int(episode_id),
+        command_speed=command_speed,
     )
