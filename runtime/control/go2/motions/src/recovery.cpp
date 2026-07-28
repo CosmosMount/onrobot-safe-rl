@@ -1,6 +1,9 @@
 #include "recovery.hpp"
 #include "motions.hpp"
 
+#include <cmath>
+#include <iostream>
+
 namespace motions
 {
     recovery::recovery(const recovery_config& recovery, float control_hz)
@@ -154,7 +157,7 @@ namespace motions
         for (int leg = 0; leg < 4; ++leg) 
         {
             const std::array<float, 12>& src =
-                leg_mask[leg] ? pose : recovery_.fsold_jpos;
+                leg_mask[leg] ? pose : recovery_.fold_jpos;
             for (int j = 0; j < 3; ++j) 
             {
                 q_out[leg * 3 + j] = src[leg * 3 + j];

@@ -7,7 +7,6 @@ namespace motions
 {
     struct recovery_config
     {
-        bool configured = false;
         std::array<float, 12> fold_jpos{};
         std::array<float, 12> above_jpos{};
         std::array<float, 12> swing_down_jpos{};
@@ -25,7 +24,6 @@ namespace motions
         float joint_reach_tol = 0.12f;
         float kp = 100.f;
         float kd = 8.f;
-        bool deactivate_motion_service = false;
     };
 
     enum class recovery_stage

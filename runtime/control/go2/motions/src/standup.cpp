@@ -1,6 +1,9 @@
 #include "standup.hpp"
 #include "motions.hpp"
 
+#include <cmath>
+#include <iostream>
+
 namespace motions
 {
     standup::standup(const standup_config& stand_up, float control_hz)
@@ -31,10 +34,6 @@ namespace motions
     bool standup::near_stable_pose(
         const unitree_go::msg::dds_::LowState_& state) const
     {
-        if (!stand_up_.configured) 
-        {
-            return true;
-        }
         for (int i = 0; i < 12; ++i) 
         {
             if (std::abs(state.motor_state()[i].q() - stand_up_.stable_pose[i]) >
@@ -50,7 +49,7 @@ namespace motions
                             const unitree_go::msg::dds_::LowState_& state,
                             std::array<float, 12>& q_out)
     {
-        if (!state_received || !stand_up_.configured || stand_up_.num_phases <= 0) 
+        if (!state_received || stand_up_.num_phases <= 0) 
         {
             q_out = stand_up_.stable_pose;
             return true;

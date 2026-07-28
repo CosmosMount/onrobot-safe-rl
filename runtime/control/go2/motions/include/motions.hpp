@@ -1,14 +1,24 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
+
 namespace motions
 {
-    int seconds_to_ticks(float seconds, float control_hz)
+    inline int seconds_to_ticks(float seconds, float control_hz)
     {
         return std::max(1, static_cast<int>(std::lround(seconds * control_hz)));
     }
 
-    float clamp01(float v)
+    inline float clamp01(float v)
     {
         return std::max(0.f, std::min(1.f, v));
     }
+
+    struct imu_thresholds
+    {
+        float upside_down_acc_z_on = -1.f;   // m/s², enter belly-up
+        float upside_down_acc_z_off = 3.f;  // m/s², exit belly-up (Schmitt)
+        float fallen_acc_z_off = 7.f;        // m/s², upright when acc_z above
+    };
 }

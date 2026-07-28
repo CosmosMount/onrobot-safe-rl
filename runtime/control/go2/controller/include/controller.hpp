@@ -11,8 +11,12 @@
 #include <unitree/robot/channel/channel_publisher.hpp>
 #include <unitree/robot/channel/channel_subscriber.hpp>
 
+#include "policy.hpp"
 #include "motions.hpp"
+#include "recovery.hpp"
+#include "standup.hpp"
 #include "lowlevel.hpp"
+#include "config.hpp"
 
 namespace control
 {
@@ -30,7 +34,7 @@ namespace control
 
         controller(int domain_id,
                 const std::string& network_interface,
-                const app_config& app,
+                const control::app_config& app,
                 const std::string& ipc_socket,
                 float control_hz);
 
@@ -41,24 +45,17 @@ namespace control
     private:
 
         void loop();
-        void enter_policy_phase(const unitree_go::msg::dds_::LowState_& state);
-        void start_recover(const unitree_go::msg::dds_::LowState_& state,
-                        bool state_received);
-        void start_standup(const unitree_go::msg::dds_::LowState_& state,
-                        bool state_received);
-        void begin_motion_service_if_needed(bool should_deactivate);
-        void copy_state_snapshot(unitree_go::msg::dds_::LowState_& state,
-                                bool& state_received) const;
-        void blend_target_to_nominal();
 
-        control_config config_;
-        imu_orientation_config imu_config_;
-        
+        lowlevel::config config_;
+        motions::imu_thresholds imu_thresholds_;
+
         float control_hz_;
         float control_dt_;
         policy_scheduler scheduler_;
         controller_phase phase_{controller_phase::AWAIT_STATE};
         std::unique_ptr<policy_receiver> policy_receiver_;
+
+        lowlevel::cmd cmd_;
 
         motions::recovery_config recovery_config_;
         motions::standup_config stand_up_config_;

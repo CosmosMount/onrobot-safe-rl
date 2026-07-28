@@ -8,7 +8,6 @@ namespace motions
 
     struct standup_config
     {
-        bool configured = false;
         static constexpr int kMaxPhases = 4;
         int num_phases = 0;
         std::array<std::array<float, 12>, kMaxPhases> keyframes{};
@@ -32,7 +31,7 @@ namespace motions
     {
     public:
 
-        standup(standup_config& _config, float control_hz);
+        standup(const standup_config& _config, float control_hz);
         void reset(const unitree_go::msg::dds_::LowState_& state);
         bool update(bool _state_received,
                     const unitree_go::msg::dds_::LowState_& state,
@@ -41,8 +40,8 @@ namespace motions
 
     private:
 
-        standup_config config_;
-        float ctrl_hz_;
+        standup_config stand_up_;
+        float control_hz_;
         int warmup_ticks_;
         int hold_ticks_;
         std::array<int, standup_config::kMaxPhases> phase_ticks_{};
