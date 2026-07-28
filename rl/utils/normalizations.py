@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from rl.common.distributions import safe_tanh_log_det_jacobian
+from rl.utils.distributions import safe_tanh_log_det_jacobian
 
 
 class UnitLinear(nn.Module):

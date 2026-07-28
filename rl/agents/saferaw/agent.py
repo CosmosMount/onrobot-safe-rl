@@ -3,8 +3,8 @@ from typing import Any, Mapping, TypeVar
 import gymnasium as gym
 import numpy as np
 
-from rl.base.agent import BaseAgent
-from rl.common.types import NDArray, Tensor
+from rl.agents.base.agent import BaseAgent
+from rl.utils.types import NDArray, Tensor
 
 Config = TypeVar("Config")
 

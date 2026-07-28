@@ -3,7 +3,7 @@ from typing import Any, Generic, MutableMapping, TypeVar
 
 import gymnasium as gym
 
-from rl.common.types import NDArray, Tensor
+from rl.utils.types import NDArray, Tensor
 
 Config = TypeVar("Config")
 

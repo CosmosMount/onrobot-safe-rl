@@ -3,8 +3,8 @@ import math
 import torch
 import torch.nn as nn
 
-from rl.common.normalizations import UnitRMSNorm, NormalTanhPolicy
-from rl.flashsac.agent.flashsac.layer import FlashSACEmbedder, FlashSACBlock
+from rl.utils.normalizations import UnitRMSNorm, NormalTanhPolicy, EnsembleUnitRMSNorm, EnsembleCategoricalValue
+from rl.agents.flashsac.layer import FlashSACEmbedder, FlashSACBlock, EnsembleFlashSACEmbedder, EnsembleFlashSACBlock
 
 
 class FlashSACActor(nn.Module):
