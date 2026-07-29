@@ -36,9 +36,12 @@ train:
   seed: 42
   control_frequency: 20.0
   max_episode_steps: 400
+  reset_grace_steps: 20
+  reset_hold_steps: 220
   reset_joint_tolerance: 0.30
   recovery_stable_steps: 10
   standup_timeout_steps: 200
+  abort_on_unstable_reset: true
   max_joint_delta: null
   use_action_filter: false
   explore_action_scale: 0.2

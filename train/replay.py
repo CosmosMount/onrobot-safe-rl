@@ -91,9 +91,9 @@ class FlashSACNumpyReplay(NpyUniformBuffer):
         super().load(_npy_replay_path(path))
 
 
-def install_flashsac_numpy_replay(agent, env, cfg) -> None:
+def install_flashsac_numpy_replay(agent, env, cfg) -> bool:
     if str(getattr(cfg, "agent_type", "")).lower() != "flashsac":
-        return
+        return False
     agent._replay_buffer = FlashSACNumpyReplay(
         observation_space=env.observation_space,
         action_space=env.action_space,
@@ -104,3 +104,4 @@ def install_flashsac_numpy_replay(agent, env, cfg) -> None:
         sample_batch_size=int(cfg.sample_batch_size),
         device_type=str(cfg.buffer_device_type),
     )
+    return True

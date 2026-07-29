@@ -252,6 +252,7 @@ def run_training(agent, env, cfg: TrainConfig):
     total_falls = 0
     total_recoveries = 0
     total_timeouts = 0
+    warned_runtime_time_limit = False
 
     max_steps = cfg.benchmark_steps if cfg.benchmark_only else cfg.max_steps
     iterator = range(start_i, max_steps)
@@ -286,6 +287,7 @@ def run_training(agent, env, cfg: TrainConfig):
                 action_ok = False
 
             policy_step = bool(info.get("policy_step", True))
+            count_policy_step = bool(info.get("count_policy_step", policy_step))
             replay_enabled = bool(info.get("replay_enabled", policy_step))
             insert_ok = (
                 policy_step
@@ -310,9 +312,21 @@ def run_training(agent, env, cfg: TrainConfig):
             observation = next_observation
             if insert_ok:
                 episode_return += float(reward)
-            if policy_step:
+            if count_policy_step:
                 episode_length += 1
                 total_policy_steps += 1
+                if (
+                    not done
+                    and not warned_runtime_time_limit
+                    and episode_length > cfg.max_episode_steps
+                ):
+                    _log(
+                        "[train] warning: policy episode length exceeded "
+                        f"max_episode_steps={cfg.max_episode_steps} without runtime truncation; "
+                        "restart the standalone runtime so it uses the current config."
+                    )
+                    warned_runtime_time_limit = True
+            if policy_step:
                 total_falls += int(bool(info.get("terminated", False)))
                 total_recoveries += int(info.get("safety_mode") == "recovery")
                 total_timeouts += int(info.get("safety_reason") == "recovery_timeout")
@@ -329,7 +343,7 @@ def run_training(agent, env, cfg: TrainConfig):
                     cfg.utd_ratio / loop_elapsed if update_info is not None and loop_elapsed > 0 else 0.0
                 ),
             }
-            if policy_step:
+            if count_policy_step:
                 _update_meter(
                     rolling,
                     {
@@ -385,6 +399,13 @@ def run_training(agent, env, cfg: TrainConfig):
                     "env/action_frequency_hz": float(info.get("action_frequency_hz", np.nan)),
                     "env/control_hold_overrun_ms": float(info.get("control_hold_overrun_ms", 0.0)),
                     "env/controller_phase": float(info.get("controller_phase", -1)),
+                    "env/count_policy_step": float(count_policy_step),
+                    "env/reset_pose_error": float(info.get("reset_pose_error", np.nan)),
+                    "env/reset_pose_ready": float(bool(info.get("reset_pose_ready", True))),
+                    "env/awaiting_reset_pose": float(bool(info.get("awaiting_reset_pose", False))),
+                    "env/reset_pose_stable_count": float(info.get("reset_pose_stable_count", 0.0)),
+                    "env/reset_pose_wait_steps": float(info.get("reset_pose_wait_steps", 0.0)),
+                    "env/reset_pose_timed_out": float(bool(info.get("reset_pose_timed_out", False))),
                     "env/safety_roll": float(info.get("safety_roll", 0.0)),
                     "env/safety_pitch": float(info.get("safety_pitch", 0.0)),
                     "env/safety_acc_z": float(info.get("safety_acc_z", 0.0)),
@@ -433,6 +454,7 @@ def run_training(agent, env, cfg: TrainConfig):
                     observation = np.zeros(env.observation_space.shape, dtype=np.float32)
                 episode_return = 0.0
                 episode_length = 0
+                warned_runtime_time_limit = False
 
             if (
                 cfg.save_checkpoints
@@ -470,7 +492,10 @@ def run_play(agent, env, cfg: TrainConfig, *, checkpoint: str | None, episodes: 
             )
             observation, reward, done, info = env.step(action)
             episode_return += float(reward)
-            if info.get("policy_step", True):
+            count_policy_step = bool(
+                info.get("count_policy_step", info.get("policy_step", True))
+            )
+            if count_policy_step:
                 episode_length += 1
         _log(f"[play] episode={episode} return={episode_return:.2f} length={episode_length}")
     return 0

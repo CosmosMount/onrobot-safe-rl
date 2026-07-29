@@ -29,6 +29,12 @@ def _parse_args(argv=None) -> argparse.Namespace:
         help="Configuration profile.",
     )
     parser.add_argument(
+        "--agent",
+        choices=("flashsac", "droq"),
+        default=None,
+        help="Override train.agent from the selected configuration profile.",
+    )
+    parser.add_argument(
         "--checkpoint",
         default=None,
         help="Snapshot directory for --mode play. Defaults to latest in save_dir.",
@@ -54,9 +60,11 @@ def _build_env(robot_cfg, train_cfg) -> Go2Env:
         ipc_socket=robot_cfg.ipc_socket,
         max_joint_delta=train_cfg.max_joint_delta,
         use_action_filter=train_cfg.use_action_filter,
+        reset_hold_steps=train_cfg.reset_hold_steps,
         reset_joint_tolerance=train_cfg.reset_joint_tolerance,
         recovery_stable_steps=train_cfg.recovery_stable_steps,
         standup_timeout_steps=train_cfg.standup_timeout_steps,
+        abort_on_unstable_reset=train_cfg.abort_on_unstable_reset,
         seed=train_cfg.seed,
     )
 
@@ -68,8 +76,12 @@ def _build_agent(env: Go2Env, agent_cfg) -> BaseAgent:
         env_info={},
         cfg=agent_cfg,
     )
-    install_flashsac_numpy_replay(agent, env, agent_cfg)
-    print("[train] replay adapter=FlashSACNumpyReplay", flush=True)
+    replay_adapter = (
+        "FlashSACNumpyReplay"
+        if install_flashsac_numpy_replay(agent, env, agent_cfg)
+        else "agent-default"
+    )
+    print(f"[train] replay adapter={replay_adapter}", flush=True)
     return agent
 
 
@@ -77,7 +89,10 @@ def main(argv=None) -> int:
     os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
     args = _parse_args(argv)
-    robot_cfg, train_cfg, agent_cfg = load_app_config(profile=args.config_profile)
+    robot_cfg, train_cfg, agent_cfg = load_app_config(
+        profile=args.config_profile,
+        agent=args.agent,
+    )
     env = _build_env(robot_cfg, train_cfg)
     agent = _build_agent(env, agent_cfg)
 

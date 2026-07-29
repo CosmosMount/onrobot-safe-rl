@@ -40,9 +40,11 @@ class PolicyInferenceRuntime:
         action_socket: str | None = None,
         train_state_socket: str | None = None,
         max_episode_steps: int = 400,
+        reset_hold_steps: int = 220,
         reset_joint_tolerance: float = 0.30,
         recovery_stable_steps: int = 10,
         standup_timeout_steps: int = 200,
+        abort_on_unstable_reset: bool = True,
     ):
         if frequency_hz <= 0:
             raise ValueError("frequency_hz must be positive")
@@ -82,6 +84,14 @@ class PolicyInferenceRuntime:
         self._last_debug_time = 0.0
         self._last_debug_signature: tuple[Any, ...] | None = None
         self._step_count = 0
+        self._awaiting_reset_pose = False
+        self._reset_pose_stable_count = 0
+        self._reset_pose_wait_steps = 0
+        self._reset_pose_timed_out = False
+        self._reset_pose_stable_steps = int(recovery_stable_steps)
+        self._reset_hold_steps = int(reset_hold_steps)
+        self._reset_joint_tolerance = float(reset_joint_tolerance)
+        self._abort_on_unstable_reset = bool(abort_on_unstable_reset)
         self._action_rx = SharedMemoryReceiver(action_socket or robot_cfg.runtime_action_shm)
         self._train_tx = SharedMemorySender(train_state_socket or robot_cfg.runtime_state_shm)
         self._safety = SafeRawSupervisor(
@@ -92,6 +102,18 @@ class PolicyInferenceRuntime:
             timeout_steps=standup_timeout_steps,
         )
         self._max_episode_steps = int(max_episode_steps)
+
+    def _begin_reset_pose_wait(self) -> None:
+        self._awaiting_reset_pose = True
+        self._reset_pose_stable_count = 0
+        self._reset_pose_wait_steps = 0
+        self._reset_pose_timed_out = False
+
+    def _end_reset_pose_wait(self) -> None:
+        self._awaiting_reset_pose = False
+        self._reset_pose_stable_count = 0
+        self._reset_pose_wait_steps = 0
+        self._reset_pose_timed_out = False
 
     @property
     def state_reader(self) -> StateReader:
@@ -223,6 +245,12 @@ class PolicyInferenceRuntime:
             flush=True,
         )
 
+    def _reset_pose_error(self, state: Any) -> float:
+        return float(np.linalg.norm(state.joint_q.astype(np.float32) - self.robot_cfg.init_qpos))
+
+    def _reset_pose_ready(self, state: Any) -> bool:
+        return self._reset_pose_error(state) < self._reset_joint_tolerance
+
     def step_recovery(self) -> tuple[np.ndarray, dict[str, Any]]:
         return self.step_standup(with_recovery=True)
 
@@ -294,13 +322,50 @@ class PolicyInferenceRuntime:
             state = self._state_reader.get_state()
             safety = self._safety.update(state)
         elif safety_before.restart_required:
+            self._begin_reset_pose_wait()
             self._clear_policy_action()
             observation, runtime_info = self.step_standup(
                 with_recovery=safety_before.recovery_requested)
             action_debug = "request_recovery" if safety_before.recovery_requested else "request_standup"
             self._recovery_upgrade_sent = bool(safety_before.recovery_requested)
             safety = safety_before
+        elif safety_before.policy_enabled and self._awaiting_reset_pose:
+            reset_ready_before = self._reset_pose_ready(state)
+            if reset_ready_before:
+                self._reset_pose_stable_count += 1
+            else:
+                self._reset_pose_stable_count = 0
+            self._reset_pose_wait_steps += 1
+
+            if self._reset_pose_stable_count >= self._reset_pose_stable_steps:
+                self._end_reset_pose_wait()
+                self._motion_request_sent = False
+                self._last_motion_request_time = 0.0
+                self._recovery_upgrade_sent = False
+                observation, runtime_info = self.step_wait_controller()
+                action_debug = "reset_pose_ready"
+            else:
+                timed_out = self._reset_pose_wait_steps >= self._reset_hold_steps
+                self._reset_pose_timed_out = timed_out
+                request_recovery = (
+                    timed_out
+                    and self._abort_on_unstable_reset
+                    and not self._recovery_upgrade_sent
+                )
+                if timed_out:
+                    self._reset_pose_wait_steps = 0
+                    self._reset_pose_stable_count = 0
+                    self._recovery_upgrade_sent = bool(request_recovery)
+                if request_recovery:
+                    observation, runtime_info = self.step_standup(with_recovery=True)
+                    action_debug = "reset_pose_timeout_recovery"
+                else:
+                    observation, runtime_info = self.step_wait_controller()
+                    action_debug = "reset_pose_timeout" if timed_out else "wait_reset_pose"
+            state = self._state_reader.get_state()
+            safety = self._safety.update(state)
         elif safety_before.policy_enabled:
+            self._end_reset_pose_wait()
             observation, runtime_info = self.step(self._latest_action)
             action_debug = "policy"
             state = self._state_reader.get_state()
@@ -326,19 +391,24 @@ class PolicyInferenceRuntime:
             safety = self._safety.update(state)
 
         state = self._state_reader.get_state()
+        reset_pose_error = self._reset_pose_error(state)
+        reset_pose_ready = reset_pose_error < self._reset_joint_tolerance
         reward, reward_info = get_run_reward_from_state(state, self.robot_cfg)
         controller_policy = int(state.phase) == CONTROLLER_PHASE_POLICY
         policy_step = action_debug == "policy"
         replay_enabled = policy_step
+        count_policy_step = policy_step and not safety.fallen and not safety.inverted
         if not controller_policy and safety.policy_enabled:
             safety.reason = "controller_nonpolicy"
         self._runtime_debug(state=state, safety=safety, action=action_debug)
-        self._step_count += int(policy_step)
+        self._step_count += int(count_policy_step)
         truncated = self._step_count >= self._max_episode_steps
         terminated = bool(safety.terminated)
         terminal_penalty = get_terminal_penalty(terminated=terminated, cfg=self.robot_cfg)
         done = terminated or truncated
         if done:
+            if terminated:
+                self._begin_reset_pose_wait()
             self._clear_policy_action()
             self._step_count = 0
             if truncated and not safety.restart_required:
@@ -346,6 +416,7 @@ class PolicyInferenceRuntime:
 
         info = {
             "policy_step": policy_step,
+            "count_policy_step": count_policy_step,
             "replay_enabled": replay_enabled,
             "restart_required": bool(safety.restart_required),
             "terminated": terminated,
@@ -360,6 +431,12 @@ class PolicyInferenceRuntime:
             "safety_pitch": float(safety.pitch),
             "safety_acc_z": float(safety.acc_z),
             "safety_body_up_cos": float(safety.body_up_cos),
+            "reset_pose_error": reset_pose_error,
+            "reset_pose_ready": bool(reset_pose_ready),
+            "awaiting_reset_pose": bool(self._awaiting_reset_pose),
+            "reset_pose_stable_count": float(self._reset_pose_stable_count),
+            "reset_pose_wait_steps": float(self._reset_pose_wait_steps),
+            "reset_pose_timed_out": bool(self._reset_pose_timed_out),
             "step_count": self._step_count,
             "terminal_penalty": float(terminal_penalty),
             **runtime_info,
@@ -410,9 +487,11 @@ def main(argv=None) -> int:
         max_joint_delta=train_cfg.max_joint_delta,
         use_action_filter=train_cfg.use_action_filter,
         max_episode_steps=train_cfg.max_episode_steps,
+        reset_hold_steps=train_cfg.reset_hold_steps,
         reset_joint_tolerance=train_cfg.reset_joint_tolerance,
         recovery_stable_steps=train_cfg.recovery_stable_steps,
         standup_timeout_steps=train_cfg.standup_timeout_steps,
+        abort_on_unstable_reset=train_cfg.abort_on_unstable_reset,
     )
     runtime.run_process()
     return 0

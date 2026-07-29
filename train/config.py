@@ -77,9 +77,12 @@ class TrainConfig:
     seed: int = 42
     control_frequency: float = 50.0
     max_episode_steps: int = 400
+    reset_grace_steps: int = 20
+    reset_hold_steps: int = 220
     reset_joint_tolerance: float = 0.30
     recovery_stable_steps: int = 10
     standup_timeout_steps: int = 200
+    abort_on_unstable_reset: bool = True
     max_joint_delta: float | None = None
     use_action_filter: bool = True
     explore_action_scale: float = 0.2
@@ -343,9 +346,13 @@ def _load_profile_root(overlay_path: Path) -> dict[str, Any]:
 def load_app_config(
         path: str | Path | None = None,
         *,
-        profile: str = 'go2') -> tuple[Go2Config, TrainConfig, DictConfig]:
+        profile: str = 'go2',
+        agent: str | None = None) -> tuple[Go2Config, TrainConfig, DictConfig]:
     if path is not None:
-        return parse_app_config(_load_profile_root(Path(path)))
+        root = _load_profile_root(Path(path))
+        if agent is not None:
+            root.setdefault('train', {})['agent'] = agent
+        return parse_app_config(root)
 
     profile_paths = {
         'go2': DEFAULT_CONFIG_PATH,
@@ -354,4 +361,7 @@ def load_app_config(
     }
     if profile not in profile_paths:
         raise ValueError(f'Unknown config profile: {profile}')
-    return parse_app_config(_load_profile_root(profile_paths[profile]))
+    root = _load_profile_root(profile_paths[profile])
+    if agent is not None:
+        root.setdefault('train', {})['agent'] = agent
+    return parse_app_config(root)
