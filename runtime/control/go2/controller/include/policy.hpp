@@ -24,6 +24,27 @@ namespace control
     };
     #pragma pack(pop)
 
+    #pragma pack(push, 1)
+    struct state_packet_t
+    {
+        static constexpr uint8_t magicSOF = 0x5A;
+
+        uint8_t SOF;
+        uint8_t phase;
+        double timestamp;
+        uint32_t low_state_count;
+        uint32_t sport_state_count;
+        float joint_q[12];
+        float joint_dq[12];
+        float imu_quat[4];
+        float imu_gyro[3];
+        float imu_accel[3];
+        float sport_velocity[3];
+        float world_position[3];
+        float q_target[12];
+    };
+    #pragma pack(pop)
+
     class policy_receiver
     {
     public:
@@ -93,5 +114,16 @@ namespace control
         uint64_t policy_sequence_{0};
         uint32_t ticks_per_policy_step_{25};
         uint32_t ticks_since_policy_{0};
+    };
+
+    class state_publisher
+    {
+    public:
+        explicit state_publisher(std::string socket_path);
+        void publish(const state_packet_t& packet);
+
+    private:
+        std::string socket_path_;
+        int fd_{-1};
     };
 }

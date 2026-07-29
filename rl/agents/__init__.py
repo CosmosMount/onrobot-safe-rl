@@ -23,7 +23,7 @@ def create_agent(
     agent: BaseAgent[Any]
 
     # sanity check
-    if agent_type == "flashSAC":
+    if agent_type == "flashsac":
 
         from rl.agents.flashsac.agent import (
             FlashSACAgent,

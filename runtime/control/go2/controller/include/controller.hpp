@@ -6,6 +6,7 @@
 #include <string>
 
 #include <unitree/idl/go2/LowState_.hpp>
+#include <unitree/idl/go2/SportModeState_.hpp>
 #include <unitree/common/thread/thread.hpp>
 #include <unitree/robot/channel/channel_factory.hpp>
 #include <unitree/robot/channel/channel_publisher.hpp>
@@ -36,6 +37,7 @@ namespace control
                 const std::string& network_interface,
                 const control::app_config& app,
                 const std::string& ipc_socket,
+                const std::string& state_socket,
                 float control_hz);
 
         void start();
@@ -45,6 +47,8 @@ namespace control
     private:
 
         void loop();
+        void enter_recover(const unitree_go::msg::dds_::LowState_& state);
+        void enter_stand_up(const unitree_go::msg::dds_::LowState_& state);
 
         lowlevel::config config_;
         motions::imu_thresholds imu_thresholds_;
@@ -54,6 +58,7 @@ namespace control
         policy_scheduler scheduler_;
         controller_phase phase_{controller_phase::AWAIT_STATE};
         std::unique_ptr<policy_receiver> policy_receiver_;
+        std::unique_ptr<state_publisher> state_publisher_;
 
         lowlevel::cmd cmd_;
 
@@ -64,14 +69,18 @@ namespace control
 
         std::array<float, 12> q_target{};
         std::array<float, 12> policy_target{};
+        uint32_t state_publish_count_{0};
         bool state_received_{false};
         mutable std::mutex state_mutex_;
 
         unitree_go::msg::dds_::LowCmd_ low_cmd_{};
         unitree_go::msg::dds_::LowState_ low_state_{};
+        unitree_go::msg::dds_::SportModeState_ sport_state_{};
+        bool sport_state_received_{false};
 
         unitree::robot::ChannelPublisherPtr<unitree_go::msg::dds_::LowCmd_> cmd_pub_;
         unitree::robot::ChannelSubscriberPtr<unitree_go::msg::dds_::LowState_> state_sub_;
+        unitree::robot::ChannelSubscriberPtr<unitree_go::msg::dds_::SportModeState_> sport_state_sub_;
         unitree::common::ThreadPtr control_thread_;
 
         std::atomic<bool> running_{false};

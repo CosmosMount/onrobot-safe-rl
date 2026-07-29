@@ -146,4 +146,27 @@ namespace control
 
         ::close(fd);
     }
+
+    state_publisher::state_publisher(std::string socket_path)
+        : socket_path_(std::move(socket_path))
+    {
+        fd_ = ::socket(AF_UNIX, SOCK_DGRAM, 0);
+        if (fd_ < 0)
+        {
+            std::cerr << "state_publisher socket failed: " << std::strerror(errno) << std::endl;
+        }
+    }
+
+    void state_publisher::publish(const state_packet_t& packet)
+    {
+        if (fd_ < 0)
+        {
+            return;
+        }
+        sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        std::strncpy(addr.sun_path, socket_path_.c_str(), sizeof(addr.sun_path) - 1);
+        ::sendto(fd_, &packet, sizeof(packet), 0,
+                 reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+    }
 }

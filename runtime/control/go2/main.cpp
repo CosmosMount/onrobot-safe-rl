@@ -47,14 +47,16 @@ namespace
             const int domain_id = root["domain_id"].as<int>(1);
             const std::string network_interface = root["interface"].as<std::string>("lo");
             const std::string ipc_socket = root["ipc_socket"].as<std::string>("/tmp/go2_policy.sock");
+            const std::string state_socket = root["state_socket"].as<std::string>(ipc_socket + ".state");
             const float control_hz = root["control_hz"].as<float>(500.f);
 
             const control::app_config app = control::load_app_config(root);
-            control::controller controller_(domain_id, network_interface, app, ipc_socket, control_hz);
+            control::controller controller_(domain_id, network_interface, app, ipc_socket, state_socket, control_hz);
             std::cout << "go2_control started config=" << config_path
                     << " overlay=" << (overlay_path.empty() ? "none" : overlay_path)
                     << " domain_id=" << domain_id
                     << " interface=" << network_interface
+                    << " state_socket=" << state_socket
                     << " hz=" << control_hz
                     << " kp=" << app.control.kp
                     << " kd=" << app.control.kd
