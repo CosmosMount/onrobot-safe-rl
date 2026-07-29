@@ -40,6 +40,9 @@ class DroQConfig:
     sampled_backup: bool
     target_entropy: Optional[float]
     temp_initial_value: float
+    actor_q_reduction: str
+    target_q_min: Optional[float]
+    target_q_max: Optional[float]
 
     asymmetric_observation: bool
     actor_update_period: int
@@ -137,6 +140,16 @@ class DroQAgent(BaseAgent[DroQConfig]):
 
         super().__init__(observation_space, action_space, env_info, cfg)
         self._device = _resolve_device(cfg.device_type)
+        if cfg.actor_q_reduction not in {"mean", "min"}:
+            raise ValueError("actor_q_reduction must be one of {'mean', 'min'}")
+        if cfg.num_min_qs is not None and not 1 <= cfg.num_min_qs <= cfg.num_qs:
+            raise ValueError("num_min_qs must be in [1, num_qs]")
+        if (
+            cfg.target_q_min is not None
+            and cfg.target_q_max is not None
+            and cfg.target_q_min > cfg.target_q_max
+        ):
+            raise ValueError("target_q_min must be <= target_q_max")
         self._target_entropy = cfg.target_entropy
         if self._target_entropy is None:
             self._target_entropy = -0.5 * self._action_dim
@@ -210,6 +223,8 @@ class DroQAgent(BaseAgent[DroQConfig]):
             batch=batch,
             num_min_qs=self._cfg.num_min_qs,
             sampled_backup=self._cfg.sampled_backup,
+            target_q_min=self._cfg.target_q_min,
+            target_q_max=self._cfg.target_q_max,
             device=self._device,
             use_amp=self._cfg.use_amp,
             grad_scaler=self._grad_scaler,
@@ -222,6 +237,7 @@ class DroQAgent(BaseAgent[DroQConfig]):
                 critic=self._critic,
                 temperature=self._temperature,
                 batch=batch,
+                actor_q_reduction=self._cfg.actor_q_reduction,
                 device=self._device,
                 use_amp=self._cfg.use_amp,
                 grad_scaler=self._grad_scaler,

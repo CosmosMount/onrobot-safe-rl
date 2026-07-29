@@ -38,6 +38,7 @@ def update_actor(
     critic: Network,
     temperature: Network,
     batch: Batch,
+    actor_q_reduction: str,
     device: torch.device,
     use_amp: bool,
     grad_scaler: Optional[GradScaler],
@@ -58,7 +59,10 @@ def update_actor(
         )
         critic.network.requires_grad_(True)
 
-        q = qs.mean(dim=0)
+        if actor_q_reduction == "min":
+            q = qs.min(dim=0).values
+        else:
+            q = qs.mean(dim=0)
         temp_value = temperature().detach()
         actor_loss = (temp_value * log_probs - q).mean()
         entropy = -log_probs.mean()
@@ -70,6 +74,13 @@ def update_actor(
             "loss": actor_loss.detach(),
             "entropy": entropy.detach(),
             "q": q.mean().detach(),
+            "action_mean": actions.mean().detach(),
+            "action_std": actions.std(unbiased=False).detach(),
+            "action_saturation": (actions.abs() >= 0.99).float().mean().detach(),
+            "mean_abs": info["mean"].abs().mean().detach(),
+            "log_std_mean": info["log_std"].mean().detach(),
+            "log_std_min": info["log_std"].min().detach(),
+            "log_std_max": info["log_std"].max().detach(),
         },
         "actor",
     )
@@ -83,6 +94,8 @@ def update_critic(
     batch: Batch,
     num_min_qs: Optional[int],
     sampled_backup: bool,
+    target_q_min: Optional[float],
+    target_q_max: Optional[float],
     device: torch.device,
     use_amp: bool,
     grad_scaler: Optional[GradScaler],
@@ -107,6 +120,12 @@ def update_critic(
             target_q = batch["reward"] + batch["discount"] * next_q
             if sampled_backup:
                 target_q = target_q - batch["discount"] * temperature() * next_info["log_prob"]
+            if target_q_min is not None or target_q_max is not None:
+                target_q = torch.clamp(
+                    target_q,
+                    min=-torch.inf if target_q_min is None else target_q_min,
+                    max=torch.inf if target_q_max is None else target_q_max,
+                )
 
         pred_qs, _ = critic(
             observations=batch["observation"],
@@ -122,7 +141,11 @@ def update_critic(
         {
             "loss": critic_loss.detach(),
             "q": pred_qs.mean().detach(),
+            "q_min": pred_qs.min().detach(),
+            "q_max": pred_qs.max().detach(),
             "target_q": target_q.mean().detach(),
+            "target_q_min": target_q.min().detach(),
+            "target_q_max": target_q.max().detach(),
         },
         "critic",
     )

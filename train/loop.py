@@ -20,6 +20,9 @@ from rl.utils.logger import AverageMeterDict, WandbTrainerLogger
 from train.config import TrainConfig
 
 
+LEG_NAMES = ("FR", "FL", "RR", "RL")
+
+
 def _log(msg: str) -> None:
     print(msg, flush=True)
 
@@ -72,6 +75,70 @@ def _safe_action(action: np.ndarray, shape: tuple[int, ...]) -> tuple[np.ndarray
     if not _is_finite_array(action):
         return np.zeros(shape, dtype=np.float32), False
     return np.clip(action, -1.0, 1.0).astype(np.float32), True
+
+
+def _leg_action_metrics(action: np.ndarray) -> dict[str, float]:
+    values: dict[str, float] = {}
+    action = np.asarray(action, dtype=np.float32).reshape(-1)
+    if action.size < 12:
+        return values
+    for leg_idx, leg_action in enumerate(action[:12].reshape(4, 3)):
+        leg_name = LEG_NAMES[leg_idx]
+        values[f"env/action_leg_{leg_idx}_mean"] = float(np.mean(leg_action))
+        values[f"env/action_leg_{leg_idx}_std"] = float(np.std(leg_action))
+        values[f"env/action_leg_{leg_idx}_saturation"] = float(np.mean(np.abs(leg_action) >= 0.99))
+        values[f"env/action_{leg_name}_mean"] = values[f"env/action_leg_{leg_idx}_mean"]
+        values[f"env/action_{leg_name}_std"] = values[f"env/action_leg_{leg_idx}_std"]
+        values[f"env/action_{leg_name}_saturation"] = values[f"env/action_leg_{leg_idx}_saturation"]
+    return values
+
+
+def _q_target_leg_metrics(info: dict[str, Any]) -> dict[str, float]:
+    values: dict[str, float] = {}
+    q_target = info.get("executed_q_target")
+    if q_target is None:
+        return values
+    q = np.asarray(q_target, dtype=np.float32).reshape(-1)
+    if q.size < 12:
+        return values
+    for leg_idx, leg_q in enumerate(q[:12].reshape(4, 3)):
+        leg_name = LEG_NAMES[leg_idx]
+        values[f"env/q_target_leg_{leg_idx}_mean"] = float(np.mean(leg_q))
+        values[f"env/q_target_leg_{leg_idx}_std"] = float(np.std(leg_q))
+        values[f"env/q_target_{leg_name}_mean"] = values[f"env/q_target_leg_{leg_idx}_mean"]
+        values[f"env/q_target_{leg_name}_std"] = values[f"env/q_target_leg_{leg_idx}_std"]
+    return values
+
+
+def _joint_feedback_leg_metrics(info: dict[str, Any]) -> dict[str, float]:
+    values: dict[str, float] = {}
+    joint_q = info.get("joint_q")
+    joint_dq = info.get("joint_dq")
+    if joint_q is None or joint_dq is None:
+        return values
+    q = np.asarray(joint_q, dtype=np.float32).reshape(-1)
+    dq = np.asarray(joint_dq, dtype=np.float32).reshape(-1)
+    if q.size < 12 or dq.size < 12:
+        return values
+    tracking_error = info.get("joint_tracking_error")
+    err = None if tracking_error is None else np.asarray(tracking_error, dtype=np.float32).reshape(-1)
+    for leg_idx, (leg_q, leg_dq) in enumerate(zip(q[:12].reshape(4, 3), dq[:12].reshape(4, 3))):
+        leg_name = LEG_NAMES[leg_idx]
+        values[f"env/joint_{leg_name}_q_std"] = float(np.std(leg_q))
+        values[f"env/joint_{leg_name}_dq_abs_mean"] = float(np.mean(np.abs(leg_dq)))
+        values[f"env/joint_leg_{leg_idx}_q_std"] = values[f"env/joint_{leg_name}_q_std"]
+        values[f"env/joint_leg_{leg_idx}_dq_abs_mean"] = values[f"env/joint_{leg_name}_dq_abs_mean"]
+        if err is not None and err.size >= 12:
+            leg_err = err[:12].reshape(4, 3)[leg_idx]
+            values[f"env/joint_{leg_name}_tracking_abs_mean"] = float(np.mean(np.abs(leg_err)))
+            values[f"env/joint_{leg_name}_tracking_norm"] = float(np.linalg.norm(leg_err))
+            values[f"env/joint_leg_{leg_idx}_tracking_abs_mean"] = values[
+                f"env/joint_{leg_name}_tracking_abs_mean"
+            ]
+            values[f"env/joint_leg_{leg_idx}_tracking_norm"] = values[
+                f"env/joint_{leg_name}_tracking_norm"
+            ]
+    return values
 
 
 def _snapshot_dir(save_dir: str, step: int) -> Path:
@@ -202,7 +269,7 @@ def run_training(agent, env, cfg: TrainConfig):
 
             sample_t0 = time.perf_counter()
             if i < cfg.start_training:
-                action = env.sample_action()
+                action = env.sample_action() * cfg.explore_action_scale
             else:
                 if i == cfg.start_training:
                     _log(f"[train] === Entering FlashSAC updates at step {i} ===")
@@ -241,7 +308,8 @@ def run_training(agent, env, cfg: TrainConfig):
             update_ms = update_elapsed * 1000.0
 
             observation = next_observation
-            episode_return += float(reward)
+            if insert_ok:
+                episode_return += float(reward)
             if policy_step:
                 episode_length += 1
                 total_policy_steps += 1
@@ -326,6 +394,9 @@ def run_training(agent, env, cfg: TrainConfig):
                 }
                 if update_info is not None:
                     log_metrics.update({f"training/{k}": float(v) for k, v in update_info.items()})
+                log_metrics.update(_leg_action_metrics(action))
+                log_metrics.update(_q_target_leg_metrics(info))
+                log_metrics.update(_joint_feedback_leg_metrics(info))
                 log_metrics.update(timing_metrics)
                 log_metrics.update(rolling_metrics)
                 log_metrics.update({

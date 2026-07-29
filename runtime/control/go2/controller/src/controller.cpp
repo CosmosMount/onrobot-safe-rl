@@ -1,9 +1,49 @@
 #include "controller.hpp"
 
+#include <cmath>
+
 namespace control
 {
     namespace
     {
+        void roll_pitch(
+            const unitree_go::msg::dds_::LowState_& state,
+            float& roll,
+            float& pitch)
+        {
+            const auto& q = state.imu_state().quaternion();
+            float w = q[0];
+            float x = q[1];
+            float y = q[2];
+            float z = q[3];
+            const float norm_sq = w * w + x * x + y * y + z * z;
+            if (norm_sq < 1e-6f)
+            {
+                roll = 0.0f;
+                pitch = 0.0f;
+                return;
+            }
+            const float inv_norm = 1.0f / std::sqrt(norm_sq);
+            w *= inv_norm;
+            x *= inv_norm;
+            y *= inv_norm;
+            z *= inv_norm;
+
+            roll = std::atan2(
+                2.0f * (w * x + y * z),
+                1.0f - 2.0f * (x * x + y * y));
+            const float sinp = 2.0f * (w * y - z * x);
+            if (std::abs(sinp) >= 1.0f)
+            {
+                constexpr float half_pi = 1.57079632679f;
+                pitch = std::copysign(half_pi, sinp);
+            }
+            else
+            {
+                pitch = std::asin(sinp);
+            }
+        }
+
         float body_up_cos(const unitree_go::msg::dds_::LowState_& state)
         {
             const auto& q = state.imu_state().quaternion();
@@ -19,6 +59,17 @@ namespace control
             return 1.0f - 2.0f * (x * x + y * y) / norm_sq;
         }
 
+        bool is_fallen(
+            const unitree_go::msg::dds_::LowState_& state,
+            const motions::imu_thresholds& thresholds)
+        {
+            float roll = 0.0f;
+            float pitch = 0.0f;
+            roll_pitch(state, roll, pitch);
+            return std::abs(roll) > thresholds.fallen_roll_pitch_limit_rad ||
+                std::abs(pitch) > thresholds.fallen_roll_pitch_limit_rad;
+        }
+
         bool is_upside_down(
             const unitree_go::msg::dds_::LowState_& state,
             const motions::imu_thresholds& thresholds)
@@ -27,7 +78,14 @@ namespace control
             const bool pose_inverted = up_cos < thresholds.upside_down_up_cos_on;
             const bool accel_inverted =
                 state.imu_state().accelerometer()[2] < thresholds.upside_down_acc_z_on;
-            return pose_inverted || (accel_inverted && up_cos < 0.0f);
+            return pose_inverted || (accel_inverted && is_fallen(state, thresholds));
+        }
+
+        bool accepts_recovery_motion(
+            const unitree_go::msg::dds_::LowState_& state,
+            const motions::imu_thresholds& thresholds)
+        {
+            return is_upside_down(state, thresholds) || is_fallen(state, thresholds);
         }
     }
 
@@ -217,8 +275,8 @@ namespace control
                 const uint8_t motion_flags = state_received
                     ? policy_receiver_->consume_pending_motion_flags()
                     : 0u;
-                const bool upside_down = is_upside_down(state, imu_thresholds_);
-                if ((motion_flags & policy_packet_t::FLAG_RECOVERY) && upside_down)
+                const bool recovery_needed = accepts_recovery_motion(state, imu_thresholds_);
+                if ((motion_flags & policy_packet_t::FLAG_RECOVERY) && recovery_needed)
                 {
                     enter_recover(state);
                 }

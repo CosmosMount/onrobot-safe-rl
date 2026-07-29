@@ -3,9 +3,8 @@ from typing import Sequence
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from rl.utils.distributions import safe_tanh_log_det_jacobian
+from rl.utils.normalizations import NormalTanhPolicy
 
 
 class DroQMLP(nn.Module):
@@ -23,11 +22,11 @@ class DroQMLP(nn.Module):
         prev_dim = input_dim
         for hidden_dim in hidden_dims:
             layers.append(nn.Linear(prev_dim, hidden_dim))
+            if dropout_rate > 0.0:
+                layers.append(nn.Dropout(dropout_rate))
             if use_layer_norm:
                 layers.append(nn.LayerNorm(hidden_dim))
             layers.append(nn.ReLU())
-            if dropout_rate > 0.0:
-                layers.append(nn.Dropout(dropout_rate))
             prev_dim = hidden_dim
         if not activate_final:
             while layers and isinstance(layers[-1], (nn.ReLU, nn.Dropout)):
@@ -56,21 +55,17 @@ class DroQActor(nn.Module):
     ):
         super().__init__()
         self.base = DroQMLP(observation_dim, hidden_dims, activate_final=True)
-        self.mean = nn.Linear(self.base.output_dim, action_dim)
-        self.log_std = nn.Linear(self.base.output_dim, action_dim)
-        self.log_std_min = log_std_min
-        self.log_std_max = log_std_max
-
-        nn.init.xavier_uniform_(self.mean.weight)
-        nn.init.zeros_(self.mean.bias)
-        nn.init.xavier_uniform_(self.log_std.weight)
-        nn.init.zeros_(self.log_std.bias)
+        self.predictor = NormalTanhPolicy(
+            hidden_dim=self.base.output_dim,
+            action_dim=action_dim,
+            log_std_min=log_std_min,
+            log_std_max=log_std_max,
+        )
 
     def get_mean_and_log_std(self, observations: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         x = self.base(observations, training=False)
-        mean = self.mean(x)
-        log_std = torch.clamp(self.log_std(x), self.log_std_min, self.log_std_max)
-        return mean, log_std
+        mean, std = self.predictor.get_mean_and_std(x, training=False)
+        return mean, torch.log(std)
 
     def forward(
         self,
@@ -79,21 +74,7 @@ class DroQActor(nn.Module):
         sample: bool = True,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         x = self.base(observations, training=training)
-        mean = self.mean(x)
-        log_std = torch.clamp(self.log_std(x), self.log_std_min, self.log_std_max)
-        std = torch.exp(log_std)
-
-        if sample:
-            dist = torch.distributions.Normal(mean, std)
-            raw_action = dist.rsample()
-        else:
-            dist = torch.distributions.Normal(mean, std)
-            raw_action = mean
-
-        action = torch.tanh(raw_action)
-        log_prob = dist.log_prob(raw_action) - safe_tanh_log_det_jacobian(raw_action)
-        log_prob = log_prob.sum(dim=-1)
-        return action, {"log_prob": log_prob, "mean": mean, "log_std": log_std}
+        return self.predictor(x, training=training, sample=sample)
 
 
 class DroQEnsembleCritic(nn.Module):

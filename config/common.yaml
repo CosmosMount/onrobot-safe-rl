@@ -19,6 +19,7 @@ action_offset: [0.2, 0.4, 0.4, 0.2, 0.4, 0.4, 0.2, 0.4, 0.4, 0.2, 0.4, 0.4]
 
 success_orientation_rad: 0.523599
 fallen_risk_rad: 0.099066
+fallen_orientation_rad: 1.047198
 imu:
   upright_acc_z: 3.0
   upside_down_acc_z: 0.0
@@ -33,7 +34,7 @@ action_filter_highcut: 4.0
 train:
   experiment_name: default
   seed: 42
-  control_frequency: 50.0
+  control_frequency: 20.0
   max_episode_steps: 400
   reset_joint_tolerance: 0.30
   recovery_stable_steps: 10
@@ -103,13 +104,16 @@ train:
     gamma: 0.99
     n_step: 1
     critic_target_update_tau: 0.005
-    num_qs: 2
-    num_min_qs: null
+    num_qs: 5
+    num_min_qs: 2
     critic_dropout_rate: 0.01
     critic_layer_norm: true
     sampled_backup: true
     target_entropy: null
-    temp_initial_value: 1.0
+    temp_initial_value: 0.1
+    actor_q_reduction: min
+    target_q_min: -100.0
+    target_q_max: 1000.0
     asymmetric_observation: false
     actor_update_period: 1
     use_compile: false

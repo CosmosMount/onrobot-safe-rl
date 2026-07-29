@@ -328,12 +328,12 @@ class PolicyInferenceRuntime:
         state = self._state_reader.get_state()
         reward, reward_info = get_run_reward_from_state(state, self.robot_cfg)
         controller_policy = int(state.phase) == CONTROLLER_PHASE_POLICY
-        policy_enabled = bool(safety.policy_enabled and controller_policy)
-        replay_enabled = bool(safety.replay_enabled and policy_enabled)
+        policy_step = action_debug == "policy"
+        replay_enabled = policy_step
         if not controller_policy and safety.policy_enabled:
             safety.reason = "controller_nonpolicy"
         self._runtime_debug(state=state, safety=safety, action=action_debug)
-        self._step_count += int(policy_enabled)
+        self._step_count += int(policy_step)
         truncated = self._step_count >= self._max_episode_steps
         terminated = bool(safety.terminated)
         terminal_penalty = get_terminal_penalty(terminated=terminated, cfg=self.robot_cfg)
@@ -345,7 +345,7 @@ class PolicyInferenceRuntime:
                 self._safety.reset()
 
         info = {
-            "policy_step": policy_enabled,
+            "policy_step": policy_step,
             "replay_enabled": replay_enabled,
             "restart_required": bool(safety.restart_required),
             "terminated": terminated,
@@ -365,6 +365,13 @@ class PolicyInferenceRuntime:
             **runtime_info,
             **reward_info,
         }
+        info["joint_q"] = state.joint_q.copy()
+        info["joint_dq"] = state.joint_dq.copy()
+        q_target = info.get("executed_q_target")
+        if q_target is not None:
+            info["joint_tracking_error"] = (
+                state.joint_q.astype(np.float32) - np.asarray(q_target, dtype=np.float32)
+            )
         return {
             "observation": observation,
             "reward": float(reward + terminal_penalty),

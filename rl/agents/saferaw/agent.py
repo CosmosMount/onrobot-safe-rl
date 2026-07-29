@@ -157,6 +157,8 @@ class SafeRawSupervisor:
             self._stable_count = 0
 
         timed_out = self._recovery_steps >= self.timeout_steps
+        if timed_out and fallen:
+            self._recovery_requested = True
         return SafeRawStatus(
             mode=SafeRawMode.RECOVERY,
             terminated=False,

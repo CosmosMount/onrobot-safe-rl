@@ -38,6 +38,7 @@ class Go2Config:
     control_hz: float                # Hz
     success_orientation_rad: float   # rad
     fallen_risk_rad: float           # rad
+    fallen_orientation_rad: float    # rad
     imu_upright_acc_z: float         # m/s²
     imu_upside_down_acc_z: float     # m/s²
     imu_upright_up_cos: float        # dimensionless
@@ -173,6 +174,9 @@ def _parse_robot(root: dict[str, Any]) -> Go2Config:
             math.pi / 6),
         fallen_risk_rad=_load_angle_rad(
             root, 'fallen_risk_rad', 'fallen_risk_deg', math.pi / 9),
+        fallen_orientation_rad=_load_angle_rad(
+            root, 'fallen_orientation_rad', 'fallen_orientation_deg',
+            math.pi / 3),
         imu_upright_acc_z=float(imu_node.get('upright_acc_z', 3.0)),
         imu_upside_down_acc_z=float(
             imu_node.get('upside_down_acc_z_on',
@@ -246,13 +250,16 @@ _DROQ_DEFAULTS: dict[str, Any] = {
     'gamma': 0.99,
     'n_step': 1,
     'critic_target_update_tau': 0.005,
-    'num_qs': 2,
-    'num_min_qs': None,
+    'num_qs': 5,
+    'num_min_qs': 2,
     'critic_dropout_rate': 0.01,
     'critic_layer_norm': True,
     'sampled_backup': True,
     'target_entropy': None,
-    'temp_initial_value': 1.0,
+    'temp_initial_value': 0.1,
+    'actor_q_reduction': 'min',
+    'target_q_min': -100.0,
+    'target_q_max': 1000.0,
     'asymmetric_observation': False,
     'actor_update_period': 1,
     'use_compile': False,
@@ -303,6 +310,10 @@ def _parse_agent(train_cfg: TrainConfig, agent_nodes: dict[str, dict[str, Any]])
         values['target_entropy'] = None
     if values.get('num_min_qs') == 'null':
         values['num_min_qs'] = None
+    if values.get('target_q_min') == 'null':
+        values['target_q_min'] = None
+    if values.get('target_q_max') == 'null':
+        values['target_q_max'] = None
     return OmegaConf.create(values)
 
 

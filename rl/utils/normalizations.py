@@ -81,7 +81,7 @@ class NormalTanhPolicy(nn.Module):
         self,
         hidden_dim: int,
         action_dim: int,
-        log_std_min: float = -10.0,
+        log_std_min: float = -20.0,
         log_std_max: float = 2.0,
     ):
         super().__init__()
@@ -103,8 +103,8 @@ class NormalTanhPolicy(nn.Module):
         mean = F.linear(x, self.mean_w.w.weight, self.mean_bias)
         raw_log_std = F.linear(x, self.std_w.w.weight, self.std_bias)
 
-        # normalize log-stds for stability
-        log_std = self.log_std_min + (self.log_std_max - self.log_std_min) * 0.5 * (1 + torch.tanh(raw_log_std))
+        # Match walk_in_the_park TanhNormal: linear log-std head clipped to bounds.
+        log_std = torch.clamp(raw_log_std, self.log_std_min, self.log_std_max)
         std = torch.exp(log_std)
 
         return mean, std
@@ -113,11 +113,12 @@ class NormalTanhPolicy(nn.Module):
         self,
         x: torch.Tensor,
         training: bool,
+        sample: bool = True,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         mean, std = self.get_mean_and_std(x, training)
 
         dist = torch.distributions.Normal(mean, std)
-        raw_action = dist.rsample()
+        raw_action = dist.rsample() if sample else mean
         tanh_action = torch.tanh(raw_action)
 
         # Compute log probability (accounting for tanh via Jacobian correction)
@@ -125,7 +126,12 @@ class NormalTanhPolicy(nn.Module):
         log_prob = log_prob - safe_tanh_log_det_jacobian(raw_action)
         log_prob = log_prob.sum(1)
 
-        info: dict[str, torch.Tensor] = {"log_prob": log_prob}
+        info: dict[str, torch.Tensor] = {
+            "log_prob": log_prob,
+            "mean": mean,
+            "std": std,
+            "log_std": torch.log(std),
+        }
         return tanh_action, info
 
 

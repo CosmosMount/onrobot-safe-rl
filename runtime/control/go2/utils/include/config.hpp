@@ -137,6 +137,9 @@ namespace control
             app.imu.upside_down_up_cos_on =
                 imu_node["upside_down_up_cos_on"].as<float>(
                     imu_node["upside_down_up_cos"].as<float>(-0.7f));
+            app.imu.fallen_roll_pitch_limit_rad =
+                imu_node["fallen_roll_pitch_limit_rad"].as<float>(
+                    imu_node["fallen_orientation_rad"].as<float>(0.523599f));
         }
 
         return app;
