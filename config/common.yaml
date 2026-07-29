@@ -1,67 +1,34 @@
-# Shared Go2 configuration. Overlay simulation.yaml or real_robot.yaml for
-# environment-specific DDS and velocity-frame settings.
+# Shared Python runtime/training defaults.
+# The C++ controller uses runtime/control/go2/go2.yaml for low-level motion.
 
+domain_id: 1
+interface: lo
 control_hz: 500
 ipc_socket: /tmp/go2_policy.sock
 state_socket: /tmp/go2_policy.sock.state
 runtime_action_shm: go2_runtime_action
 runtime_state_shm: go2_runtime_state
-policy_timeout_ms: 500
-policy_delay_ms: 0
-kp: 60.0
-kd: 5.0
+sport_velocity_world_frame: true
+sport_state_max_age_ms: 250
 
+# Joint order: FR, FL, RR, RL x hip, thigh, calf.
 joint_min: [-1.05, -1.57, -2.72, -1.05, -1.57, -2.72, -1.05, -0.52, -2.72, -1.05, -0.52, -2.72]
 joint_max: [1.05, 3.49, -0.84, 1.05, 3.49, -0.84, 1.05, 4.54, -0.84, 1.05, 4.54, -0.84]
-
 init_qpos: [0.05, 0.7, -1.4, 0.05, 0.7, -1.4, 0.05, 0.7, -1.4, 0.05, 0.7, -1.4]
 action_offset: [0.2, 0.4, 0.4, 0.2, 0.4, 0.4, 0.2, 0.4, 0.4, 0.2, 0.4, 0.4]
-success_orientation_rad: 0.523599
-fallen_risk_rad: 0.149066
 
+success_orientation_rad: 0.523599
+fallen_risk_rad: 0.099066
 imu:
   upright_acc_z: 3.0
-  upside_down_acc_z: -3.0
+  upside_down_acc_z: 0.0
   upright_up_cos: 0.5
   upside_down_up_cos: -0.7
 
 joint_tolerance: 0.20
 move_speed: 0.5
-reward_min_forward_vel: 0.04
-reward_upright_min_cos: 0.8660254
-fall_terminal_penalty: -10.0
-sport_state_max_age_ms: 250
+reward_profile: baseline
 action_filter_highcut: 4.0
-
-stand_up:
-  pose_1: [0.0, 1.36, -2.65, 0.0, 1.36, -2.65, -0.2, 1.36, -2.65, 0.2, 1.36, -2.65]
-  pose_2: [0.05, 0.7, -1.4, 0.05, 0.7, -1.4, 0.05, 0.7, -1.4, 0.05, 0.7, -1.4]
-  warmup_s: 1.0
-  phase_1_s: 1.0
-  phase_2_s: 1.0
-  hold_s: 2.0
-  joint_tolerance: 0.20
-  deactivate_motion_service: false
-
-recovery:
-  swing_legs: [true, true, true, true]
-  push_legs: [false, false, true, true]
-  fold_jpos: [0.0, 1.4, -2.7, 0.0, 1.4, -2.7, 0.0, 1.4, -2.7, 0.0, 1.4, -2.7]
-  above_jpos: [0.0, 1.85, -2.65, 0.0, 1.85, -2.65, 0.0, 1.95, -2.65, 0.0, 1.95, -2.65]
-  swing_down_jpos: [0.0, 3.49, -2.65, 0.0, 3.49, -2.65, 0.0, 4.45, -2.65, 0.0, 4.45, -2.65]
-  push_jpos: [0.0, 3.49, -2.65, 0.0, 3.49, -2.65, 0.0, 4.45, -0.88, 0.0, 4.45, -0.88]
-  fold_ramp_s: 0.45
-  fold_settle_s: 0.50
-  above_ramp_s: 0.45
-  above_settle_s: 0.35
-  swing_down_ramp_s: 0.60
-  swing_down_settle_s: 0.50
-  push_ramp_s: 0.30
-  push_settle_s: 0.25
-  joint_reach_tol: 0.12
-  kp: 100.0
-  kd: 8.0
-  deactivate_motion_service: false
 
 train:
   experiment_name: default
@@ -73,7 +40,7 @@ train:
   standup_timeout_steps: 200
   max_joint_delta: null
   use_action_filter: false
-  explore_action_scale: 1.0
+  explore_action_scale: 0.2
   max_steps: 1000000
   start_training: 1000
   batch_size: 256
@@ -87,9 +54,10 @@ train:
   checkpoint_interval: 1000
   use_tqdm: true
   save_checkpoints: true
+  resume_checkpoint: false
   benchmark_only: false
   benchmark_steps: 200
-  wandb: true
+  wandb: false
   wandb_project: go2_walk
   wandb_run_name: null
   agent: flashsac

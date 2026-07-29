@@ -1,4 +1,4 @@
-"""Load all settings from config/go2.yaml (SI units)."""
+"""Load layered Python runtime/training config (SI units)."""
 
 from __future__ import annotations
 
@@ -57,8 +57,8 @@ class Go2Config:
 
     @property
     def obs_dim(self) -> int:
-        # joint_q, joint_dq, previous_requested_action,
-        # previous_executed_action, gyro, body_velocity, quaternion.
+        # joint_q, joint_dq, previous_requested_action, gyro, body_velocity,
+        # quaternion.
         return 3 * self.num_joints + 10
 
     @property
@@ -273,11 +273,23 @@ def parse_app_config(root: dict[str, Any]) -> tuple[Go2Config, TrainConfig,
                                                     DictConfig]:
     train_node = root.get('train')
     if not train_node:
-        raise ValueError('train section missing in config/go2.yaml')
+        raise ValueError('train section missing in config')
 
     robot_cfg = _parse_robot(root)
     train_cfg, flashsac_node = _parse_train(dict(train_node))
     return robot_cfg, train_cfg, _parse_agent(train_cfg, flashsac_node)
+
+
+def _load_profile_root(overlay_path: Path) -> dict[str, Any]:
+    overlay = _load_yaml(overlay_path)
+    reward_profile = str(overlay.get('reward_profile', 'baseline'))
+    if reward_profile not in {'baseline', 'upstream'}:
+        raise ValueError(f'Unknown reward profile: {reward_profile}')
+    return _load_layered_config(
+        REPO_ROOT / 'config/common.yaml',
+        REPO_ROOT / f'config/rewards/{reward_profile}.yaml',
+        overlay_path,
+    )
 
 
 def load_app_config(
@@ -285,29 +297,13 @@ def load_app_config(
         *,
         profile: str = 'go2') -> tuple[Go2Config, TrainConfig, DictConfig]:
     if path is not None:
-        config_path = Path(path)
-        with config_path.open(encoding='utf-8') as f:
-            return parse_app_config(yaml.safe_load(f))
+        return parse_app_config(_load_profile_root(Path(path)))
 
-    if profile == 'simulation':
-        overlay_path = REPO_ROOT / 'config/simulation.yaml'
-        overlay = _load_yaml(overlay_path)
-        reward_profile = str(overlay.get('reward_profile', 'baseline'))
-        if reward_profile not in {'baseline', 'upstream'}:
-            raise ValueError(f'Unknown reward profile: {reward_profile}')
-        root = _load_layered_config(
-            REPO_ROOT / 'config/common.yaml',
-            REPO_ROOT / f'config/rewards/{reward_profile}.yaml',
-            overlay_path,
-        )
-        return parse_app_config(root)
-    if profile == 'real_robot':
-        root = _load_layered_config(REPO_ROOT / 'config/common.yaml',
-                                    REPO_ROOT / 'config/real_robot.yaml')
-        return parse_app_config(root)
-    if profile != 'go2':
+    profile_paths = {
+        'go2': DEFAULT_CONFIG_PATH,
+        'simulation': REPO_ROOT / 'config/simulation.yaml',
+        'real_robot': REPO_ROOT / 'config/real_robot.yaml',
+    }
+    if profile not in profile_paths:
         raise ValueError(f'Unknown config profile: {profile}')
-
-    with DEFAULT_CONFIG_PATH.open(encoding='utf-8') as f:
-        root = yaml.safe_load(f)
-    return parse_app_config(root)
+    return parse_app_config(_load_profile_root(profile_paths[profile]))

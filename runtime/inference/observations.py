@@ -1,4 +1,4 @@
-"""Observation, reward, and fall detection for walk task.
+"""Observation and reward helpers for the walk task.
 
 All physical quantities use SI unless noted dimensionless:
   angles rad, angular rates rad/s, lengths m, speeds m/s, acceleration m/s², time s.
@@ -161,53 +161,11 @@ def get_terminal_penalty(*, terminated: bool, cfg: Any) -> float:
     return float(cfg.fall_terminal_penalty if terminated else 0.0)
 
 
-def gravity_acc_z(state: RobotState) -> float:
-    """Body-frame IMU accelerometer Z (m/s²). At rest ≈ gravity component on body Z."""
-    return float(state.imu_accel[2])
-
-
-def gravity_up_cos(state: RobotState) -> float:
-    """cos(tilt from vertical) from gravity vector. 1=upright, -1=belly-up."""
-    acc = state.imu_accel
-    norm = float(np.linalg.norm(acc))
-    if norm < 1.0:
-        return body_up_cos(state.imu_quat)
-    return float(acc[2] / norm)
-
-
-def is_flipped_back(state: RobotState, cfg: Any) -> bool:
-    up = gravity_up_cos(state)
-    if up > cfg.imu_upright_up_cos:
-        return True
-    return gravity_acc_z(state) > cfg.imu_upright_acc_z
-
-
-def is_belly_up(state: RobotState, cfg: Any) -> bool:
-    """Clearly inverted (belly-up). Uses quaternion only — acc_z flickers while walking."""
-    return body_up_cos(state.imu_quat) < cfg.imu_upside_down_up_cos
-
-
-def is_fallen(state: RobotState, cfg: Any) -> bool:
-    """Match sim Run.after_step: |roll| or |pitch| > terminate_pitch_roll."""
-    roll, pitch, _ = quat_to_euler_xyz(state.imu_quat)
-    limit = cfg.success_orientation_rad
-    return abs(roll) > limit or abs(pitch) > limit
-
-
-def is_fallen_risk(state: RobotState, cfg: Any) -> bool:
-    """Early tilt warning before episode termination (quat-based, stable while walking)."""
-    roll, pitch, _ = quat_to_euler_xyz(state.imu_quat)
-    limit = cfg.fallen_risk_rad
-    return abs(roll) > limit or abs(pitch) > limit
-
-
 def is_pose_stable(state: RobotState,
                    cfg: Any,
                    *,
                    joint_tolerance: float | None = None) -> bool:
-    """Standing pose recovered enough to resume policy."""
-    if is_fallen_risk(state, cfg):
-        return False
+    """Joint pose is close enough to the nominal standing pose."""
     joint_err = float(np.linalg.norm(state.joint_q - cfg.init_qpos))
     tolerance = (cfg.joint_tolerance
                  if joint_tolerance is None else joint_tolerance)

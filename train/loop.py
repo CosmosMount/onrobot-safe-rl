@@ -308,7 +308,6 @@ def run_training(agent, env, cfg: TrainConfig):
                     "env/task_reward": float(info.get("task_reward", reward)),
                     "env/terminal_penalty": float(info.get("terminal_penalty", 0.0)),
                     "env/upright_gate": float(info.get("upright_gate", 1.0)),
-                    "env/body_up_cos": float(info.get("body_up_cos", 1.0)),
                     "env/x_velocity": float(info.get("x_velocity", 0.0)),
                     "env/world_x": float(info.get("world_x", 0.0)),
                     "env/world_y": float(info.get("world_y", 0.0)),

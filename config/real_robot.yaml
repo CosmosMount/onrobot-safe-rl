@@ -1,7 +1,8 @@
-# Real Go2 DDS and velocity-frame settings.
+# Real Go2 profile. Inherits config/common.yaml.
 
 domain_id: 0
 interface: eth0
 sport_velocity_world_frame: false
+
 train:
   max_joint_delta: 0.05

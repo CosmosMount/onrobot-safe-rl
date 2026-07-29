@@ -1,13 +1,7 @@
-# Simulation-specific DDS and velocity-frame settings.
+# Simulation experiment profile. Inherits config/common.yaml.
 
-domain_id: 1
-interface: lo
-sport_velocity_world_frame: true
-kd: 5.0
 reward_profile: baseline
 
-# Paper-setting experiments. Keeping these overrides in the simulation profile
-# prevents short diagnostic runs from changing real-robot defaults.
 train:
   experiment_name: post_e05_safe_reward
   max_steps: 10000

@@ -11,8 +11,8 @@ joint_min: [-1.05, -1.57, -2.72, -1.05, -1.57, -2.72, -1.05, -0.52, -2.72, -1.05
 joint_max: [1.05, 3.49, -0.84, 1.05, 3.49, -0.84, 1.05, 4.54, -0.84, 1.05, 4.54, -0.84]
 
 imu:
-  upside_down_acc_z_on: -3.0
-  upside_down_acc_z_off: -1.0
+  upside_down_acc_z_on: 2.0
+  upside_down_acc_z_off: 4.0
   fallen_acc_z_off: 7.0
 
 stand_up:
