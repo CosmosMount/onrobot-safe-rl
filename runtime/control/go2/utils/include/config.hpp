@@ -134,6 +134,9 @@ namespace control
                 imu_node["upside_down_acc_z_off"].as<float>(-1.f);
             app.imu.fallen_acc_z_off =
                 imu_node["fallen_acc_z_off"].as<float>(7.f);
+            app.imu.upside_down_up_cos_on =
+                imu_node["upside_down_up_cos_on"].as<float>(
+                    imu_node["upside_down_up_cos"].as<float>(-0.7f));
         }
 
         return app;

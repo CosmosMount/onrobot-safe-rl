@@ -20,5 +20,6 @@ namespace motions
         float upside_down_acc_z_on = -1.f;   // m/s², enter belly-up
         float upside_down_acc_z_off = 3.f;  // m/s², exit belly-up (Schmitt)
         float fallen_acc_z_off = 7.f;        // m/s², upright when acc_z above
+        float upside_down_up_cos_on = -0.7f; // body-up dot world-up, enter belly-up
     };
 }

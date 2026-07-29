@@ -288,6 +288,7 @@ def run_training(agent, env, cfg: TrainConfig):
                     f"ctrl={info.get('controller_phase', -1)} "
                     f"roll={info.get('safety_roll', 0.0):+.2f} "
                     f"pitch={info.get('safety_pitch', 0.0):+.2f} "
+                    f"up_cos={info.get('safety_body_up_cos', 1.0):+.2f} "
                     f"acc_z={info.get('safety_acc_z', 0.0):+.2f} "
                     f"fallen={int(bool(info.get('fallen', False)))} "
                     f"inverted={int(bool(info.get('inverted', False)))} "
@@ -319,6 +320,7 @@ def run_training(agent, env, cfg: TrainConfig):
                     "env/safety_roll": float(info.get("safety_roll", 0.0)),
                     "env/safety_pitch": float(info.get("safety_pitch", 0.0)),
                     "env/safety_acc_z": float(info.get("safety_acc_z", 0.0)),
+                    "env/safety_body_up_cos": float(info.get("safety_body_up_cos", 1.0)),
                     "env/fallen": float(bool(info.get("fallen", False))),
                     "env/inverted": float(bool(info.get("inverted", False))),
                 }

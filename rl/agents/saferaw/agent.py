@@ -33,6 +33,7 @@ class SafeRawStatus:
     roll: float = 0.0
     pitch: float = 0.0
     acc_z: float = 0.0
+    body_up_cos: float = 1.0
     reason: str = "policy"
 
     @property
@@ -45,6 +46,7 @@ class SafeRawSupervisor:
     """Low-level safety gate for raw policy actions."""
 
     inverted_acc_z_threshold: float = -3.0
+    inverted_body_up_cos_threshold: float = -0.7
     fallen_roll_pitch_limit_rad: float = 0.523599
     trigger_steps: int = 5
     stable_steps: int = 10
@@ -69,6 +71,7 @@ class SafeRawSupervisor:
         roll: float,
         pitch: float,
         acc_z: float,
+        body_up_cos: float,
         reason: str,
     ) -> SafeRawStatus:
         self.mode = SafeRawMode.RECOVERY
@@ -86,14 +89,18 @@ class SafeRawSupervisor:
             roll=roll,
             pitch=pitch,
             acc_z=acc_z,
+            body_up_cos=body_up_cos,
             reason=reason,
         )
 
     def update(self, state: RobotSafetyState) -> SafeRawStatus:
         roll, pitch = quat_to_roll_pitch(state.imu_quat)
         acc_z = float(np.asarray(state.imu_accel, dtype=np.float32)[2])
-        inverted = acc_z < self.inverted_acc_z_threshold
+        body_up_cos = body_up_cos_from_roll_pitch(roll, pitch)
+        pose_inverted = body_up_cos < self.inverted_body_up_cos_threshold
+        accel_inverted = acc_z < self.inverted_acc_z_threshold
         fallen = abs(roll) > self.fallen_roll_pitch_limit_rad or abs(pitch) > self.fallen_roll_pitch_limit_rad
+        inverted = pose_inverted or (accel_inverted and fallen)
 
         if self.mode == SafeRawMode.POLICY:
             self._inverted_count = self._inverted_count + 1 if inverted else 0
@@ -105,9 +112,10 @@ class SafeRawSupervisor:
                     roll=roll,
                     pitch=pitch,
                     acc_z=acc_z,
+                    body_up_cos=body_up_cos,
                     reason="inverted",
                 )
-            if fallen:
+            if fallen and not inverted:
                 return self._enter_motion(
                     inverted=inverted,
                     fallen=fallen,
@@ -115,6 +123,7 @@ class SafeRawSupervisor:
                     roll=roll,
                     pitch=pitch,
                     acc_z=acc_z,
+                    body_up_cos=body_up_cos,
                     reason="fallen",
                 )
             return SafeRawStatus(
@@ -124,6 +133,7 @@ class SafeRawSupervisor:
                 roll=roll,
                 pitch=pitch,
                 acc_z=acc_z,
+                body_up_cos=body_up_cos,
                 reason="policy",
             )
 
@@ -140,6 +150,7 @@ class SafeRawSupervisor:
                     roll=roll,
                     pitch=pitch,
                     acc_z=acc_z,
+                    body_up_cos=body_up_cos,
                     reason="recovered",
                 )
         else:
@@ -157,6 +168,7 @@ class SafeRawSupervisor:
             roll=roll,
             pitch=pitch,
             acc_z=acc_z,
+            body_up_cos=body_up_cos,
             reason="recovery_timeout" if timed_out else ("inverted" if inverted else "recovering"),
         )
 
@@ -177,8 +189,19 @@ def quat_to_roll_pitch(quat: np.ndarray) -> tuple[float, float]:
     return float(roll), float(pitch)
 
 
+def body_up_cos_from_roll_pitch(roll: float, pitch: float) -> float:
+    return float(np.cos(roll) * np.cos(pitch))
+
+
 def is_inverted(state: RobotSafetyState, acc_z_threshold: float) -> bool:
-    return float(np.asarray(state.imu_accel, dtype=np.float32)[2]) < acc_z_threshold
+    roll, pitch = quat_to_roll_pitch(state.imu_quat)
+    return (
+        body_up_cos_from_roll_pitch(roll, pitch) < -0.7
+        or (
+            float(np.asarray(state.imu_accel, dtype=np.float32)[2]) < acc_z_threshold
+            and is_fallen(state, np.deg2rad(30.0))
+        )
+    )
 
 
 def is_fallen(state: RobotSafetyState, limit_rad: float) -> bool:

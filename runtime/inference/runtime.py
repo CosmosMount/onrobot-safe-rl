@@ -86,6 +86,7 @@ class PolicyInferenceRuntime:
         self._train_tx = SharedMemorySender(train_state_socket or robot_cfg.runtime_state_shm)
         self._safety = SafeRawSupervisor(
             inverted_acc_z_threshold=robot_cfg.imu_upside_down_acc_z,
+            inverted_body_up_cos_threshold=robot_cfg.imu_upside_down_up_cos,
             fallen_roll_pitch_limit_rad=robot_cfg.success_orientation_rad,
             stable_steps=recovery_stable_steps,
             timeout_steps=standup_timeout_steps,
@@ -217,7 +218,8 @@ class PolicyInferenceRuntime:
             f"ctrl={int(state.phase)} mode={safety.mode.value} reason={safety.reason} "
             f"action={action} recover={int(bool(safety.recovery_requested))} "
             f"fallen={int(bool(safety.fallen))} inverted={int(bool(safety.inverted))} "
-            f"roll={safety.roll:+.2f} pitch={safety.pitch:+.2f} acc_z={safety.acc_z:+.2f}",
+            f"roll={safety.roll:+.2f} pitch={safety.pitch:+.2f} "
+            f"up_cos={safety.body_up_cos:+.2f} acc_z={safety.acc_z:+.2f}",
             flush=True,
         )
 
@@ -357,6 +359,7 @@ class PolicyInferenceRuntime:
             "safety_roll": float(safety.roll),
             "safety_pitch": float(safety.pitch),
             "safety_acc_z": float(safety.acc_z),
+            "safety_body_up_cos": float(safety.body_up_cos),
             "step_count": self._step_count,
             "terminal_penalty": float(terminal_penalty),
             **runtime_info,

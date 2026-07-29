@@ -2,6 +2,35 @@
 
 namespace control
 {
+    namespace
+    {
+        float body_up_cos(const unitree_go::msg::dds_::LowState_& state)
+        {
+            const auto& q = state.imu_state().quaternion();
+            const float w = q[0];
+            const float x = q[1];
+            const float y = q[2];
+            const float z = q[3];
+            const float norm_sq = w * w + x * x + y * y + z * z;
+            if (norm_sq < 1e-6f)
+            {
+                return 1.0f;
+            }
+            return 1.0f - 2.0f * (x * x + y * y) / norm_sq;
+        }
+
+        bool is_upside_down(
+            const unitree_go::msg::dds_::LowState_& state,
+            const motions::imu_thresholds& thresholds)
+        {
+            const float up_cos = body_up_cos(state);
+            const bool pose_inverted = up_cos < thresholds.upside_down_up_cos_on;
+            const bool accel_inverted =
+                state.imu_state().accelerometer()[2] < thresholds.upside_down_acc_z_on;
+            return pose_inverted || (accel_inverted && up_cos < 0.0f);
+        }
+    }
+
     controller::controller(int domain_id,
                        const std::string& network_interface,
                        const app_config& app,
@@ -139,8 +168,7 @@ namespace control
                     return;
                 }
 
-                const float acc_z = state.imu_state().accelerometer()[2];
-                if (acc_z < imu_thresholds_.upside_down_acc_z_on)
+                if (is_upside_down(state, imu_thresholds_))
                 {
                     enter_recover(state);
                 }
@@ -189,7 +217,7 @@ namespace control
                 const uint8_t motion_flags = state_received
                     ? policy_receiver_->consume_pending_motion_flags()
                     : 0u;
-                const bool upside_down = state.imu_state().accelerometer()[2] < imu_thresholds_.upside_down_acc_z_on;
+                const bool upside_down = is_upside_down(state, imu_thresholds_);
                 if ((motion_flags & policy_packet_t::FLAG_RECOVERY) && upside_down)
                 {
                     enter_recover(state);
@@ -199,6 +227,7 @@ namespace control
                     std::cout << "[controller] ignored stale recovery request phase="
                             << static_cast<int>(phase_)
                             << " acc_z=" << state.imu_state().accelerometer()[2]
+                            << " up_cos=" << body_up_cos(state)
                             << std::endl;
                 }
                 else if (motion_flags & policy_packet_t::FLAG_STAND_UP)

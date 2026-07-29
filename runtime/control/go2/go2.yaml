@@ -14,6 +14,7 @@ imu:
   upside_down_acc_z_on: 2.0
   upside_down_acc_z_off: 4.0
   fallen_acc_z_off: 7.0
+  upside_down_up_cos_on: -0.7
 
 stand_up:
   warmup_s: 1.0
