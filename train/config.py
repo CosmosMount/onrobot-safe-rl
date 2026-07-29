@@ -57,8 +57,8 @@ class Go2Config:
 
     @property
     def obs_dim(self) -> int:
-        # joint_q, joint_dq, previous_requested_action, gyro, body_velocity,
-        # quaternion.
+        # joint_q, joint_dq, gyro, body_velocity, quaternion,
+        # previous_requested_action.
         return 3 * self.num_joints + 10
 
     @property
@@ -235,9 +235,37 @@ _FLASHSAC_DEFAULTS: dict[str, Any] = {
 }
 
 
-def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, Any]]:
+_DROQ_DEFAULTS: dict[str, Any] = {
+    'device_type': 'cuda',
+    'buffer_device_type': 'cuda',
+    'buffer_min_length': 1000,
+    'actor_lr': 3.0e-4,
+    'critic_lr': 3.0e-4,
+    'temp_lr': 3.0e-4,
+    'hidden_dims': [256, 256],
+    'gamma': 0.99,
+    'n_step': 1,
+    'critic_target_update_tau': 0.005,
+    'num_qs': 2,
+    'num_min_qs': None,
+    'critic_dropout_rate': 0.01,
+    'critic_layer_norm': True,
+    'sampled_backup': True,
+    'target_entropy': None,
+    'temp_initial_value': 1.0,
+    'asymmetric_observation': False,
+    'actor_update_period': 1,
+    'use_compile': False,
+    'compile_mode': 'reduce-overhead',
+    'use_amp': False,
+    'load_optimizer': True,
+}
+
+
+def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, dict[str, Any]]]:
     train_node = dict(node)
     flashsac = train_node.pop('flashsac', {})
+    droq = train_node.pop('droq', {})
 
     cfg = TrainConfig()
     for key, value in train_node.items():
@@ -249,23 +277,32 @@ def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, Any]]:
             value = None
         setattr(cfg, key, value)
 
-    return cfg, dict(flashsac)
+    return cfg, {'flashsac': dict(flashsac), 'droq': dict(droq)}
 
 
-def _parse_agent(train_cfg: TrainConfig,
-                 flashsac_node: dict[str, Any]) -> DictConfig:
-    if train_cfg.agent != 'flashsac':
+def _parse_agent(train_cfg: TrainConfig, agent_nodes: dict[str, dict[str, Any]]) -> DictConfig:
+    agent_type = str(train_cfg.agent).lower()
+    if agent_type == 'flashsac':
+        values = dict(_FLASHSAC_DEFAULTS)
+        values.update(agent_nodes.get('flashsac', {}))
+    elif agent_type == 'droq':
+        values = dict(_DROQ_DEFAULTS)
+        values.update(agent_nodes.get('droq', {}))
+    else:
         raise ValueError(f'Unsupported train.agent={train_cfg.agent!r}')
-    values = dict(_FLASHSAC_DEFAULTS)
-    values.update(flashsac_node)
+
     values.update({
-        'agent_type': 'flashsac',
+        'agent_type': agent_type,
         'seed': train_cfg.seed,
         'buffer_max_length': train_cfg.buffer_size,
         'sample_batch_size': train_cfg.batch_size,
     })
     if values.get('temp_target_entropy') == 'null':
         values['temp_target_entropy'] = 0.0
+    if values.get('target_entropy') == 'null':
+        values['target_entropy'] = None
+    if values.get('num_min_qs') == 'null':
+        values['num_min_qs'] = None
     return OmegaConf.create(values)
 
 
@@ -276,13 +313,13 @@ def parse_app_config(root: dict[str, Any]) -> tuple[Go2Config, TrainConfig,
         raise ValueError('train section missing in config')
 
     robot_cfg = _parse_robot(root)
-    train_cfg, flashsac_node = _parse_train(dict(train_node))
-    return robot_cfg, train_cfg, _parse_agent(train_cfg, flashsac_node)
+    train_cfg, agent_nodes = _parse_train(dict(train_node))
+    return robot_cfg, train_cfg, _parse_agent(train_cfg, agent_nodes)
 
 
 def _load_profile_root(overlay_path: Path) -> dict[str, Any]:
     overlay = _load_yaml(overlay_path)
-    reward_profile = str(overlay.get('reward_profile', 'baseline'))
+    reward_profile = str(overlay.get('reward_profile', 'upstream'))
     if reward_profile not in {'baseline', 'upstream'}:
         raise ValueError(f'Unknown reward profile: {reward_profile}')
     return _load_layered_config(

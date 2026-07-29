@@ -214,6 +214,8 @@ class TorchUniformBuffer(BaseBuffer):
             while len(queue) >= self._n_step:
                 ready.append(self._build_n_step_transition(queue))
                 queue.popleft()
+            if not queue:
+                continue
             latest = queue[-1]
             if bool(latest["terminated"].item()) or bool(latest["truncated"].item()):
                 while queue:

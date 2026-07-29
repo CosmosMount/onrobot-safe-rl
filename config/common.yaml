@@ -27,7 +27,7 @@ imu:
 
 joint_tolerance: 0.20
 move_speed: 0.5
-reward_profile: baseline
+reward_profile: upstream
 action_filter_highcut: 4.0
 
 train:
@@ -57,10 +57,10 @@ train:
   resume_checkpoint: false
   benchmark_only: false
   benchmark_steps: 200
-  wandb: false
+  wandb: true
   wandb_project: go2_walk
   wandb_run_name: null
-  agent: flashsac
+  agent: droq
 
   flashsac:
     device_type: cuda
@@ -88,6 +88,30 @@ train:
     temp_initial_value: 0.1
     temp_target_sigma: 0.2
     n_step: 1
+    use_compile: false
+    compile_mode: reduce-overhead
+    use_amp: false
+
+  droq:
+    device_type: cuda
+    buffer_device_type: cuda
+    buffer_min_length: 1000
+    actor_lr: 3.0e-4
+    critic_lr: 3.0e-4
+    temp_lr: 3.0e-4
+    hidden_dims: [256, 256]
+    gamma: 0.99
+    n_step: 1
+    critic_target_update_tau: 0.005
+    num_qs: 2
+    num_min_qs: null
+    critic_dropout_rate: 0.01
+    critic_layer_norm: true
+    sampled_backup: true
+    target_entropy: null
+    temp_initial_value: 1.0
+    asymmetric_observation: false
+    actor_update_period: 1
     use_compile: false
     compile_mode: reduce-overhead
     use_amp: false

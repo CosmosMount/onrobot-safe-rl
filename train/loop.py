@@ -164,7 +164,6 @@ def run_training(agent, env, cfg: TrainConfig):
             "utd_ratio": cfg.utd_ratio,
             "buffer_size": cfg.buffer_size,
             "control_frequency": inner.control_frequency,
-            "explore_action_scale": cfg.explore_action_scale,
         },
     })
     logger = (
@@ -203,7 +202,7 @@ def run_training(agent, env, cfg: TrainConfig):
 
             sample_t0 = time.perf_counter()
             if i < cfg.start_training:
-                action = env.sample_action() * cfg.explore_action_scale
+                action = env.sample_action()
             else:
                 if i == cfg.start_training:
                     _log(f"[train] === Entering FlashSAC updates at step {i} ===")

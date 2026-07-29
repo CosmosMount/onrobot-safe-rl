@@ -1,7 +1,7 @@
 # Default online Go2 training profile. Inherits config/common.yaml.
 
 train:
-  explore_action_scale: 0.5
+  explore_action_scale: 1.0
   max_steps: 150000
   utd_ratio: 5
-  save_dir: saved/checkpoints_58d
+  

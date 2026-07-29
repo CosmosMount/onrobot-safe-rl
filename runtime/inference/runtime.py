@@ -71,7 +71,7 @@ class PolicyInferenceRuntime:
             max_joint_delta=max_joint_delta,
             action_filter=action_filter,
         )
-        self._prev_requested_action = np.zeros(robot_cfg.num_joints, dtype=np.float32)
+        self._prev_requested_action = robot_cfg.init_qpos.astype(np.float32).copy()
         self._last_send_time: float | None = None
         self._latest_action = np.zeros(robot_cfg.num_joints, dtype=np.float32)
         self._policy_action_cleared = True
@@ -137,7 +137,7 @@ class PolicyInferenceRuntime:
             else float("nan")
         )
         self._last_send_time = now
-        self._prev_requested_action = policy_action
+        self._prev_requested_action = q_send.astype(np.float32).copy()
         self._policy_action_cleared = False
         return {
             "projected_action": policy_action.copy(),
@@ -254,7 +254,7 @@ class PolicyInferenceRuntime:
         if self._policy_action_cleared:
             return
         self._latest_action.fill(0.0)
-        self._prev_requested_action.fill(0.0)
+        self._prev_requested_action = self.robot_cfg.init_qpos.astype(np.float32).copy()
         self._action_applier.reset_filter()
         self._action_rx.clear()
         self._policy_action_cleared = True

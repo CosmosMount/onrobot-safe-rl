@@ -44,7 +44,7 @@ def sanitize_observation(obs: np.ndarray, cfg: Any) -> np.ndarray:
     """Replace non-finite values and normalize quaternion in obs."""
     out = np.nan_to_num(obs, nan=0.0, posinf=100.0, neginf=-100.0).astype(
         np.float32)
-    quat_start = 3 * cfg.num_joints + 6
+    quat_start = 2 * cfg.num_joints + 6
     out[quat_start:quat_start + 4] = normalize_quat(out[quat_start:quat_start +
                                                           4])
     return np.clip(out, -100.0, 100.0)
@@ -58,10 +58,10 @@ def build_observation(state: RobotState,
     obs = np.concatenate([
         state.joint_q.astype(np.float32),
         state.joint_dq.astype(np.float32),
-        previous_requested_action.astype(np.float32),
         state.imu_gyro.astype(np.float32),
         state.body_velocity.astype(np.float32),
         quat,
+        previous_requested_action.astype(np.float32),
     ])
     assert obs.shape == (cfg.obs_dim,), obs.shape
     return sanitize_observation(obs, cfg)

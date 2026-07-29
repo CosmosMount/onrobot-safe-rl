@@ -33,8 +33,14 @@ def create_agent(
         config = FlashSACConfig(**cfg_dict)  # type: ignore
         agent = FlashSACAgent(observation_space, action_space, env_info, config)
 
+    elif agent_type == "droq":
+
+        from rl.agents.droq.agent import DroQAgent, DroQConfig
+
+        config = DroQConfig(**cfg_dict)  # type: ignore
+        agent = DroQAgent(observation_space, action_space, env_info, config)
+
     else:
         raise NotImplementedError
 
     return agent
-

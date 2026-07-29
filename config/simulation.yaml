@@ -1,6 +1,6 @@
 # Simulation experiment profile. Inherits config/common.yaml.
 
-reward_profile: baseline
+reward_profile: upstream
 
 train:
   experiment_name: post_e05_safe_reward
