@@ -36,4 +36,6 @@ def build_legacy_env(robot_cfg, train_cfg: TrainConfig, seed: int) -> Go2Env:
         cmd_speed_increment=float(train_cfg.cmd_speed_increment),
         cmd_speed_frontier_probability=float(
             train_cfg.cmd_speed_frontier_probability),
+        cmd_speed_curriculum_mode=str(
+            train_cfg.cmd_speed_curriculum_mode),
     )

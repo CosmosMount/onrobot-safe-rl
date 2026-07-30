@@ -228,6 +228,12 @@ def _select_sqrl(
         validator_improvement = jnp.asarray(0.0, dtype=risks.dtype)
 
     info = {
+        # The deterministic policy mean is the selector's non-invasive
+        # nominal action. Any other selected proposal is an intervention.
+        'sqrl_action_replaced':
+            (selected_index != structured_start).astype(jnp.float32),
+        'sqrl_selected_policy_mean':
+            (selected_index == structured_start).astype(jnp.float32),
         'sqrl_rejected_fraction':
             1.0 - jnp.mean(safe.astype(jnp.float32)),
         'sqrl_no_safe_candidate': (~any_safe).astype(jnp.float32),

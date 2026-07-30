@@ -20,6 +20,13 @@ class RollingTrainingSummary:
     total_timeouts: int = 0
     total_near_failures: int = 0
     total_interventions: int = 0
+    total_episodes: int = 0
+    total_episode_steps: int = 0
+    total_episode_return: float = 0.0
+    total_recovery_triggers: int = 0
+    total_recovery_successes: int = 0
+    total_recovery_failures: int = 0
+    total_recovery_duration_steps: int = 0
 
     def __post_init__(self) -> None:
         if self.window <= 0:
@@ -38,6 +45,10 @@ class RollingTrainingSummary:
             self.total_falls += 1
         if info.get('is_recovering'):
             self.total_recoveries += 1
+        if (info.get('terminated')
+                and (info.get('standup_with_recovery')
+                     or info.get('is_belly_up'))):
+            self.total_recovery_triggers += 1
         if info.get('truncated') or info.get('standup_timed_out'):
             self.total_timeouts += 1
         if info.get('near_failure_label'):
@@ -49,6 +60,10 @@ class RollingTrainingSummary:
         self._steps.append({
             'forward_velocity': float(info.get(
                 'forward_velocity', info.get('x_velocity', 0.0))),
+            'tracking_error': abs(
+                float(info.get(
+                    'forward_velocity', info.get('x_velocity', 0.0)))
+                - float(info.get('cmd_speed', 0.0))),
             'world_x': float(info.get('world_x', 0.0)),
             'upright': float(info.get('upright_gate', 1.0)),
             'action_frequency_hz': float(
@@ -72,6 +87,16 @@ class RollingTrainingSummary:
 
     def record_episode(self, episode_return: float, episode_length: int) -> None:
         self._episodes.append((float(episode_return), int(episode_length)))
+        self.total_episodes += 1
+        self.total_episode_steps += int(episode_length)
+        self.total_episode_return += float(episode_return)
+
+    def record_recovery_result(
+            self, *, success: bool, duration_steps: int) -> None:
+        self.total_recovery_successes += int(bool(success))
+        self.total_recovery_failures += int(not success)
+        self.total_recovery_duration_steps += max(
+            int(duration_steps), 0)
 
     def metrics(self, replay_size: int) -> dict[str, float]:
         if not self._steps:
@@ -84,6 +109,8 @@ class RollingTrainingSummary:
             'rolling/replay_size': float(replay_size),
             'rolling/forward_velocity_mean': _nanmean(
                 [step['forward_velocity'] for step in steps]),
+            'rolling/tracking_error_mean': _nanmean(
+                [step['tracking_error'] for step in steps]),
             'rolling/world_x_delta': float(
                 steps[-1]['world_x'] - steps[0]['world_x']),
             'rolling/upright_ratio': _nanmean(
@@ -94,6 +121,19 @@ class RollingTrainingSummary:
                 [step['control_hold_overrun_ms'] for step in steps]),
             'rolling/falls_total': float(self.total_falls),
             'rolling/recoveries_total': float(self.total_recoveries),
+            'rolling/recovery_triggers_total': float(
+                self.total_recovery_triggers),
+            'rolling/recovery_successes_total': float(
+                self.total_recovery_successes),
+            'rolling/recovery_failures_total': float(
+                self.total_recovery_failures),
+            'rolling/recovery_success_rate': float(
+                self.total_recovery_successes
+                / max(
+                    self.total_recovery_successes
+                    + self.total_recovery_failures, 1)),
+            'rolling/recovery_duration_steps_total': float(
+                self.total_recovery_duration_steps),
             'rolling/timeouts_total': float(self.total_timeouts),
             'rolling/near_failures_total': float(self.total_near_failures),
             'rolling/near_failure_rate': _nanmean(
@@ -107,6 +147,19 @@ class RollingTrainingSummary:
             'rolling/action_std': float(np.std(actions)),
             'rolling/action_saturation_rate': float(
                 np.mean(np.abs(actions) >= 0.99)),
+            'run/episodes_total': float(self.total_episodes),
+            'run/fall_rate_per_episode': float(
+                self.total_falls / max(self.total_episodes, 1)),
+            'run/falls_per_1000_steps': float(
+                1000.0 * self.total_falls
+                / max(self.total_policy_steps, 1)),
+            'run/near_falls_per_1000_steps': float(
+                1000.0 * self.total_near_failures
+                / max(self.total_policy_steps, 1)),
+            'run/average_return': float(
+                self.total_episode_return / max(self.total_episodes, 1)),
+            'run/average_episode_length': float(
+                self.total_episode_steps / max(self.total_episodes, 1)),
         }
         for name in ('critic_loss', 'q', 'actor_loss', 'entropy',
                      'temperature', 'step_ms', 'update_ms', 'loop_ms',

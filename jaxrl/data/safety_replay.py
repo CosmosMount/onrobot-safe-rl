@@ -301,6 +301,97 @@ class SafetyReplayManager:
         batch['source_ids'] = np.asarray(source_ids, dtype=np.int8)[order]
         return self._attach_prior_weights(batch)
 
+    def _sample_speed_stratified(
+            self,
+            buffer: SafetyBuffer,
+            size: int,
+            speed_bins: np.ndarray,
+    ) -> tuple[list[dict[str, object]], list[int]]:
+        """Sample one replay source approximately uniformly across speeds."""
+        items = list(buffer._items)
+        grouped: dict[int, list[dict[str, object]]] = {}
+        for item in items:
+            speed = float(item.get('command_speeds', 0.0))
+            bin_id = int(np.argmin(np.abs(speed_bins - speed)))
+            grouped.setdefault(bin_id, []).append(item)
+        available_bins = np.asarray(sorted(grouped), dtype=np.int32)
+        if not len(available_bins):
+            raise ValueError('cannot speed-stratify an empty safety buffer')
+        counts = np.full(
+            len(available_bins), size // len(available_bins), dtype=np.int32)
+        remainder = size - int(np.sum(counts))
+        if remainder:
+            start = int(self._rng.integers(0, len(available_bins)))
+            for offset in range(remainder):
+                counts[(start + offset) % len(available_bins)] += 1
+        sampled: list[dict[str, object]] = []
+        sampled_bins: list[int] = []
+        for bin_id, count in zip(available_bins, counts):
+            choices = grouped[int(bin_id)]
+            indices = self._rng.integers(0, len(choices), size=int(count))
+            sampled.extend(choices[int(index)] for index in indices)
+            sampled_bins.extend([int(bin_id)] * int(count))
+        return sampled, sampled_bins
+
+    def sample_mixed_by_speed(
+            self,
+            batch_size: int,
+            speed_bins: Iterable[float],
+    ) -> dict[str, np.ndarray]:
+        """Apply the 40/30/20/10 source mix and stratify each source by speed.
+
+        Missing speed/source cells are skipped rather than fabricated. This
+        keeps rare-failure memory while preventing a high-speed failure-heavy
+        source from occupying the whole Q_safe batch.
+        """
+        if batch_size <= 0:
+            raise ValueError('batch_size must be positive')
+        bins = np.asarray(tuple(float(value) for value in speed_bins),
+                          dtype=np.float64)
+        if bins.ndim != 1 or not len(bins):
+            raise ValueError('speed_bins must be a non-empty sequence')
+        if len(np.unique(bins)) != len(bins):
+            raise ValueError('speed_bins must be unique')
+        buffers = (self.recent, self.boundary, self.failure, self.all)
+        available = np.asarray([len(buffer) > 0 for buffer in buffers])
+        if not np.any(available):
+            raise ValueError('cannot sample from empty safety replay')
+
+        raw = self.SOURCE_WEIGHTS * batch_size
+        counts = np.floor(raw).astype(np.int32)
+        remainder_order = np.argsort(-(raw - counts))
+        for index in remainder_order[:batch_size - int(np.sum(counts))]:
+            counts[index] += 1
+        deficit = int(np.sum(counts[~available]))
+        counts[~available] = 0
+        if deficit:
+            fallback_weights = self.SOURCE_WEIGHTS * available
+            fallback_weights /= np.sum(fallback_weights)
+            counts += self._rng.multinomial(
+                deficit, fallback_weights).astype(np.int32)
+
+        sampled: list[dict[str, object]] = []
+        source_ids: list[int] = []
+        speed_bin_ids: list[int] = []
+        for source_id, (buffer, count) in enumerate(zip(buffers, counts)):
+            if not count:
+                continue
+            source_items, source_bins = self._sample_speed_stratified(
+                buffer, int(count), bins)
+            sampled.extend(source_items)
+            source_ids.extend([source_id] * int(count))
+            speed_bin_ids.extend(source_bins)
+        order = self._rng.permutation(len(sampled))
+        keys = sampled[0].keys()
+        batch = {
+            key: np.stack([sampled[int(index)][key] for index in order])
+            for key in keys
+        }
+        batch['source_ids'] = np.asarray(source_ids, dtype=np.int8)[order]
+        batch['speed_bin_ids'] = np.asarray(
+            speed_bin_ids, dtype=np.int16)[order]
+        return self._attach_prior_weights(batch)
+
     def sample_recovery(self, batch_size: int) -> dict[str, np.ndarray]:
         items = self.recovery.sample(batch_size, self._rng)
         return {key: np.stack([item[key] for item in items])

@@ -228,6 +228,71 @@ class SafetyCritic(struct.PyTreeNode):
             target_critic=safety.target_critic.replace(params=target_params),
             rng=rng), info
 
+    @staticmethod
+    @jax.jit
+    def update_counterfactual(
+            safety: 'SafetyCritic',
+            batch: dict[str, jax.Array],
+            ranking_weight: float,
+            ranking_margin: float = 0.0):
+        """Supervise Q_safe using exact-state branch outcomes.
+
+        Point labels retain the future-failure probability interpretation.
+        Pair labels only require that the branch with worse physical outcome
+        receives a larger risk logit than the safer branch.
+        """
+        def loss_fn(params):
+            point_logits = safety.critic.apply_fn(
+                {'params': params},
+                batch['observations'], batch['actions'],
+                return_members=True)
+            labels = batch['failure_labels'][:, None]
+            point_weights = batch.get(
+                'point_weights', jnp.ones_like(labels[:, 0]))[:, None]
+            point_bce_values = optax.sigmoid_binary_cross_entropy(
+                point_logits, labels)
+            point_bce = (
+                jnp.sum(point_weights * point_bce_values)
+                / jnp.maximum(
+                    jnp.sum(point_weights) * safety.ensemble_size, 1.0))
+
+            riskier_logits = safety.critic.apply_fn(
+                {'params': params},
+                batch['pair_observations'],
+                batch['riskier_actions'],
+                return_members=True)
+            safer_logits = safety.critic.apply_fn(
+                {'params': params},
+                batch['pair_observations'],
+                batch['safer_actions'],
+                return_members=True)
+            logit_improvement = riskier_logits - safer_logits
+            ranking_loss = jnp.mean(jax.nn.softplus(
+                ranking_margin - logit_improvement))
+            loss = point_bce + ranking_weight * ranking_loss
+            pair_accuracy = jnp.mean(
+                (logit_improvement > 0.0).astype(jnp.float32))
+            point_risk = jax.nn.sigmoid(point_logits)
+            return loss, {
+                'branch_critic_loss': loss,
+                'branch_failure_bce': point_bce,
+                'branch_ranking_loss': ranking_loss,
+                'branch_pair_accuracy': pair_accuracy,
+                'branch_logit_margin': jnp.mean(logit_improvement),
+                'branch_point_risk_mean': jnp.mean(point_risk),
+                'branch_point_saturation_rate': jnp.mean(jnp.logical_or(
+                    point_risk <= 0.01, point_risk >= 0.99)),
+            }
+
+        grads, info = jax.grad(loss_fn, has_aux=True)(safety.critic.params)
+        critic = safety.critic.apply_gradients(grads=grads)
+        target_params = soft_target_update(
+            critic.params, safety.target_critic.params, safety.tau)
+        return safety.replace(
+            critic=critic,
+            target_critic=safety.target_critic.replace(
+                params=target_params)), info
+
     def predict(self, observations, actions) -> np.ndarray:
         probabilities, _ = self.predict_with_uncertainty(
             observations, actions)

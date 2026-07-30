@@ -4,7 +4,8 @@ import unittest
 
 import numpy as np
 
-from learner.control_evaluation import evaluate_control_facing
+from learner.control_evaluation import (evaluate_control_facing,
+                                        evaluate_double_critic_control)
 from learner.counterfactual_dataset import CandidateBranch, HorizonOutcome
 
 
@@ -57,6 +58,44 @@ class ControlEvaluationTest(unittest.TestCase):
             metrics['control_selected_false_safe_rate'], 1.0)
         self.assertEqual(
             metrics['control_nominal_relative_failure_reduction'], 0.0)
+
+    def test_structured_fallback_is_reported_separately(self):
+        branches = [
+            _branch(0, 0, 'nominal', True),
+            _branch(0, 1, 'contracted_previous', False),
+        ]
+        metrics = evaluate_control_facing(
+            branches, [0.9, 0.8], epsilon=0.2,
+            structured_fallback=True)
+        self.assertEqual(metrics['control_coverage'], 0.0)
+        self.assertEqual(metrics['control_replacement_rate'], 0.0)
+        self.assertEqual(metrics['control_fallback_rate'], 1.0)
+        self.assertEqual(
+            metrics['control_replacement_failure_contribution'], 0.0)
+        self.assertEqual(
+            metrics['control_fallback_failure_contribution'], 1.0)
+        self.assertEqual(
+            metrics['control_fallback_reduction_fraction'], 1.0)
+
+    def test_validator_rejects_false_safe_without_searching(self):
+        branches = [
+            _branch(0, 0, 'nominal', True),
+            _branch(0, 1, 'nominal_delta', True),
+            _branch(0, 2, 'contracted_previous', False),
+        ]
+        metrics = evaluate_double_critic_control(
+            branches,
+            selector_risks=[0.9, 0.05, 0.4],
+            validator_risks=[0.9, 0.95, 0.1],
+            horizon=32, epsilon=0.2, improvement_margin=0.05)
+        # B rejects A's candidate. It does not search for its own q=0.1
+        # candidate; the predefined contracted action is used as abstention.
+        self.assertEqual(metrics['double_validation_reject_rate'], 1.0)
+        self.assertEqual(metrics['double_abstention_rate'], 1.0)
+        self.assertEqual(metrics['double_replacement_rate'], 0.0)
+        self.assertEqual(metrics['double_selected_failure_rate'], 0.0)
+        self.assertEqual(metrics['double_failure_reduction'], 1.0)
+        self.assertEqual(metrics['double_abstention_failure_reduction'], 1.0)
 
 
 if __name__ == '__main__':

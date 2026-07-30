@@ -214,7 +214,8 @@ def _heldout_fixed_speed(*, robot_cfg, train_cfg, droq_cfg, checkpoint: str,
                          rollout_seed: int, use_sqrl: bool, epsilon: float,
                          num_candidates: int,
                          noise_mode: str = 'candidate',
-                         log_qsafe: bool = False) -> dict:
+                         log_qsafe: bool = False,
+                         sample_policy: bool = False) -> dict:
     """Short held-out rollout at fixed move_speed; no gradient updates.
 
     Counts fallen terminations over ``max_steps`` policy steps.
@@ -243,6 +244,11 @@ def _heldout_fixed_speed(*, robot_cfg, train_cfg, droq_cfg, checkpoint: str,
         Path(checkpoint), agent=agent,
         safety_critic=safety if (use_sqrl or log_qsafe) else None)
     agent = snapshot['agent']
+    if sample_policy:
+        # A restored checkpoint also restores the actor RNG. Re-seed held-out
+        # policy sampling so different rollout_seed values are true stochastic
+        # replicates instead of replaying the same action-noise sequence.
+        agent = agent.replace(rng=jax.random.PRNGKey(rollout_seed))
     if use_sqrl or log_qsafe:
         if 'safety_critic' not in snapshot:
             env.close()
@@ -295,8 +301,13 @@ def _heldout_fixed_speed(*, robot_cfg, train_cfg, droq_cfg, checkpoint: str,
                     info['candidate_Q_safe_disagreement_mean'])
                 qsafe_n += 1
             else:
-                action = np.clip(agent.eval_actions(observation), -1.0, 1.0)
-                if action_noise_std > 0.0:
+                if sample_policy:
+                    action, agent = agent.sample_actions(observation)
+                    action = np.clip(action, -1.0, 1.0)
+                else:
+                    action = np.clip(
+                        agent.eval_actions(observation), -1.0, 1.0)
+                if not sample_policy and action_noise_std > 0.0:
                     action = np.clip(
                         action + rng.normal(
                             0.0, action_noise_std, size=action.shape),
@@ -351,6 +362,7 @@ def _heldout_fixed_speed(*, robot_cfg, train_cfg, droq_cfg, checkpoint: str,
             float(qsafe_disagreement_sum / qsafe_n) if qsafe_n else None),
         'rollout_seed': rollout_seed,
         'action_noise_std': action_noise_std,
+        'sample_policy': bool(sample_policy),
     }
 
 

@@ -145,6 +145,7 @@ train:
   sqrl_epsilon: 0.20
   sqrl_num_candidates: 64
   sqrl_lagrange_lr: 1.0e-4
+  sqrl_actor_lagrange_enabled: false
   sqrl_qsafe_recent_only: true
   sqrl_activation_steps: 1000
   sqrl_min_auroc: 0.70
@@ -153,6 +154,7 @@ train:
   sqrl_max_brier: 0.20
   sqrl_min_gate_samples: 128
   sqrl_gate_candidate_window: 128
+  sqrl_gate_revoke_patience: 64
   sqrl_max_no_safe_rate: 0.50
   sqrl_min_candidate_range: 0.02
   sqrl_epsilon_start: 0.80
@@ -172,11 +174,13 @@ train:
   # SQRL control remains gated until evaluate_branch_qsafe.py writes this.
   sqrl_control_gate_required: true
   sqrl_control_metrics_path: null
+  sqrl_prevalidated_control_gate: false
   sqrl_control_min_pairwise_accuracy: 0.65
   sqrl_control_max_false_safe_rate: 0.10
   sqrl_control_min_coverage: 0.10
   sqrl_control_min_failure_reduction: 0.01
   # Performance-gated multi-speed curriculum. Each promotion is <=0.05 m/s.
+  cmd_speed_curriculum_mode: performance
   cmd_speed_increment: 0.05
   cmd_speed_frontier_probability: 0.50
   cmd_speed_promotion_window: 8
@@ -185,6 +189,10 @@ train:
   cmd_speed_max_fall_rate: 0.125
   cmd_speed_new_stage_exploration_scale: 0.50
   cmd_speed_exploration_recovery_episodes: 4
+  cmd_speed_curriculum_max_steps: 100000
+  cmd_speed_balance_min_transitions: 1600
+  cmd_speed_balance_min_episodes: 4
+  cmd_speed_balance_max_steps: 30000
   warm_start_checkpoint: null
   log_interval: 100
   metrics_interval: 1

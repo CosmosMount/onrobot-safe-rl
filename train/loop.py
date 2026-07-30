@@ -20,6 +20,7 @@ from train.logging import TrainLogger
 from train.profiling import StepProfiler
 from train.rolling_metrics import RollingTrainingSummary
 from train.speed_curriculum import PerformanceSpeedCurriculum
+from train.sqrl_outcomes import ReplacementOutcomeTracker
 from collector.transition_builder import build_transition
 from learner.checkpoint import (experiments_compatible,
                                 has_legacy_agent_checkpoint, latest_snapshot,
@@ -67,6 +68,18 @@ def _sqrl_gate_decision(latest_safety_info: dict | None,
                         cfg: TrainConfig,
                         control_metrics: dict | None = None
                         ) -> tuple[bool, str]:
+    if cfg.sqrl_prevalidated_control_gate:
+        if control_metrics is None:
+            return False, 'no-prevalidated-control-gate'
+        protocol = control_metrics.get('protocol')
+        if protocol not in ('P15', 'P16'):
+            return False, 'wrong-prevalidated-protocol'
+        passed_key = (
+            'p15_gate_passed' if protocol == 'P15'
+            else 'p16_gate_passed')
+        if not bool(control_metrics.get(passed_key, False)):
+            return False, 'prevalidated-gate-failed'
+        return True, f'ready:prevalidated-{protocol}'
     if latest_safety_info is None:
         return False, 'no-natural-calibration'
     required = (
@@ -136,7 +149,26 @@ def _sqrl_gate_decision(latest_safety_info: dict | None,
     return True, 'ready'
 
 
-def _snapshot_metadata(cfg: TrainConfig, env=None) -> dict:
+def _sqrl_gate_with_hysteresis(raw_ready: bool,
+                               raw_reason: str,
+                               latched: bool,
+                               bad_streak: int,
+                               revoke_patience: int
+                               ) -> tuple[bool, str, bool, int]:
+    """Keep SQRL active through short-lived calibration-batch noise."""
+    if raw_ready:
+        return True, 'ready', True, 0
+    if not latched:
+        return False, raw_reason, False, 0
+    bad_streak += 1
+    patience = max(int(revoke_patience), 1)
+    if bad_streak >= patience:
+        return False, f'revoked:{raw_reason}', False, 0
+    return True, f'latched:{raw_reason}', True, bad_streak
+
+
+def _snapshot_metadata(cfg: TrainConfig, env=None,
+                       speed_curriculum=None) -> dict:
     metadata = {
         'experiment_name': cfg.experiment_name,
         'start_training': cfg.start_training,
@@ -146,7 +178,27 @@ def _snapshot_metadata(cfg: TrainConfig, env=None) -> dict:
     }
     if env is not None:
         metadata['obs_dim'] = int(env.observation_space.shape[0])
+    if speed_curriculum is not None:
+        metadata['speed_coverage'] = speed_curriculum.manifest()
     return metadata
+
+
+def _write_speed_coverage_manifest(cfg: TrainConfig, speed_curriculum,
+                                   step: int) -> None:
+    if speed_curriculum is None:
+        return
+    payload = {
+        'step': int(step),
+        'experiment_name': cfg.experiment_name,
+        'seed': int(cfg.seed),
+        **speed_curriculum.manifest(),
+    }
+    path = Path(cfg.save_dir) / 'speed_coverage_manifest.json'
+    temporary = path.with_suffix(path.suffix + '.tmp')
+    temporary.write_text(
+        __import__('json').dumps(payload, indent=2),
+        encoding='utf-8')
+    temporary.replace(path)
 
 
 def _validate_snapshot_metadata(path, metadata: dict, env) -> None:
@@ -174,6 +226,7 @@ def _apply_agent_update(agent, batch, cfg: TrainConfig, source_step: int,
     use_lagrange = (
         bool(cfg.sqrl_enabled)
         and str(cfg.sqrl_phase) == 'finetune'
+        and bool(cfg.sqrl_actor_lagrange_enabled)
         and safety_critic is not None)
     agent, update_info = agent.update(
         batch, cfg.utd_ratio,
@@ -196,6 +249,7 @@ def _apply_agent_update(agent, batch, cfg: TrainConfig, source_step: int,
 
 def run_training(agent, env, replay_buffer, cfg: TrainConfig):
     os.makedirs(cfg.save_dir, exist_ok=True)
+    training_wall_start = time.perf_counter()
 
     safety_replay = None
     if cfg.safety_replay_enabled:
@@ -383,6 +437,8 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
             _log(f'[wandb] could not write wandb_run.json: {exc}')
 
     speed_curriculum = None
+    balanced_start_step = None
+    curriculum_finished = False
     if cfg.cmd_speed_curriculum:
         restored_upper_speed = cfg.cmd_speed_min
         if safety_replay is not None and len(safety_replay.all) > 0:
@@ -402,9 +458,15 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
             exploration_recovery_episodes=(
                 cfg.cmd_speed_exploration_recovery_episodes),
             initial_upper_speed=restored_upper_speed,
+            mode=cfg.cmd_speed_curriculum_mode,
+            balance_min_transitions=(
+                cfg.cmd_speed_balance_min_transitions),
+            balance_min_episodes=cfg.cmd_speed_balance_min_episodes,
         )
         if hasattr(inner, 'set_curriculum_upper_speed'):
             inner.set_curriculum_upper_speed(speed_curriculum.upper_speed)
+        if hasattr(inner, 'set_curriculum_phase'):
+            inner.set_curriculum_phase(speed_curriculum.phase)
         if restored_upper_speed > cfg.cmd_speed_min + 1e-9:
             _log(
                 f'[train] restored cmd_speed curriculum frontier='
@@ -416,6 +478,12 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
     previous_policy_action = np.zeros(
         env.action_space.shape, dtype=np.float32)
     sqrl_run_start = start_i
+    sqrl_active_steps = 0
+    sqrl_action_change_steps = 0
+    sqrl_replacement_steps = 0
+    sqrl_no_safe_steps = 0
+    sqrl_emergency_steps = 0
+    sqrl_outcomes = ReplacementOutcomeTracker((8, 16, 32))
     latest_sqrl_info = {
         'sqrl_rejected_fraction': 0.0,
         'sqrl_no_safe_candidate': 0.0,
@@ -442,6 +510,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
             raise ValueError('sqrl_enabled requires safety_critic_enabled')
         _log(f'[train] SQRL enabled phase={cfg.sqrl_phase} '
              f'epsilon={cfg.sqrl_epsilon} K={cfg.sqrl_num_candidates} '
+             f'actor_lagrange={cfg.sqrl_actor_lagrange_enabled} '
              f'recent_only={cfg.sqrl_qsafe_recent_only} '
              f'activation_steps={cfg.sqrl_activation_steps} '
              f'min_auroc={cfg.sqrl_min_auroc} '
@@ -483,6 +552,8 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
     latest_safety_info = None
     sqrl_constraint_start = None
     sqrl_ready_logged = False
+    sqrl_gate_latched = False
+    sqrl_gate_bad_streak = 0
 
     def apply_pending_update():
         nonlocal agent, pending_update, policy_corrupted
@@ -514,12 +585,19 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                 if i == cfg.start_training:
                     _log(f'[train] === Entering policy training at step {i} ===')
                 sqrl_steps = i - sqrl_run_start
-                qsafe_ready, gate_reason = _sqrl_gate_decision(
+                raw_qsafe_ready, raw_gate_reason = _sqrl_gate_decision(
                     latest_safety_info,
                     sqrl_candidate_no_safe,
                     sqrl_candidate_ranges,
                     cfg,
                     control_gate_metrics)
+                (qsafe_ready, gate_reason, sqrl_gate_latched,
+                 sqrl_gate_bad_streak) = _sqrl_gate_with_hysteresis(
+                     raw_qsafe_ready,
+                     raw_gate_reason,
+                     sqrl_gate_latched,
+                     sqrl_gate_bad_streak,
+                     cfg.sqrl_gate_revoke_patience)
                 sqrl_active = (
                     cfg.sqrl_enabled and safety_critic is not None
                     and sqrl_steps >= int(cfg.sqrl_activation_steps)
@@ -588,6 +666,37 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                         np.mean(sqrl_candidate_no_safe))
                     latest_sqrl_info['sqrl_gate_candidate_range'] = float(
                         np.mean(sqrl_candidate_ranges))
+                    if sqrl_active:
+                        sqrl_active_steps += 1
+                        action_changed = bool(latest_sqrl_info.get(
+                            'sqrl_action_replaced', 0.0) > 0.5)
+                        no_safe = bool(latest_sqrl_info.get(
+                            'sqrl_no_safe_candidate', 0.0) > 0.5)
+                        emergency = bool(latest_sqrl_info.get(
+                            'sqrl_emergency_supervisor', 0.0) > 0.5)
+                        replacement = bool(
+                            action_changed and not no_safe and not emergency)
+                        sqrl_action_change_steps += int(action_changed)
+                        sqrl_replacement_steps += int(replacement)
+                        sqrl_no_safe_steps += int(no_safe)
+                        sqrl_emergency_steps += int(emergency)
+                        if action_changed:
+                            selection_kind = (
+                                'replacement' if replacement else 'fallback')
+                            outcome_info = dict(latest_sqrl_info)
+                            outcome_info['_selection_kind'] = selection_kind
+                            sqrl_outcomes.record_replacement(
+                                i, outcome_info)
+                            _log(
+                                f'[step {i}] SQRL '
+                                f'{selection_kind} '
+                                f'nominal_Q='
+                                f'{float(latest_sqrl_info.get("nominal_Q_safe_A", float("nan"))):.4f} '
+                                f'selected_Q='
+                                f'{float(latest_sqrl_info.get("selected_Q_safe", float("nan"))):.4f} '
+                                f'epsilon={eps_eff:.4f} '
+                                f'group='
+                                f'{int(latest_sqrl_info.get("sqrl_selected_group", -1))}')
                 else:
                     action = None
                 if action is None:
@@ -642,8 +751,22 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                 episode_length += 1
                 episode_forward_velocity_sum += float(
                     info.get('x_velocity', 0.0))
+                if speed_curriculum is not None:
+                    speed_curriculum.record_transition(float(
+                        info.get('cmd_speed',
+                                 speed_curriculum.upper_speed)))
 
             policy_step = info.get('policy_step', True)
+            if policy_step:
+                sqrl_outcomes.record_step(
+                    i,
+                    unsafe=bool(
+                        info.get('unsafe_label', False)
+                        or info.get('terminated', False)),
+                    near_failure=bool(
+                        info.get('near_failure_label', False)),
+                    done=bool(done),
+                )
             step_costs = info.get('costs') or {}
             if policy_step:
                 episode_safety_cost += sum(float(v)
@@ -936,6 +1059,7 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                     'env/cmd_speed': float(info.get('cmd_speed', float('nan'))),
                 }, step=i)
                 if speed_curriculum is not None:
+                    previous_curriculum_phase = speed_curriculum.phase
                     episode_cmd_speed = float(
                         info.get('cmd_speed', speed_curriculum.upper_speed))
                     curriculum_update = speed_curriculum.record_episode(
@@ -953,6 +1077,17 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                             f'{curriculum_update.upper_speed:.2f} m/s; '
                             f'exploration_multiplier='
                             f'{curriculum_update.exploration_multiplier:.2f}')
+                    if (previous_curriculum_phase == 'performance'
+                            and curriculum_update.phase == 'balanced'):
+                        balanced_start_step = completed_step
+                        _log(
+                            f'[train] cmd_speed frontier '
+                            f'{speed_curriculum.max_speed:.2f} passed; '
+                            'entering balanced coverage phase')
+                    if curriculum_update.coverage_complete:
+                        curriculum_finished = True
+                        _log(
+                            '[train] cmd_speed balanced coverage complete')
                     logger.log({
                         'curriculum/upper_speed':
                             curriculum_update.upper_speed,
@@ -968,10 +1103,19 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                             curriculum_update.exploration_multiplier,
                         'curriculum/promoted':
                             float(curriculum_update.promoted),
+                        'curriculum/frontier_complete':
+                            float(curriculum_update.frontier_complete),
+                        'curriculum/coverage_complete':
+                            float(curriculum_update.coverage_complete),
+                        'curriculum/phase_balanced':
+                            float(curriculum_update.phase == 'balanced'),
                     }, step=i)
                     if hasattr(inner, 'set_curriculum_upper_speed'):
                         inner.set_curriculum_upper_speed(
                             curriculum_update.upper_speed)
+                    if hasattr(inner, 'set_curriculum_phase'):
+                        inner.set_curriculum_phase(
+                            curriculum_update.phase)
                 if info.get('terminated') or info.get('standup_timed_out'):
                     kind = ('belly-up recovery→standup'
                             if info.get('standup_with_recovery')
@@ -988,11 +1132,19 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                     grace_period=not info.get('truncated', False),
                     preserve_policy_state=info.get('truncated', False),
                 )
+                recovery_transitions = list(
+                    inner.drain_recovery_transitions())
                 if safety_replay is not None:
-                    for recovery_transition in (
-                            inner.drain_recovery_transitions()):
+                    for recovery_transition in recovery_transitions:
                         safety_replay.insert(recovery_transition,
                                              policy_step=False)
+                if (info.get('standup_with_recovery')
+                        or info.get('is_belly_up')):
+                    rolling.record_recovery_result(
+                        success=not bool(
+                            info.get('standup_timed_out')),
+                        duration_steps=len(recovery_transitions),
+                    )
                 if not _is_finite_array(observation):
                     observation = np.zeros(env.observation_space.shape,
                                            dtype=np.float32)
@@ -1004,6 +1156,26 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                 episode_length = 0
                 episode_safety_cost = 0.0
                 episode_forward_velocity_sum = 0.0
+
+            if (speed_curriculum is not None
+                    and cfg.cmd_speed_curriculum_mode
+                    == 'performance_then_balanced'):
+                if (speed_curriculum.phase == 'performance'
+                        and completed_step
+                        >= int(cfg.cmd_speed_curriculum_max_steps)):
+                    raise RuntimeError(
+                        'P15 curriculum failed to pass max speed before '
+                        f'{cfg.cmd_speed_curriculum_max_steps} steps')
+                if (speed_curriculum.phase == 'balanced'
+                        and balanced_start_step is not None
+                        and completed_step - balanced_start_step
+                        >= int(cfg.cmd_speed_balance_max_steps)
+                        and not speed_curriculum.coverage_complete):
+                    raise RuntimeError(
+                        'P15 balanced phase failed coverage before '
+                        f'{cfg.cmd_speed_balance_max_steps} steps')
+                if curriculum_finished:
+                    break
 
             train_step = i - cfg.start_training
             if (not cfg.no_eval and not cfg.benchmark_only
@@ -1041,8 +1213,11 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                     safety_critic=safety_critic,
                     safety_validator=safety_validator,
                     step=completed_step,
-                    metadata=_snapshot_metadata(cfg, env),
+                    metadata=_snapshot_metadata(
+                        cfg, env, speed_curriculum),
                 )
+                _write_speed_coverage_manifest(
+                    cfg, speed_curriculum, completed_step)
                 last_saved_step = completed_step
                 _log(f'[step {i}] checkpoint saved: {path}')
     finally:
@@ -1058,10 +1233,64 @@ def run_training(agent, env, replay_buffer, cfg: TrainConfig):
                 safety_critic=safety_critic,
                 safety_validator=safety_validator,
                 step=completed_step,
-                metadata=_snapshot_metadata(cfg, env),
+                metadata=_snapshot_metadata(
+                    cfg, env, speed_curriculum),
             )
+            _write_speed_coverage_manifest(
+                cfg, speed_curriculum, completed_step)
             _log(f'[train] final checkpoint saved: {path}')
         logger.finish()
+        sqrl_outcomes.finalize()
+        final_summary = {
+            'completed_step': int(completed_step),
+            'start_step': int(start_i),
+            'finetune_policy_steps': int(max(completed_step - start_i, 0)),
+            'wall_time_sec': float(
+                time.perf_counter() - training_wall_start),
+            **rolling.metrics(len(replay_buffer)),
+            'sqrl/active_steps': float(sqrl_active_steps),
+            'sqrl/action_change_steps': float(
+                sqrl_action_change_steps),
+            'sqrl/replaced_steps': float(sqrl_replacement_steps),
+            'sqrl/no_safe_steps': float(sqrl_no_safe_steps),
+            'sqrl/emergency_steps': float(sqrl_emergency_steps),
+            'sqrl/replacement_rate': float(
+                sqrl_replacement_steps / max(sqrl_active_steps, 1)),
+            **sqrl_outcomes.metrics(),
+        }
+        final_summary['run/policy_step_throughput'] = float(
+            max(completed_step - start_i, 0)
+            / max(final_summary['wall_time_sec'], 1e-6))
+        final_summary['run/intervention_duration_sec'] = float(
+            rolling.total_interventions / max(control_frequency, 1e-6))
+        final_summary['run/recovery_duration_sec'] = float(
+            rolling.total_recovery_duration_steps
+            / max(control_frequency, 1e-6))
+        summary_path = Path(cfg.save_dir) / 'training_summary.json'
+        summary_tmp = summary_path.with_suffix('.json.tmp')
+        summary_tmp.write_text(
+            __import__('json').dumps(
+                final_summary, indent=2, allow_nan=True),
+            encoding='utf-8')
+        summary_tmp.replace(summary_path)
+        outcomes_path = (
+            Path(cfg.save_dir) / 'sqrl_replacement_outcomes.json')
+        outcomes_tmp = outcomes_path.with_suffix('.json.tmp')
+        outcomes_tmp.write_text(
+            __import__('json').dumps(
+                sqrl_outcomes.completed, indent=2, allow_nan=True),
+            encoding='utf-8')
+        outcomes_tmp.replace(outcomes_path)
+        if cfg.sqrl_enabled:
+            _log(
+                '[train] SQRL totals '
+                f'active_steps={sqrl_active_steps} '
+                f'action_change_steps={sqrl_action_change_steps} '
+                f'replaced_steps={sqrl_replacement_steps} '
+                f'no_safe_steps={sqrl_no_safe_steps} '
+                f'emergency_steps={sqrl_emergency_steps} '
+                f'replacement_rate='
+                f'{sqrl_replacement_steps / max(sqrl_active_steps, 1):.6f}')
         if logger.enabled:
             try:
                 meta_path = Path(cfg.save_dir) / 'wandb_run.json'

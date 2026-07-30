@@ -73,7 +73,8 @@ class Go2Env:
                  cmd_speed_max: float = 1.0,
                  cmd_speed_curriculum_steps: int = 12_000,
                  cmd_speed_increment: float = 0.05,
-                 cmd_speed_frontier_probability: float = 0.50):
+                 cmd_speed_frontier_probability: float = 0.50,
+                 cmd_speed_curriculum_mode: str = 'performance'):
         self.cfg = go2_config or load_app_config()[0]
         self.dds_config = dds_config
         self.control_dt = 1.0 / control_frequency
@@ -95,8 +96,11 @@ class Go2Env:
         self.cmd_speed_increment = float(cmd_speed_increment)
         self.cmd_speed_frontier_probability = float(
             cmd_speed_frontier_probability)
+        self.cmd_speed_curriculum_mode = str(cmd_speed_curriculum_mode)
         self._curriculum_step = 0
         self._curriculum_upper_speed = self.cmd_speed_min
+        self._curriculum_phase = 'performance'
+        self._balanced_speed_cursor = 0
 
         n = self.cfg.num_joints
         self.observation_space = BoxSpec(shape=(self.cfg.obs_dim,),
@@ -143,6 +147,13 @@ class Go2Env:
         self._curriculum_upper_speed = float(np.clip(
             speed, self.cmd_speed_min, self.cmd_speed_max))
 
+    def set_curriculum_phase(self, phase: str) -> None:
+        if phase not in ('performance', 'balanced'):
+            raise ValueError(f'unknown curriculum phase: {phase}')
+        if phase != self._curriculum_phase:
+            self._balanced_speed_cursor = 0
+        self._curriculum_phase = phase
+
     def _cmd_speed_upper(self) -> float:
         if not self.cmd_speed_curriculum:
             return float(self.cfg.move_speed)
@@ -151,6 +162,18 @@ class Go2Env:
     def _sample_episode_cmd_speed(self) -> float:
         if not self.cmd_speed_curriculum:
             return float(self.cfg.move_speed)
+        if (self.cmd_speed_curriculum_mode == 'performance_then_balanced'
+                and self._curriculum_phase == 'balanced'):
+            count = int(round(
+                (self.cmd_speed_max - self.cmd_speed_min)
+                / self.cmd_speed_increment)) + 1
+            index = self._balanced_speed_cursor % max(count, 1)
+            self._balanced_speed_cursor += 1
+            return float(min(
+                self.cmd_speed_max,
+                round(
+                    self.cmd_speed_min
+                    + index * self.cmd_speed_increment, 6)))
         lo = float(self.cmd_speed_min)
         hi = max(lo, self._cmd_speed_upper())
         if hi <= lo + 1e-9:

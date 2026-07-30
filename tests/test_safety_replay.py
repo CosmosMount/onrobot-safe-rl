@@ -9,11 +9,18 @@ from common.transition import Transition, zero_costs
 from jaxrl.data.safety_replay import SafetyReplayManager
 from jaxrl.data.replay_buffer import ReplayBuffer
 from jaxrl.env.specs import BoxSpec
-from learner.checkpoint import restore_training_snapshot, save_training_snapshot
+from learner.checkpoint import (
+    agent_state_hash,
+    load_training_snapshot_metadata,
+    restore_training_snapshot,
+    save_training_snapshot,
+    snapshot_agent_hash,
+)
 
 
 def _transition(value: float, *, unsafe: bool = False,
-                boundary: bool = False, done: bool = False) -> Transition:
+                boundary: bool = False, done: bool = False,
+                command_speed: float = 0.6) -> Transition:
     return Transition(
         observation=np.full(3, value, dtype=np.float32),
         requested_action=np.full(2, value, dtype=np.float32),
@@ -28,7 +35,7 @@ def _transition(value: float, *, unsafe: bool = False,
         near_failure_label=boundary or unsafe,
         policy_version=int(value),
         episode_id=17,
-        command_speed=0.6,
+        command_speed=command_speed,
     )
 
 
@@ -154,6 +161,20 @@ class SafetyReplayTest(unittest.TestCase):
         self.assertEqual(batch['observations'].shape[0], 17)
         self.assertTrue(np.all(np.isin(batch['source_ids'], [0, 3])))
 
+    def test_mixed_speed_stratification_balances_available_speed_bins(self):
+        replay = _manager()
+        for index in range(30):
+            replay.insert(_transition(
+                float(index), command_speed=0.30))
+        for index in range(2):
+            replay.insert(_transition(
+                float(100 + index), command_speed=0.35))
+        batch = replay.sample_mixed_by_speed(200, [0.30, 0.35])
+        counts = np.bincount(batch['speed_bin_ids'], minlength=2)
+        self.assertEqual(int(np.sum(counts)), 200)
+        self.assertGreaterEqual(int(counts[0]), 90)
+        self.assertGreaterEqual(int(counts[1]), 90)
+
     def test_compact_state_round_trip(self):
         replay = _manager()
         replay.insert(_transition(1.0, boundary=True))
@@ -199,6 +220,25 @@ class SafetyReplayTest(unittest.TestCase):
                 path, agent={'weight': np.asarray([0.0])},
                 replay_buffer=restored_rl, safety_replay=restored_safety)
             self.assertEqual(restored_safety.sizes, replay.sizes)
+            metadata = load_training_snapshot_metadata(path)
+            self.assertEqual(
+                metadata['agent_state_hash'], snapshot_agent_hash(path))
+
+    def test_agent_state_hash_is_stable_and_detects_parameter_changes(self):
+        left = {
+            'critic': {'b': np.asarray([2.0]), 'a': np.asarray([1.0])},
+            'step': np.int32(4),
+        }
+        reordered = {
+            'step': np.int32(4),
+            'critic': {'a': np.asarray([1.0]), 'b': np.asarray([2.0])},
+        }
+        changed = {
+            'critic': {'a': np.asarray([1.0]), 'b': np.asarray([2.1])},
+            'step': np.int32(4),
+        }
+        self.assertEqual(agent_state_hash(left), agent_state_hash(reordered))
+        self.assertNotEqual(agent_state_hash(left), agent_state_hash(changed))
 
 
 if __name__ == '__main__':

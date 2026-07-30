@@ -152,12 +152,18 @@ train:
   sqrl_validation_improvement_margin: 0.02
   sqrl_control_gate_required: true
   sqrl_control_metrics_path: null
+  sqrl_prevalidated_control_gate: false
   sqrl_control_min_pairwise_accuracy: 0.65
   sqrl_control_max_false_safe_rate: 0.10
   sqrl_control_min_coverage: 0.10
   sqrl_control_min_failure_reduction: 0.01
   cmd_speed_increment: 0.05
   cmd_speed_frontier_probability: 0.50
+  cmd_speed_curriculum_mode: performance
+  cmd_speed_curriculum_max_steps: 100000
+  cmd_speed_balance_min_transitions: 1600
+  cmd_speed_balance_min_episodes: 4
+  cmd_speed_balance_max_steps: 30000
   cmd_speed_promotion_window: 8
   cmd_speed_min_episode_length: 300
   cmd_speed_min_velocity_ratio: 0.75

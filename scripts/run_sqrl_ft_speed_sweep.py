@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import pickle
 import time
 from pathlib import Path
+
+import numpy as np
 
 from learner.checkpoint import latest_snapshot
 from learner.learner import run_in_process
@@ -35,12 +38,37 @@ def _read_wandb_meta(save_dir: str | Path) -> dict:
         return {}
 
 
+def _safety_ensemble_size(checkpoint: Path) -> int | None:
+    with checkpoint.open('rb') as stream:
+        payload = pickle.load(stream)
+    state = payload.get('safety_critic_state')
+    if state is None:
+        return None
+    return int(np.asarray(
+        state['critic']['params']['Dense_0']['bias']).shape[-1])
+
+
 def _run_sqrl_ft(*, config: str, pre_ckpt: Path, ft_dir: Path, log_path: Path,
                  n_pre: int, n_ft: int, ft_speed: float, wandb: bool,
-                 run_name: str, bounce: bool) -> dict:
+                 run_name: str, bounce: bool,
+                 control_metrics_path: Path | None = None,
+                 support_gate_enabled: bool | None = None,
+                 actor_lagrange_enabled: bool = False,
+                 gate_revoke_patience: int | None = None,
+                 freeze_safety_critic: bool = False,
+                 prevalidated_control_gate: bool = False,
+                 logging_only: bool = False,
+                 num_candidates: int | None = None,
+                 epsilon: float | None = None,
+                 seed: int | None = None) -> dict:
     robot_cfg, train_cfg, droq_cfg = load_app_config(path=config)
     robot_cfg = apply_move_speed(robot_cfg, ft_speed)
     droq_cfg = dict(droq_cfg)
+    if seed is not None:
+        train_cfg.seed = int(seed)
+    ensemble_size = _safety_ensemble_size(pre_ckpt)
+    if ensemble_size is not None:
+        train_cfg.safety_critic_ensemble_size = ensemble_size
     _fresh_dir(ft_dir)
     if bounce:
         _bounce_controller(f'before {run_name}')
@@ -61,7 +89,31 @@ def _run_sqrl_ft(*, config: str, pre_ckpt: Path, ft_dir: Path, log_path: Path,
     ft_cfg.wandb_run_name = run_name
     ft_cfg.experiment_name = run_name
     ft_cfg.cmd_speed_curriculum = False
+    if control_metrics_path is not None:
+        ft_cfg.sqrl_control_metrics_path = str(control_metrics_path)
+    if support_gate_enabled is not None:
+        ft_cfg.sqrl_support_gate_enabled = bool(support_gate_enabled)
+    ft_cfg.sqrl_actor_lagrange_enabled = bool(actor_lagrange_enabled)
+    if gate_revoke_patience is not None:
+        ft_cfg.sqrl_gate_revoke_patience = int(gate_revoke_patience)
+    if freeze_safety_critic:
+        ft_cfg.safety_critic_update_interval = 0
+    if prevalidated_control_gate:
+        ft_cfg.sqrl_prevalidated_control_gate = True
+        ft_cfg.sqrl_activation_steps = 0
+        ft_cfg.sqrl_epsilon_anneal_steps = 0
+    if num_candidates is not None:
+        ft_cfg.sqrl_num_candidates = int(num_candidates)
+    if epsilon is not None:
+        ft_cfg.sqrl_epsilon = float(epsilon)
+        if prevalidated_control_gate:
+            ft_cfg.sqrl_epsilon_start = float(epsilon)
     _scale_schedule_for_short_run(ft_cfg, n_ft)
+    if logging_only:
+        # Still score candidates and log Q_safe, but make it impossible for
+        # the transferred critic to alter the executed action.
+        ft_cfg.sqrl_activation_steps = int(n_ft) + 1
+        ft_cfg.sqrl_actor_lagrange_enabled = False
     t0 = time.time()
     with _tee_stdout(log_path):
         run_in_process(robot_cfg, ft_cfg, ft_droq)
@@ -70,7 +122,7 @@ def _run_sqrl_ft(*, config: str, pre_ckpt: Path, ft_dir: Path, log_path: Path,
     text = log_path.read_text(encoding='utf-8', errors='replace')
     metrics = parse_ft_log(text, start_step=n_pre, ft_speed=ft_speed)
     metrics.update({
-        'algo': 'sqrl',
+        'algo': 'sqrl_logging_only' if logging_only else 'sqrl',
         'ft_speed': ft_speed,
         'save_dir': str(ft_dir),
         'checkpoint': str(ckpt) if ckpt else None,
@@ -83,10 +135,13 @@ def _run_sqrl_ft(*, config: str, pre_ckpt: Path, ft_dir: Path, log_path: Path,
 
 def _run_sac_ft(*, config: str, pre_ckpt: Path, ft_dir: Path, log_path: Path,
                 n_pre: int, n_ft: int, ft_speed: float, wandb: bool,
-                run_name: str, bounce: bool) -> dict:
+                run_name: str, bounce: bool,
+                seed: int | None = None) -> dict:
     robot_cfg, train_cfg, droq_cfg = load_app_config(path=config)
     robot_cfg = apply_move_speed(robot_cfg, ft_speed)
     droq_cfg = dict(droq_cfg)
+    if seed is not None:
+        train_cfg.seed = int(seed)
     _fresh_dir(ft_dir)
     if bounce:
         _bounce_controller(f'before {run_name}')
@@ -147,6 +202,18 @@ def main() -> int:
     parser.add_argument(
         '--algos', default='sqrl,sac',
         help='Comma list: sqrl,sac')
+    parser.add_argument(
+        '--sqrl-control-metrics', default=None,
+        help='Held-out control metrics JSON required to activate SQRL.')
+    parser.add_argument(
+        '--sqrl-support-gate', action='store_true',
+        help='Restrict SQRL ranking to behavior-supported candidates.')
+    parser.add_argument(
+        '--sqrl-actor-lagrange', action='store_true',
+        help='Also apply the constrained-actor loss (off for masking-only).')
+    parser.add_argument(
+        '--sqrl-gate-revoke-patience', type=int, default=None,
+        help='Consecutive failed online checks before an active gate revokes.')
     args = parser.parse_args()
 
     speeds = [float(x) for x in args.ft_speeds.split(',') if x.strip()]
@@ -177,7 +244,13 @@ def main() -> int:
                 ft_dir=out_root / run_name,
                 log_path=stage_log_dir / f'{run_name}.log',
                 n_pre=n_pre, n_ft=n_ft, ft_speed=speed,
-                wandb=args.wandb, run_name=run_name, bounce=bounce)
+                wandb=args.wandb, run_name=run_name, bounce=bounce,
+                control_metrics_path=(
+                    Path(args.sqrl_control_metrics)
+                    if args.sqrl_control_metrics else None),
+                support_gate_enabled=args.sqrl_support_gate,
+                actor_lagrange_enabled=args.sqrl_actor_lagrange,
+                gate_revoke_patience=args.sqrl_gate_revoke_patience)
             rows.append(row)
             print(f'[sweep] {run_name} falls={row["falls_total_end"]} '
                   f'vel={row["final_forward_vel"]} '

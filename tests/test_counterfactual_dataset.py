@@ -10,6 +10,7 @@ from learner.counterfactual_dataset import (
     evaluate_snapshot_candidates,
     load_counterfactual_artifact,
     make_candidate_actions,
+    merge_counterfactual_artifacts,
     save_counterfactual_artifact,
 )
 from train.config import load_app_config
@@ -102,6 +103,37 @@ class CounterfactualDatasetTest(unittest.TestCase):
         self.assertEqual(payload['metadata']['seed'], 3)
         self.assertEqual(len(payload['snapshots']), 1)
         self.assertEqual(len(payload['branches']), 1)
+
+    def test_merge_remaps_snapshot_and_episode_ids(self):
+        backend = FakeBackend()
+        artifacts = []
+        for speed in (0.30, 0.35):
+            snapshot = BranchSnapshot(
+                simulator_state=np.asarray([0.0]),
+                observation=np.asarray([0.0, 0.0, speed], np.float32),
+                previous_action=np.zeros(1, np.float32),
+                previous_executed_action=np.zeros(1, np.float32),
+                command_speed=speed,
+                episode_id=0,
+            )
+            branches = evaluate_snapshot_candidates(
+                backend, snapshot,
+                [('nominal', np.zeros(1, np.float32))],
+                lambda observation: np.zeros(1, np.float32),
+                snapshot_index=0, horizons=(2,))
+            artifacts.append({
+                'format': 'counterfactual_branch_v1',
+                'metadata': {'command_speed': speed},
+                'snapshots': [snapshot],
+                'branches': branches,
+            })
+        merged = merge_counterfactual_artifacts(artifacts)
+        self.assertEqual(
+            [item.snapshot_index for item in merged['branches']], [0, 1])
+        self.assertEqual(
+            [item.episode_id for item in merged['snapshots']], [0, 1])
+        self.assertEqual(
+            [item.command_speed for item in merged['snapshots']], [0.30, 0.35])
 
     def test_mujoco_integration_state_restore_is_deterministic(self):
         try:

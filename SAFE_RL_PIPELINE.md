@@ -1023,6 +1023,356 @@ P5 已证明自然 behavior-action validation 不能作为 action masking 的充
    H=32 的 nominal failure rate 为 1.0；该数据非常适合检验危险边界排序，
    但最终 SAC-vs-SQRL 统计还需加入更长的稳定自然片段。
 
+### P11：Branch-supervised Q_safe 首轮实验（2026-07-28）
+
+实现：
+
+1. `SafetyCritic.update_counterfactual` 加入两类反事实监督：
+   - 平衡采样的 branch future-failure BCE；
+   - 同一 simulator snapshot 内的 pairwise logit ranking，物理后果更差
+     （failure、较短 time-to-failure、near-failure）的动作风险必须更高。
+2. `learner/branch_supervision.py` 构造平衡 point batch 和 same-state
+   riskier/safer pairs，并支持 snapshot 或完整 natural episode 隔离切分。
+3. `scripts/train_branch_qsafe.py` 从同一 Q_safe checkpoint 重启每个变体，
+   交替执行 natural replay Bellman anchor 与 branch update；所有模型只在
+   train episodes 上拟合 temperature，最后在未见 episodes 上比较。
+4. branch collector 新增直接从 `pi(a|s)` 采样 candidate 的模式。新的
+   `counterfactual_branches_050_policy_v1.pkl` 包含 80 snapshots、
+   1840 branches；behavior support coverage 从 local Gaussian 数据的
+   `32.5%` 提升到 `80.2%`。支持域内安全动作覆盖：
+   H8 `764` 条/45 snapshots，H16 `280` 条/26 snapshots，
+   H32 `83` 条/17 snapshots。
+
+#### 训练协议
+
+- source：`qsafe_ensemble3/training_snapshot_000000035000.pkl`
+- command speed：`0.50 m/s`
+- natural steps：400，natural failures：22
+- 训练：300 branch updates；每步配 1 次 natural replay Q_safe update
+- point/pair batch：256/256
+- ranking weights：`0, 0.01, 0.05, 0.10, 0.25`
+- 最终复验：H16、ranking `0.10/0.25`，按完整 episode 切分，
+  split seeds `42/43/44`
+
+#### 严格 episode-split 结果（H16，ranking=0.25）
+
+| split seed | natural AUROC | branch AUROC | support pair accuracy | false-safe | coverage | nominal fall | selected fall | failure reduction |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 42 | 0.896 | 0.968 | 0.670 | 0.000 | 0.200 | 0.933 | 0.800 | 0.133 |
+| 43 | 0.913 | 0.958 | 0.689 | 0.333 | 0.214 | 0.929 | 0.857 | 0.071 |
+| 44 | 0.883 | 0.990 | 0.566 | 0.000 | 0.214 | 0.857 | 0.786 | 0.071 |
+| mean ± std | 0.897 ± 0.012 | 0.972 ± 0.013 | 0.642 ± 0.054 | 0.111 ± 0.157 | 0.210 ± 0.007 | 0.906 ± 0.035 | 0.814 ± 0.031 | 0.092 ± 0.029 |
+
+对照：
+
+- ranking `0.10`：support pair `0.595±0.054`、false-safe
+  `0.333±0.272`、failure reduction `0.024±0.034`，明显差于 `0.25`。
+- 原始 Q_safe natural AUROC 为 `0.947`；branch 训练后约 `0.897`，存在
+  可测的自然分布遗忘，虽然 natural Brier 只从约 `0.0066` 变为
+  `0.0070–0.0072`。
+- H32 的严格 episode split 即使 ranking `0.25`，support pair 仅
+  `0.622`、false-safe `1.0`、failure reduction `0`；32-step 预测仍不可用。
+
+结论：
+
+- branch BCE+ranking 确实能把未见 episode 上的 action ranking 和实际
+  failure reduction 推高；“仅加深网络”不是当前最有效方向。
+- H16/ranking=0.25 只在 3 个 split 中有 1 个同时通过现有 control gate；
+  均值也略低于 pair `0.65`、略高于 false-safe `0.10` 门槛。因此结果有
+  研究价值但尚不稳健，**仍保持 logging-only**。
+- 下一步应优先用独立 critic B 验证 seed-43 的低风险 false-safe 动作，
+  并采集更多独立自然 episodes；不能通过调高 epsilon 或放宽 support
+  threshold 掩盖问题。
+
+### P12：Independent critic B 验证实验（2026-07-28）
+
+实现：
+
+1. `evaluate_double_critic_control` 严格执行 A-select/B-validate：
+   B 只验证 A 的唯一选择，不允许 B 在候选集中重新搜索；拒绝后执行固定
+   `contracted_previous` abstention。
+2. 指标明确分解：
+   replacement rate、validation reject、abstention rate、false-safe，
+   以及 replacement 与 abstention 各自贡献的 failure reduction。
+3. `scripts/train_branch_validator.py` 使用不同 seed 从零创建完整 critic B，
+   具备独立 backbone、target、optimizer 和 RNG。B 先 natural pretrain
+   3000 steps，再做 300 steps branch adaptation（每步保留 natural anchor）。
+4. 在 H16 三个严格 episode splits 上扫描
+   `epsilon={0.10,0.15,0.20}` 与 `margin={0,0.02,0.05}`。
+
+#### 同 horizon B（A=H16，B=H16）
+
+B 的自然 AUROC 约 `0.821–0.833`，branch AUROC 约 `0.958–0.988`。
+在 `epsilon=0.20` 时三 split 均值：
+
+| 指标 | A only | A+B |
+|---|---:|---:|
+| false-safe | 0.111 | 0.167 |
+| coverage | 0.210 | 0.186 |
+| selected failure rate | 0.814 | 0.721 |
+| total failure reduction | 0.092 | 0.186 |
+| validated replacement contribution | — | 0.068 |
+| abstention contribution | — | 0.117 |
+| validation reject rate | — | 0.024 |
+| abstention rate | — | 0.814 |
+
+解释：
+
+- selected failure 虽下降，但约 63% 的 reduction 来自固定 contracted
+  fallback，不是 B 验证后的动作替换。
+- B 没有拒绝 seed-43 的关键 false-safe；反而因 coverage 分母缩小，
+  false-safe rate 从总体 `0.111` 变为 `0.167`。
+- `margin=0/0.02/0.05` 几乎无变化，说明 A/B 对错误候选的风险差具有高度
+  相关性。独立初始化并没有自动产生独立错误。
+
+#### 长 horizon verifier（A=H16，B=H32）
+
+| epsilon | false-safe | coverage | replacement rate | abstention rate | total reduction | replacement contribution | abstention contribution |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0.10 | 0.000 | 0.000 | 0.000 | 1.000 | 0.210 | 0.000 | 0.210 |
+| 0.15 | 0.000 | 0.022 | 0.022 | 0.978 | 0.210 | 0.022 | 0.187 |
+| 0.20 | 0.333 | 0.046 | 0.046 | 0.954 | 0.186 | 0.022 | 0.163 |
+
+结论：
+
+- H32 B 在低 epsilon 下只是“总是否决器”；看似更安全，实际几乎完全依赖
+  scripted contracted fallback，不能算 policy safety 或可靠 action filtering。
+- epsilon 提高后 seed-43 false-safe 再次出现，说明长期 verifier 没有解决
+  根本的 selected-action OOD/aliasing 错误。
+- 当前 A+B 路径仍不得开启在线控制。下一步应建立 selected false-safe hard
+  negative buffer，并让 B 使用与 A 不同的数据 bootstrap/目标或 conformal
+  upper bound；继续增加相同数据、相同目标下的网络数量收益有限。
+
+### P13：Hard-negative、data bootstrap 与 conformal upper bound（2026-07-28）
+
+实现：
+
+1. 从 A 在训练 episode 中实际接受的动作里挖掘
+   `predicted safe && branch failure`，按 `(snapshot, candidate)` 建立
+   selected false-safe hard-negative 集；branch point/pair sampler 支持
+   独立的 oversampling fraction 与 loss weight。
+2. critic B 不再使用 A 的全部训练 episode：先保留 20% 为 B-only
+   conformal calibration episodes，再从其余 episode 随机抽取 80% 用于
+   B branch fitting；外部 validation episodes 始终不参与训练、temperature
+   fitting 或 conformal calibration。
+3. 在 B-only calibration 集上计算 one-sided finite-sample additive
+   upper bound：
+   `Q_upper = clip(Q_B + quantile(y - Q_B), 0, 1)`；评估
+   `alpha={0.05,0.10,0.20}`，不改变在线控制默认值。
+4. 新增 hard-negative mining/sampling 与 conformal coverage 单元测试；
+   全量测试 `91/91` 通过。
+
+#### H16 三 split 结果（epsilon=0.20，margin=0）
+
+| 方法 | false-safe | coverage | replacement | abstention | selected fall | total reduction |
+|---|---:|---:|---:|---:|---:|---:|
+| P12 原始独立 B | 0.167±0.236 | 0.186±0.031 | 0.068±0.054 | 0.814±0.031 | 0.721±0.117 | 0.186±0.088 |
+| bootstrap B + hard negatives，raw | 0.111±0.157 | 0.186±0.031 | 0.092±0.065 | 0.814±0.031 | 0.697±0.091 | 0.210±0.059 |
+| 上述方法 + conformal α=0.20 | **0.000±0.000** | 0.090±0.083 | 0.044±0.063 | 0.910±0.083 | 0.697±0.091 | 0.210±0.059 |
+
+逐 split 的 conformal α=0.20：
+
+| seed | offset | false-safe | coverage | replacement | abstention | reduction |
+|---:|---:|---:|---:|---:|---:|---:|
+| 42 | 0.026 | 0.000 | 0.200 | 0.133 | 0.800 | 0.200 |
+| 43 | 0.161 | 0.000 | 0.071 | 0.000 | 0.929 | 0.143 |
+| 44 | 0.182 | 0.000 | 0.000 | 0.000 | 1.000 | 0.286 |
+
+hard-negative 诊断：
+
+- seed 42/44 的 B-fit episodes 内没有 selected false-safe；seed 43 只挖到
+  2 条（A 在 7 个有覆盖状态中错误接受 2 个）。这表明主要错误发生在未见
+  episode，训练内错误重放的数据量很有限。
+- seed 43 同拆分消融：关闭 hard weighting 时 branch AUROC `0.959`、
+  raw false-safe `0.333`、reduction `0.143`；启用后 AUROC 反而降至
+  `0.935`，raw false-safe/reduction 仍为 `0.333/0.143`。因此当前
+  hard-negative weighting **没有证明能改善泛化或排序**。
+- hard weighting 让 seed-43 calibration residual 变大，α=0.20 offset 从
+  `0.041` 增至 `0.161`，conformal gate 因而拒绝更多动作并把 false-safe
+  降为 0。这个收益来自 uncertainty-aware abstention，不应解释为 Q_safe
+  本身更准确。
+- α=0.05 的 offset 为 `0.557–0.672`，基本退化为总是否决器；即使 α=0.20，
+  平均 coverage 也只有 9%。当前 conformal 结果可作为安全降级基线，但
+  不能作为可部署 action selector。
+
+结论：
+
+- “独立训练数据 + 风险上界”能消除当前三 split 的已观察 false-safe，但
+  代价是 91% abstention，且多数 fall reduction 仍来自 contracted fallback。
+- 当前仍保持 logging-only。下一优先级应扩大独立 episode 与 boundary
+  coverage，并采用能区分 epistemic uncertainty 的 ensemble/conformal
+  calibration；在 coverage 和 replacement contribution 明显提高之前，
+  不开启实时 masking。
+
+### P14 TODO：主动反事实采集与 episode-bootstrap ensemble
+
+当前阻塞不是单网络容量，而是 selector 决策边界和未见 episode 的反事实
+覆盖不足。以下任务必须按顺序完成；P14 全程保持 SQRL control
+`logging-only`。
+
+#### P14.1：Decision-boundary active branch collection
+
+- [x] branch collector 支持加载 frozen critic A 和独立 critic B，不修改
+  SAC actor/controller。
+- [x] 每个自然状态先对 policy/local/previous/contracted candidates 做轻量
+  probe；优先保存以下 exact-state snapshots：
+  - A 或 B 风险接近 `epsilon_safe`；
+  - A/B disagreement 超过阈值；
+  - candidate 接近 behavior support 边界；
+  - 当前或前一步为 near-failure；
+  - selector 可能替换 nominal 或即将 abstain。
+- [x] 为 stable normal snapshots 保留独立配额，防止数据再次被 failure
+  states 主导。
+- [x] artifact metadata 记录 selection reason、A/B candidate risk range、
+  disagreement、support coverage、episode id、policy step 和 command speed。
+- [x] 默认 interval collector 行为保持兼容；active mode 必须显式开启。
+- [x] 采集侧验收：
+  - 至少 `100–200` 个独立自然 episodes；
+  - stable/boundary/disagreement/near-failure 均有非零覆盖；
+  - normal snapshots 不少于 25%；
+
+实现与 smoke test：
+
+- 新增 `learner/active_branch_sampling.py`，将 near-failure、A/B
+  disagreement、risk boundary、support boundary、selector decision 和
+  stable normal 分成独立优先级/配额；默认 normal 配额 `80`、其余每类
+  `40`，满配额时 normal 占 `28.6%`。
+- `collect_mujoco_branches.py` 只有显式提供
+  `--active-selector-checkpoint` 才启用 active mode；可选
+  `--active-validator-checkpoint`。旧 interval 模式参数与行为保持不变。
+- 20 natural-step MuJoCo smoke test 得到 9 snapshots/81 branches：
+  near-failure `2`、disagreement `2`、risk-boundary `2`、
+  selector-decision `2`、normal `1`；support-boundary 作为重叠 trigger
+  出现，但因更高优先级原因占用该 snapshot，主类别计数为 0。
+- artifact：
+  `saved/safety_datasets/active_branch_smoke_seed42.pkl`。每个 snapshot
+  已记录全部 triggers、A/B nominal/min/max risk、最大 disagreement、
+  support coverage、replacement/abstention 预测及 episode/policy step。
+- active sampling 与全量回归测试 `94/94` 通过。
+
+正式采集（2026-07-29）：
+
+1. 为避免确定性 reset/actor 产生重复 episode，collector 新增默认关闭的
+   `--natural-action-noise-std`，并将自然轨迹 RNG 与 branch candidate RNG
+   完全分离。新增默认关闭的 `--natural-episode-max-steps`，达到采集 horizon
+   时只记录 `truncated=true` 并 reset，不产生 failure label。
+2. `0.03` 噪声的 long-stable 分层集
+   `active_branches_p14_seed142.pkl`：3 episodes、3000 natural steps、
+   243 snapshots、3645 branches；normal `32.9%`；H16 branch failure
+   positive rate `8.75%`。其中一个 episode 连续稳定 2952 步，适合补充
+   stable-normal states，但 episode 数不足，不能单独用于 bootstrap。
+3. `0.03` 噪声的 failure-heavy 集
+   `active_branches_p14_seed143_ep100.pkl`：100 episodes、223 snapshots、
+   3345 branches；91 failures、9 truncated；100 个 episode 的 action-mean
+   signature 在 `1e-3` 精度下全部不同。normal 仅 `10.3%`，因此只作为
+   rare-failure memory，不作为平衡主训练集。
+4. 最终平衡 active 集
+   `active_branches_p14_seed144_ep100_balanced.pkl`：
+   - 100 episodes、2683 natural steps、200 snapshots、3000 branches；
+   - 92 failures、8 truncated；100/100 action signatures 唯一；
+   - 主类别：normal `50`，其余 disagreement/risk-boundary/
+     support-boundary/selector-decision/near-failure 各 `30`；
+   - normal 占比恰为 `25%`，来自 35 个不同 episodes；
+   - H16 branch failure positive rate `42.7%`，没有全失败饱和。
+5. 平衡集 H16 分层 failure rate：
+   normal `4.3%`、risk-boundary `20.0%`、support-boundary `39.8%`、
+   disagreement `41.6%`、selector-decision `76.4%`、near-failure
+   `100%`。类别梯度符合主动采样预期，说明 selection reasons 具有实际
+   物理区分度。
+6. 该平衡集适合进入 episode-bootstrap 训练，但自然 episode failure rate
+   高，不能作为部署表现评估集。P14.2 必须先固定 train/calibration/
+   validation episode split；validation episodes 严禁进入任何 member
+   fitting、temperature fitting 或 conformal calibration。
+
+#### P14.2：Episode-bootstrap uncertainty ensemble
+
+- [x] 训练 `3–5` 个完整独立 Q_safe，每个 member 使用不同 episode
+  bootstrap，不共享 backbone、target、optimizer 或 RNG。
+- [x] 每个 member 保留 natural replay anchor；branch BCE/ranking 只使用其
+  bootstrap episodes。
+- [x] ensemble mean 表示风险，member disagreement/variance 表示 epistemic
+  uncertainty；高 disagreement 必须 abstain。
+- [x] calibration episodes 与所有 member fitting episodes 隔离；在其上
+  校准 ensemble/conformal upper bound。
+- [x] validation episodes 与所有 member fitting、temperature calibration
+  和 conformal calibration 完全隔离。
+- [x] 比较单 critic、独立 A/B、ensemble mean、ensemble upper bound，不得
+  只报告最优 seed。
+
+实现与首轮结果（2026-07-29）：
+
+1. 新增 `learner/episode_bootstrap.py`：
+   - 按完整 episode 构造 fit/temperature/conformal/validation 四路互斥
+     split；
+   - fit episodes 有放回抽样；
+   - 重复抽中的 episode 重新映射 snapshot group，防止复制品形成错误的
+     cross-copy ranking pairs。
+2. 新增 `scripts/train_branch_ensemble.py`。首轮训练 3 个完整独立
+   `ensemble_size=1` Q_safe；每个 member 拥有独立 backbone、target、
+   optimizer、model RNG、natural replay sampler RNG 和 branch bootstrap。
+3. 数据中 100 个自然 episodes 只有 53 个实际被 active sampler 保存了
+   snapshots，因此实际 branch split 为：
+   fit `32 episodes/1860 branches`、temperature `5/285`、
+   conformal `5/195`、validation `11/660`。三个 bootstrap 分别覆盖
+   21、15、19 个不同 fit episodes，证明 member 数据确实不同，但有效
+   episode 数仍偏少。
+4. 每个 member 执行 3000 natural-anchor updates + 300 branch updates。
+   最终 branch pair batch accuracy 为 `0.855/0.754/0.852`。
+5. 完全独立 validation 上：
+
+| 方法 | point AUROC | pair accuracy | false-safe | coverage | failure reduction |
+|---|---:|---:|---:|---:|---:|
+| 旧 critic A | 0.955 | 0.526 | 0.214 | 0.318 | 0.000 |
+| 旧独立 critic B | 0.954 | 0.538 | 0.143 | 0.318 | 0.023 |
+| member 0 | 0.918 | 0.525 | 0.200 | 0.114 | 0.023 |
+| member 1 | 0.940 | 0.550 | 0.500 | 0.045 | 0.000 |
+| member 2 | 0.905 | 0.456 | 0.000 | 0.068 | 0.000 |
+| ensemble mean | 0.946 | 0.541 | **0.000** | 0.068 | 0.000 |
+
+6. Ensemble disagreement：mean `0.086`、median `0.068`、P90 `0.183`、
+   max `0.286`。使用 std gate：
+   - threshold `0.10`：coverage `2.3%`、false-safe `0`；
+   - threshold `0.20`：coverage `6.8%`、false-safe `0`；
+   - threshold `0.02/0.05`：coverage `0`。
+7. `mean + beta*std` 在 `beta=1` 时 point AUROC 提升到 `0.954`，但 coverage
+   降到 `2.3%`；`beta=2` coverage 为 0。Conformal α=0.20 offset
+   `0.207`，α=0.10/0.05 offset `0.392/0.427`，三者 control coverage
+   全为 0。
+8. 同 validation 的旧 A+B：coverage `29.5%`、false-safe `15.4%`、
+   replacement `6.8%`、total reduction `2.3%`；全部 reduction 仍来自
+   contracted fallback，validated replacement contribution 为 0。
+
+结论：
+
+- Episode bootstrap 提高了 point-level ensemble 稳定性，ensemble AUROC
+  高于 2/3 members，并把 observed false-safe 降到 0；但是收益来自强烈
+  保守化，coverage 只有 `6.8%`，没有产生任何 replacement failure
+  reduction。
+- 当前瓶颈仍是同状态 action ranking，而不是 failure classification。
+  Pair accuracy `0.541` 与旧 A/B 接近，远低于 P14.3 的可控要求。
+- 只有 53 个 episodes 含 branch snapshots，且 bootstrap member 仅覆盖
+  15–21 个不同 fit episodes，是 ensemble disagreement 偏大和 conformal
+  offset 过高的直接数据原因之一。
+- P14.2 工程实现通过，但控制效果未通过。保持 logging-only，不进入在线
+  masking。下一步应先让 active collector 在每个 episode 保底保存 normal
+  snapshot，并增加 same-state ranking supervision 的 episode 覆盖，再做
+  P14.3 五 split 验收。
+
+#### P14.3：Control-facing 独立验收
+
+- [ ] 至少 5 个完整 episode splits，固定 seeds 和候选集合。
+- [ ] 分开报告 validated replacement 与 contracted fallback 的 reduction。
+- [ ] 进入在线 non-invasive rollout 的最低门槛：
+  - selected false-safe `<= 5%`；
+  - coverage `>= 30%`；
+  - replacement rate `>= 15%`；
+  - replacement contribution 为正；
+  - fallback contribution 不超过 total reduction 的 50%；
+  - K 增大时 false-safe 无显著上升。
+- [ ] 只有上述门槛在 5 个 splits 上稳定满足，才允许进行 frozen-policy
+  SQRL masking rollout；只有 return 不 collapse 且 fall rate 下降，才进入
+  CSAC barrier/FlashSAC。
+
 最终实验顺序：
 
 1. P6 离线 branch dataset 与 snapshot determinism；
@@ -1032,3 +1382,245 @@ P5 已证明自然 behavior-action validation 不能作为 action masking 的充
 5. P10 固定 `0.50 m/s`、相同 disturbance/seeds 的 SAC vs SQRL；
 6. 只有 fall rate 稳定下降且 return 不 collapse，才恢复
    `0.60/0.80/1.00`、CSAC 和 FlashSAC 路线。
+
+#### P14.4：在线 masking 诊断对照（0.50 m/s，2026-07-29）
+
+本节是失败机理诊断，不代表 P14.3 已验收。使用相同的 30k SAC checkpoint，
+分别继续训练 4000 步；两组均关闭 command curriculum。
+
+| 方法 | fall / episodes | Q_safe active | action replacement | final x velocity | wall time |
+|---|---:|---:|---:|---:|---:|
+| 纯 SAC | 0 / 10 | — | — | 0.610 | 260.8 s |
+| SQRL masking + actor Lagrange | 2 / 10 | 3527 / 4000 | 12 | 0.586 | 491.1 s |
+| SQRL masking-only | 5 / 13 | 3800 / 4000 | 42 | 0.622 | 538.0 s |
+
+为消除组合基线混淆，新增 `sqrl_actor_lagrange_enabled`，默认 `false`。
+masking-only 时 SAC actor loss 不含 safety penalty，Q_safe 只可改变 executed
+action。门控新增迟滞，避免单个 calibration batch 缺类时反复关闭；每次
+replacement 记录 step、nominal/selected risk、epsilon 和 candidate group。
+
+masking-only 的 5 次 fall 位于 step
+`30020/32000/32026/32048/32070`。第 1 次发生在 gate 启用前。gate
+启用后的首次 fall（32000）前 replacement 为 0，说明 Q_safe 没有提前把
+nominal 判为危险。此后 42 次 replacement 全部集中在该 fall 后的 reset
+不稳定区间：27 步没有任何 supported safe candidate，21 次替换动作风险
+仍高于 epsilon，7 步触发 emergency；candidate group 为 policy sample
+9 次、structured fallback 33 次。大量接管仍未阻止随后 3 次快速 fall。
+
+结论：当前在线 SQRL 没有产生 fall reduction；与 SAC 的绝对 fall 差为
+`+5`，因 SAC 为 0，relative fall reduction 无定义。结果同时证实两个
+失败模式：
+
+1. 危险状态到来前存在 false negative，selector 不接管；
+2. 进入危险/reset 状态后 safe set 经常为空，structured fallback 不具备
+   recovery 能力。
+
+原始和派生结果：
+`saved/safety_evaluation/sqrl_mask_only_050_full/comparison_with_sac.json`。
+在 P14.3 多 split 达标前保持 logging-only，不将此 gate 用于正式训练。
+
+### P15：多速度共同 Actor — SAC vs SQRL 正式协议（实现完成，待 pilot）
+
+P14.4 的 `0.50 m/s` 表只保留为**非配对 diagnostic**：它没有执行
+“每个 seed 先训练唯一 common SAC，再从同一个 actor/reward checkpoint
+分出 SAC 与 SQRL”的 P15 流程，因此不得作为正式 SAC/SQRL 结论。
+
+#### P15.1：共同 SAC pretrain
+
+- [x] 新增 `performance_then_balanced` curriculum。
+- [x] performance 阶段从 `0.30` 开始，每次只增加 `0.05 m/s`；frontier
+  采样概率为 `0.75`。
+- [x] 到达 `1.00` 不等于成功；`1.00` 自身必须满足最近 8 episodes、
+  平均长度 `>=300`、速度比例 `>=0.75`、fall rate `<=12.5%`。
+- [x] 通过 `1.00` 后进入 balanced round-robin；15 档速度每档必须有
+  `>=1600` policy transitions 和 `>=4` episodes。
+- [x] performance 最多 100k steps，balanced 最多额外 30k；任何门槛
+  未达到都直接失败，不生成合格 common checkpoint。
+- [x] checkpoint metadata 和独立
+  `speed_coverage_manifest.json` 保存 speed bins、逐档
+  transitions/episodes/falls、frontier history、phase 和 coverage 状态。
+- [x] common SAC 只训练 actor/reward critics；Q_safe 参数保持初始化状态，
+  safety replay 只负责收集标签，不参与动作选择或 SAC loss。
+
+#### P15.2：同源 Q_safe pretrain
+
+- [x] 新增 `scripts/collect_p15_multispeed_branches.py`。它在 15 个速度上
+  分别收集至少 1600 natural steps 和 40 exact-state snapshots，再合并
+  artifact；候选包含 nominal、policy samples、previous、
+  contracted previous 和 nominal 局部扰动，horizon 为 `8/16/32`。
+- [x] 合并时重新映射 snapshot/episode id，避免不同速度之间 id 冲突。
+- [x] 新增 `scripts/train_p15_qsafe.py`：
+  - actor、reward critics 和 reward replay 从 common checkpoint 恢复并冻结；
+  - natural safety data 与 branch data 都按完整 episode 做
+    `70% train / 15% calibration / 15% validation`；
+  - 每个速度独立划分，禁止同一 episode 跨 split；
+  - Q_safe batch 保留 recent/boundary/failure/all 的
+    `40/30/20/10`，并在每个可用 source 内按 command speed 均衡采样；
+  - 保留现有 MLP、Bellman/future-label loss 和 same-state ranking loss；
+  - calibration 只使用 calibration natural episodes，validation 不参与
+    fitting 或 temperature calibration。
+- [x] 每个 snapshot 自动写入稳定 SHA-256 `agent_state_hash`。branch artifact、
+  common checkpoint 和 Q_safe checkpoint 的 hash 必须完全一致；不一致时
+  collector/trainer/composer 都拒绝继续。
+- [x] recovery 数据继续只位于 `D_recovery`，不进入 reward replay，也不是
+  Q_safe mixed batch 的采样源。
+
+#### P15.3：逐速度 gate 与 frozen paired evaluation
+
+- [x] `0.40/0.50/0.80/1.00` 分别产生 gate JSON，统一要求：
+  AUROC `>=0.80`、ECE `<=0.10`、Brier `<=0.15`、pair accuracy
+  `>=0.65`、selected false-safe `<=5%`、coverage `>=30%`、
+  replacement `>=15%`、replacement failure contribution `>0`，
+  且 fallback contribution 不超过总 reduction 的 `50%`。
+- [x] gate evaluation 在相同 MuJoCo snapshots 上比较 nominal 与
+  selector action，并单独报告 replacement 和 structured fallback 的真实
+  failure contribution；结果写入 `frozen_paired_evaluation.json`。
+- [x] 任一目标速度 gate 失败时，runner 保存 logging-only checkpoint/report
+  后停止，不启动 masking finetune。
+
+#### P15.4：固定速度 SAC/SQRL finetune
+
+- [x] 新增 `scripts/run_p15_common_actor.py`，seed 内只有一个 common SAC。
+  SAC 从 common checkpoint 开始；SQRL 从相同 agent/reward replay 加
+  Q_safe 的 checkpoint 开始。
+- [x] 两组固定速度均训练 4000 policy steps，关闭 curriculum，使用相同
+  seed、actor loss、UTD、batch 和 replay 起点。
+- [x] primary SQRL 为 masking-only：
+  `sqrl_actor_lagrange_enabled=false`、`K=32`、`epsilon=0.20`、
+  behavior-support gate 开启、Q_safe 冻结。
+- [x] 已通过离线 gate 的速度可从 finetune 第一步启用 masking；普通命令
+  仍使用原在线 calibration/candidate-window gate，不受影响。
+- [x] empty safe set 使用 structured fallback，但 replacement、fallback、
+  no-safe 和 emergency 分开统计。
+- [x] 每次 replacement 保存 nominal/selected Q_safe、action distance、
+  candidate group，以及随后 8/16/32 步 failure/near-failure/censor 状态。
+  同时统计 fall 前 H 步没有 replacement 的 false-negative falls。
+- [x] 每个 run 写 `training_summary.json`，包含 falls/1000 steps、
+  episode fall rate、return、episode length、velocity、near-fall、
+  intervention、critic timing、SQRL active/replacement/no-safe/emergency、
+  replacement outcome rates 和 wall-clock。
+- [x] 多 seed 结果按 seed 保存原始值和配对差；汇总输出均值及
+  95% bootstrap CI。SAC falls 为 0 时百分比 reduction 写 `null`，只保留
+  绝对差值。
+
+#### P15.5：验收与运行
+
+已通过的纯代码验收包括：
+
+- `1.00` 必须自身晋级后才能切 balanced；
+- balanced 速度 round-robin 和逐档 transition/episode 双门槛；
+- multi-buffer + speed-stratified sampling；
+- episode 三 split 无泄漏与 fingerprint 稳定；
+- actor hash 稳定、参数变化可检测；
+- recovery replay 隔离；
+- P15 gate 全条件检查；
+- structured fallback contribution 独立统计；
+- prevalidated gate 第一步启用；
+- replacement 8/16/32 outcome 与 false-negative fall 统计。
+
+解析正式 pilot（不启动训练）：
+
+```bash
+micromamba run -n oss python -m scripts.run_p15_common_actor \
+  --dry-run --out-root saved/p15
+```
+
+运行 seed 42 pilot：
+
+```bash
+micromamba run -n oss python -m scripts.run_p15_common_actor \
+  --seeds 42 --out-root saved/p15 --wandb
+```
+
+pilot 全部通过后才运行正式 seeds：
+
+```bash
+micromamba run -n oss python -m scripts.run_p15_common_actor \
+  --seeds 42,43,44,45,46 --out-root saved/p15_formal \
+  --reuse-complete --wandb
+```
+
+当前状态：实现和离线单测已完成；尚未产生 seed 42 的 0.30–1.00 正式训练
+结果。runner 会在 common coverage、Q_safe 数据覆盖或任一逐速度 gate
+失败时停止，因此不会再自动复用旧 30k/mixed checkpoint。
+
+真实 controller/MuJoCo 两档 smoke（2026-07-29）：
+
+- `0.30/0.35` common curriculum 在 120 policy steps 完成；
+- 两档 frontier 均实际通过后才切 balanced；
+- balanced 每档 `40 transitions / 2 episodes / 0 falls`，coverage manifest
+  与 common actor hash 已落盘；
+- multi-speed branch collector 每档完成
+  `60 natural transitions / 3 episodes / 3 snapshots / 57 branches`，
+  合并后为 `6 snapshots / 114 branches`，snapshot/episode id 无冲突；
+- 该极短 smoke 的 branch train split 没有任何 failure label，Q_safe data
+  gate 按设计拒绝训练。此结果只验证工程连接和 fail-fast，不是学习结果，
+  也不能降低正式 pilot 的 `1600 transitions / 40 snapshots` 门槛。
+
+smoke 输出位于 `saved/p15_smoke_030_035/`。
+
+### P16：固定 0.30 m/s 的 Q_safe 跨 actor 复用实验
+
+P16 回答一个比 P15 更窄的问题：先在 `0.30 m/s` 训练一条
+`SAC + auxiliary Q_safe` 源 run，然后只取出 Q_safe，能否减少另一条
+从零训练、同为 `0.30 m/s` 的 SAC 在学习过程中的摔倒。源 run 只负责
+生产 Q_safe，不作为目标对照组，也不把源 actor、reward critics 或
+reward replay 迁移到目标 run。
+
+#### P16.1：配对设计
+
+- 源 seed 默认为 `142`，目标 pilot seed 为 `42`，两者分离。
+- 目标 seed 先生成唯一的 step-0 checkpoint，包含随机初始化
+  actor/reward critics、空 reward replay 和空 safety replay。
+- A 组从该 checkpoint 运行纯 SAC。
+- C 组从同一 checkpoint 加入冻结 Q_safe，但只评分和记录，永不改动作。
+- B 组从同一 checkpoint 加入同一个冻结 Q_safe，并从第 0 个 policy
+  update 起启用 masking；actor Lagrange penalty 关闭。
+- 三组固定 `0.30 m/s`，训练步数、seed、SAC 超参数和初始 agent hash
+  完全相同。唯一允许跨 source/target 边界复制的是
+  `safety_critic_state`。
+
+`scripts/compose_qsafe_transfer_checkpoint.py` 专门执行这次跨 actor
+迁移。它保留目标 actor/reward critic/replay，记录 source/target 两个
+agent hash，并明确写入四个 transfer 标志。P15 的
+`compose_control_checkpoint.py` 仍然拒绝不同 actor hash，二者不可混用。
+
+#### P16.2：跨 actor 启用门槛
+
+随机初始化的目标 actor 与成熟源 actor 的动作分布不同，所以不能直接用
+源 replay 上的 AUROC 决定 masking 是否安全。P16 先冻结目标 actor，从
+它的自然 rollout 保存 MuJoCo snapshots，对 nominal、policy samples、
+previous、contracted previous 和局部扰动动作执行 `8/16/32` 步分支。
+
+`scripts/evaluate_p16_transfer.py` 只用这些目标 actor 分支计算：
+
+- point AUROC、ECE 和 Brier；
+- same-state pairwise ranking accuracy；
+- behavior-support coverage；
+- selected false-safe rate、replacement rate；
+- replacement 与 structured fallback 各自带来的真实 failure reduction。
+
+门槛沿用 P15 的 control-facing 条件，但输出协议为 `P16`。未通过时仍运行
+A 组与 C 组，以判断“仅计算 Q_safe”是否意外改变训练；B 组不运行，状态
+写为 `transfer_gate_failed`。这样不会在已经证实 critic 无法迁移时强行
+执行危险 masking。
+
+#### P16.3：结果与执行
+
+每组输出完整 `training_summary.json`，P16 汇总额外保存累计 fall 曲线、
+每次 fall 的 policy step、首次 fall step、falls/1000 steps、return、
+episode length、velocity，以及 masking 的 active/replacement/no-safe/
+emergency 和 replacement 后 `8/16/32` 步结果。
+
+手动运行 pilot：
+
+```bash
+micromamba run -n oss python -u -m scripts.run_p16_qsafe_reuse \
+  --source-seed 142 --target-seeds 42 \
+  --source-steps 15000 --target-steps 15000 \
+  --out-root saved/p16_qsafe_reuse
+```
+
+当前执行顺序为 P15 seed-42 pilot 完整结束后再启动 P16，避免单个
+simulator/controller 被两个在线训练同时占用。P16 的总结果写入
+`saved/p16_qsafe_reuse/p16_results.json`。

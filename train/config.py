@@ -137,6 +137,9 @@ class TrainConfig:
     sqrl_epsilon: float = 0.20
     sqrl_num_candidates: int = 64
     sqrl_lagrange_lr: float = 1.0e-4
+    # Keep the SQRL action-masking and constrained-actor baselines separable.
+    # The CSAC/Lagrange-style actor term is opt-in.
+    sqrl_actor_lagrange_enabled: bool = False
     sqrl_qsafe_recent_only: bool = True
     # After warm-start, train Q_safe without constraining pi for this many
     # steps so a fresh critic is not 100% no-safe (which collapses locomotion).
@@ -149,6 +152,9 @@ class TrainConfig:
     sqrl_max_brier: float = 0.20
     sqrl_min_gate_samples: int = 128
     sqrl_gate_candidate_window: int = 128
+    # Ignore short-lived calibration-batch noise after the complete gate has
+    # passed; revoke only after this many consecutive failed checks.
+    sqrl_gate_revoke_patience: int = 64
     sqrl_max_no_safe_rate: float = 0.50
     sqrl_min_candidate_range: float = 0.02
     # Linearly anneal epsilon from this value down to sqrl_epsilon over
@@ -171,6 +177,9 @@ class TrainConfig:
     # Offline MuJoCo branch evidence is required before action control.
     sqrl_control_gate_required: bool = True
     sqrl_control_metrics_path: str | None = None
+    # P15 only: a per-speed, held-out gate file can authorize masking from
+    # finetune step one. False preserves the online calibration warm-up.
+    sqrl_prevalidated_control_gate: bool = False
     sqrl_control_min_pairwise_accuracy: float = 0.65
     sqrl_control_max_false_safe_rate: float = 0.10
     sqrl_control_min_coverage: float = 0.10
@@ -199,6 +208,7 @@ class TrainConfig:
     wandb_run_name: str | None = None
     # Multi-speed command curriculum (samples move_speed each episode).
     cmd_speed_curriculum: bool = False
+    cmd_speed_curriculum_mode: str = 'performance'
     cmd_speed_min: float = 0.30
     cmd_speed_max: float = 1.0
     # Legacy linear-curriculum field retained for config compatibility.
@@ -211,6 +221,10 @@ class TrainConfig:
     cmd_speed_max_fall_rate: float = 0.125
     cmd_speed_new_stage_exploration_scale: float = 0.50
     cmd_speed_exploration_recovery_episodes: int = 4
+    cmd_speed_curriculum_max_steps: int = 100_000
+    cmd_speed_balance_min_transitions: int = 1600
+    cmd_speed_balance_min_episodes: int = 4
+    cmd_speed_balance_max_steps: int = 30_000
 
 
 def _optional_float(value: Any) -> float | None:

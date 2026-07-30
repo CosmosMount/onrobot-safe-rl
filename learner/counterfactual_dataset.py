@@ -8,7 +8,7 @@ enough to derive labels for all shorter horizons.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import os
 import pickle
 from pathlib import Path
@@ -290,3 +290,54 @@ def load_counterfactual_artifact(path: str | Path) -> dict[str, object]:
         raise ValueError('Incomplete counterfactual branch artifact')
     return payload
 
+
+def merge_counterfactual_artifacts(
+        artifacts: Sequence[dict[str, object]],
+        *,
+        metadata: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Merge per-speed artifacts while keeping snapshot/episode IDs unique."""
+    if not artifacts:
+        raise ValueError('at least one counterfactual artifact is required')
+    snapshots: list[BranchSnapshot] = []
+    branches: list[CandidateBranch] = []
+    sources = []
+    episode_offset = 0
+    for artifact in artifacts:
+        if artifact.get('format') != FORMAT_VERSION:
+            raise ValueError('all artifacts must use counterfactual_branch_v1')
+        source_snapshots = list(artifact.get('snapshots') or [])
+        source_branches = list(artifact.get('branches') or [])
+        snapshot_offset = len(snapshots)
+        local_episode_ids = {
+            int(snapshot.episode_id) for snapshot in source_snapshots}
+        episode_mapping = {
+            episode_id: episode_offset + index
+            for index, episode_id in enumerate(sorted(local_episode_ids))
+        }
+        snapshots.extend([
+            replace(
+                snapshot,
+                episode_id=episode_mapping[int(snapshot.episode_id)])
+            for snapshot in source_snapshots
+        ])
+        branches.extend([
+            replace(
+                branch,
+                snapshot_index=int(branch.snapshot_index) + snapshot_offset)
+            for branch in source_branches
+        ])
+        episode_offset += len(episode_mapping)
+        sources.append({
+            'metadata': dict(artifact.get('metadata') or {}),
+            'snapshots': len(source_snapshots),
+            'branches': len(source_branches),
+        })
+    merged_metadata = dict(metadata or {})
+    merged_metadata['sources'] = sources
+    return {
+        'format': FORMAT_VERSION,
+        'metadata': merged_metadata,
+        'snapshots': snapshots,
+        'branches': branches,
+    }

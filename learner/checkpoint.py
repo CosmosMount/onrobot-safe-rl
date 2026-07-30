@@ -8,16 +8,70 @@ one snapshot.
 
 from __future__ import annotations
 
+import hashlib
 import pickle
 import os
 from pathlib import Path
 from typing import Any
 
 from flax import serialization
+import numpy as np
 
 
 SNAPSHOT_PREFIX = 'training_snapshot_'
 SNAPSHOT_SUFFIX = '.pkl'
+
+
+def _hash_state_value(hasher: Any, value: Any) -> None:
+    """Feed a Flax state dictionary into a stable, structure-aware hash."""
+    if isinstance(value, dict):
+        hasher.update(b'dict\0')
+        for key in sorted(value, key=lambda item: str(item)):
+            encoded = str(key).encode('utf-8')
+            hasher.update(len(encoded).to_bytes(8, 'big'))
+            hasher.update(encoded)
+            _hash_state_value(hasher, value[key])
+        return
+    if isinstance(value, (list, tuple)):
+        hasher.update(b'list\0' if isinstance(value, list) else b'tuple\0')
+        hasher.update(len(value).to_bytes(8, 'big'))
+        for item in value:
+            _hash_state_value(hasher, item)
+        return
+    if value is None:
+        hasher.update(b'none\0')
+        return
+    if isinstance(value, (str, bytes, bool, int, float, np.generic)):
+        scalar = value.item() if isinstance(value, np.generic) else value
+        encoded = repr(scalar).encode('utf-8')
+        hasher.update(type(scalar).__name__.encode('ascii') + b'\0')
+        hasher.update(len(encoded).to_bytes(8, 'big'))
+        hasher.update(encoded)
+        return
+    array = np.asarray(value)
+    contiguous = np.ascontiguousarray(array)
+    dtype = contiguous.dtype.str.encode('ascii')
+    hasher.update(b'array\0')
+    hasher.update(len(dtype).to_bytes(8, 'big'))
+    hasher.update(dtype)
+    hasher.update(repr(tuple(contiguous.shape)).encode('ascii') + b'\0')
+    hasher.update(contiguous.tobytes(order='C'))
+
+
+def agent_state_hash(state: Any) -> str:
+    """Return the stable SHA-256 identity of an actor/reward-agent state."""
+    hasher = hashlib.sha256()
+    _hash_state_value(hasher, state)
+    return hasher.hexdigest()
+
+
+def snapshot_agent_hash(path: str | Path) -> str:
+    """Read only the serialized agent state and return its stable identity."""
+    with Path(path).open('rb') as stream:
+        payload = pickle.load(stream)
+    if 'agent_state' not in payload:
+        raise ValueError(f'Checkpoint {path} has no agent_state')
+    return agent_state_hash(payload['agent_state'])
 
 
 def _snapshot_path(save_dir: str | Path, step: int) -> Path:
@@ -63,14 +117,18 @@ def save_training_snapshot(save_dir: str | Path,
     root = Path(save_dir)
     root.mkdir(parents=True, exist_ok=True)
     path = _snapshot_path(root, step)
+    agent_state = serialization.to_state_dict(agent)
+    snapshot_metadata = dict(metadata or {})
+    snapshot_metadata.setdefault(
+        'agent_state_hash', agent_state_hash(agent_state))
     payload = {
         # Flax TrainState contains static apply/optimizer callables which are
         # intentionally not picklable. Persist only the registered PyTree
         # state and restore it into a freshly constructed agent template.
-        'agent_state': serialization.to_state_dict(agent),
+        'agent_state': agent_state,
         'replay_buffer_state': replay_buffer.state_dict(),
         'step': step,
-        'metadata': metadata or {},
+        'metadata': snapshot_metadata,
     }
     if safety_replay is not None:
         payload['safety_replay_state'] = safety_replay.state_dict()

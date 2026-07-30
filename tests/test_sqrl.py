@@ -233,6 +233,34 @@ class SqrlGateTest(unittest.TestCase):
         self.assertFalse(ready)
         self.assertEqual(reason, 'no-natural-calibration')
 
+    def test_p15_prevalidated_gate_can_activate_on_first_step(self):
+        from train.config import TrainConfig
+        from train.loop import _sqrl_gate_decision
+
+        cfg = TrainConfig()
+        cfg.sqrl_prevalidated_control_gate = True
+        ready, reason = _sqrl_gate_decision(
+            None, deque(), deque(), cfg, {
+                'protocol': 'P15',
+                'p15_gate_passed': True,
+            })
+        self.assertTrue(ready)
+        self.assertEqual(reason, 'ready:prevalidated-P15')
+        ready, reason = _sqrl_gate_decision(
+            None, deque(), deque(), cfg, {
+                'protocol': 'P15',
+                'p15_gate_passed': False,
+            })
+        self.assertFalse(ready)
+        self.assertEqual(reason, 'prevalidated-gate-failed')
+        ready, reason = _sqrl_gate_decision(
+            None, deque(), deque(), cfg, {
+                'protocol': 'P16',
+                'p16_gate_passed': True,
+            })
+        self.assertTrue(ready)
+        self.assertEqual(reason, 'ready:prevalidated-P16')
+
     def test_gate_rejects_perfect_natural_metrics_with_reversed_control_ranking(self):
         from train.config import load_app_config
         from train.loop import _sqrl_gate_decision
@@ -250,6 +278,43 @@ class SqrlGateTest(unittest.TestCase):
             self._ready_metrics(), no_safe, ranges, cfg, control)
         self.assertFalse(ready)
         self.assertEqual(reason, 'control-pairwise-ranking')
+
+    def test_gate_hysteresis_ignores_short_calibration_noise(self):
+        from train.loop import _sqrl_gate_with_hysteresis
+
+        ready, reason, latched, streak = _sqrl_gate_with_hysteresis(
+            True, 'ready', False, 0, 3)
+        self.assertTrue(ready)
+        self.assertTrue(latched)
+        self.assertEqual(streak, 0)
+
+        ready, reason, latched, streak = _sqrl_gate_with_hysteresis(
+            False, 'calibration-missing-class', latched, streak, 3)
+        self.assertTrue(ready)
+        self.assertEqual(reason, 'latched:calibration-missing-class')
+        self.assertEqual(streak, 1)
+
+        ready, _, latched, streak = _sqrl_gate_with_hysteresis(
+            False, 'auroc', latched, streak, 3)
+        self.assertTrue(ready)
+        self.assertEqual(streak, 2)
+
+        ready, reason, latched, streak = _sqrl_gate_with_hysteresis(
+            False, 'auroc', latched, streak, 3)
+        self.assertFalse(ready)
+        self.assertFalse(latched)
+        self.assertEqual(reason, 'revoked:auroc')
+        self.assertEqual(streak, 0)
+
+    def test_gate_hysteresis_cannot_latch_a_failed_initial_gate(self):
+        from train.loop import _sqrl_gate_with_hysteresis
+
+        ready, reason, latched, streak = _sqrl_gate_with_hysteresis(
+            False, 'no-control-evaluation', False, 0, 64)
+        self.assertFalse(ready)
+        self.assertFalse(latched)
+        self.assertEqual(reason, 'no-control-evaluation')
+        self.assertEqual(streak, 0)
 
 
 class SqrlFromScratchConfigTest(unittest.TestCase):

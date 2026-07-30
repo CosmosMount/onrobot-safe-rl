@@ -82,13 +82,29 @@ def main() -> int:
     parser.add_argument('--epsilon', type=float, default=0.20)
     parser.add_argument('--seeds', default='9300,9301,9302')
     parser.add_argument('--ensemble-size', type=int, default=3)
+    parser.add_argument(
+        '--algos', default='sac,sqrl',
+        help='Comma-separated subset of sac,sqrl.')
+    parser.add_argument(
+        '--sample-policy', action='store_true',
+        help=('Use the SAC policy distribution directly instead of its mode '
+              'plus external Gaussian noise. SQRL already samples candidates.'))
+    parser.add_argument(
+        '--log-qsafe', action='store_true',
+        help='Load and log Q_safe during SAC cells (checkpoint must contain it).')
     args = parser.parse_args()
 
     seeds = [int(value) for value in args.seeds.split(',') if value.strip()]
+    algos = {value.strip() for value in args.algos.split(',') if value.strip()}
+    unknown = algos.difference({'sac', 'sqrl'})
+    if unknown:
+        raise SystemExit(f'unknown --algos values: {sorted(unknown)}')
     rows = []
     args.output.parent.mkdir(parents=True, exist_ok=True)
     for seed in seeds:
         for use_sqrl in (False, True):
+            if ('sqrl' if use_sqrl else 'sac') not in algos:
+                continue
             cell = f'{"sqrl" if use_sqrl else "sac"}_seed{seed}'
             print(f'[isolated] restarting stack for {cell}', flush=True)
             restart_stack(args.output.parent / 'stack_logs')
@@ -103,7 +119,8 @@ def main() -> int:
                 use_sqrl=use_sqrl, epsilon=args.epsilon,
                 num_candidates=cfg.sqrl_num_candidates,
                 noise_mode='candidate' if use_sqrl else 'post',
-                log_qsafe=not use_sqrl)
+                log_qsafe=bool(args.log_qsafe and not use_sqrl),
+                sample_policy=bool(args.sample_policy and not use_sqrl))
             row['algo'] = 'sqrl_structured' if use_sqrl else 'sac'
             row['isolated_stack'] = True
             rows.append(row)
