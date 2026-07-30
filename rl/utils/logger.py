@@ -16,6 +16,7 @@ class WandbTrainerLogger:
             group=cfg.group_name,
             config=dict_cfg,  # type: ignore
         )
+        self.run_id = wandb.run.id if wandb.run is not None else None
         self.media_dict: dict[str, Any] = {}
         self.reset()
 

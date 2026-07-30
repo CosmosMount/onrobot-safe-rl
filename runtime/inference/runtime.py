@@ -423,6 +423,15 @@ class PolicyInferenceRuntime:
             "truncated": truncated,
             "inverted": bool(safety.inverted),
             "fallen": bool(safety.fallen),
+            "near_failure": bool(
+                not safety.terminated
+                and (
+                    abs(float(safety.roll))
+                    >= float(self.robot_cfg.fallen_risk_rad)
+                    or abs(float(safety.pitch))
+                    >= float(self.robot_cfg.fallen_risk_rad)
+                )
+            ),
             "upright_gate": float(not safety.inverted and not safety.fallen),
             "safety_mode": safety.mode.value,
             "safety_reason": safety.reason,
@@ -477,8 +486,16 @@ def main(argv=None) -> int:
         choices=("go2", "simulation", "real_robot"),
         default="go2",
     )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Optional YAML overlay path; overrides --config-profile.",
+    )
     args = parser.parse_args(argv)
-    robot_cfg, train_cfg, _ = load_app_config(profile=args.config_profile)
+    robot_cfg, train_cfg, _ = load_app_config(
+        path=args.config,
+        profile=args.config_profile,
+    )
     runtime = PolicyInferenceRuntime(
         robot_cfg=robot_cfg,
         dds_config=DdsConfig(robot_cfg.domain_id, robot_cfg.interface),

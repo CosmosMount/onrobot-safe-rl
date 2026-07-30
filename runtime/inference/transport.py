@@ -6,12 +6,21 @@ import hashlib
 import pickle
 import struct
 import time
-from multiprocessing import shared_memory
+from multiprocessing import resource_tracker, shared_memory
 from typing import Any
 
 _MAGIC = 0x47524C53
 _HEADER = struct.Struct("<IQQI")
 _DEFAULT_SIZE = 1 << 20
+
+
+def _open_existing(name: str) -> shared_memory.SharedMemory:
+    """Attach without claiming ownership of another process's mailbox."""
+    shm = shared_memory.SharedMemory(name, create=False)
+    # Python <=3.12 registers every attachment for process-exit unlinking.
+    # Only the process that created the mailbox may own that lifecycle.
+    resource_tracker.unregister(shm._name, "shared_memory")
+    return shm
 
 
 def _name(key: str) -> str:
@@ -39,11 +48,11 @@ class SharedMemoryMailbox:
             self._shm = shared_memory.SharedMemory(self.name, create=True, size=self.size)
             self.clear()
         except FileExistsError:
-            self._shm = shared_memory.SharedMemory(self.name, create=False)
+            self._shm = _open_existing(self.name)
 
     def open(self) -> None:
         if self._shm is None:
-            self._shm = shared_memory.SharedMemory(self.name, create=False)
+            self._shm = _open_existing(self.name)
 
     def wait_ready(self, *, timeout: float = 120.0, retry_interval: float = 0.05) -> None:
         deadline = time.time() + timeout

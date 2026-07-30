@@ -206,6 +206,30 @@ To add an agent:
    implementing `BaseAgent`.
 2. Add networks/update code under `rl/agents/<name>/`.
 3. Register it in `rl/agents/__init__.py`.
+
+### 50 Hz Q_safe agent
+
+`safe_droq` preserves the DroQ actor, reward critics, and reward replay while
+adding an episode-aware safety replay and failure critic. In `logging` mode it
+scores only the exact nominal action and never changes control. In `masking`
+mode it evaluates candidates in one batch, retains a safe nominal action, and
+replaces it only when a safe alternative exists; an empty safe set abstains.
+
+Use one overlay for a frequency-matched comparison:
+
+```bash
+python -m train --config config/go2_50hz_safe.yaml --agent droq
+python -m train --config config/go2_50hz_safe.yaml --agent safe_droq
+```
+
+To transfer only a validated Q_safe into a fresh DroQ run:
+
+```bash
+python -m train --config config/go2_50hz_safe.yaml \
+  --agent safe_droq --safety-mode masking \
+  --safety-pretrained-path SOURCE/agent/safety_critic.pt \
+  --save-dir saved/experiments/go2_50hz_masking
+```
 4. Add defaults to `train/config.py`.
 5. Add a YAML section under `config/common.yaml`.
 

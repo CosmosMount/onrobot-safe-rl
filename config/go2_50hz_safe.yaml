@@ -1,0 +1,29 @@
+# Fair 50 Hz SAC / Q_safe comparison overlay.
+# Use --agent droq for the untouched baseline and --agent safe_droq for the
+# safety agent while keeping every environment/training setting identical.
+
+reward_profile: upstream
+move_speed: 0.30
+
+train:
+  experiment_name: go2_50hz_030_safe
+  control_frequency: 50.0
+  max_steps: 15000
+  start_training: 1000
+  agent: safe_droq
+  explore_action_scale: 0.5
+  utd_ratio: 5
+  save_dir: saved/experiments/go2_50hz_safe
+  checkpoint_interval: 5000
+  metrics_interval: 10
+  wandb_run_name: go2_50hz_safe
+
+  safe_droq:
+    safety_mode: logging
+    safety_update_period: 5
+    safety_num_candidates: 32
+    safety_epsilon: 0.20
+    # A validated transferred Q_safe is allowed to filter the fresh target
+    # policy from its first action. A from-scratch logging run still waits
+    # until its safety replay contains both failure and normal samples.
+    safety_activation_step: 0

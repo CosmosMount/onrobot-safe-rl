@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
+import subprocess
 import time
+from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +51,14 @@ def _batched_transition(
         "terminated": np.asarray([bool(info.get("terminated", False))], dtype=np.float32),
         "truncated": np.asarray([bool(info.get("truncated", False))], dtype=np.float32),
         "next_observation": np.asarray(next_observation, dtype=np.float32)[None, ...],
+        "unsafe_label": np.asarray([
+            bool(info.get("terminated", False))
+            or bool(info.get("fallen", False))
+            or bool(info.get("inverted", False))
+        ], dtype=np.float32),
+        "near_failure_label": np.asarray([
+            bool(info.get("near_failure", False))
+        ], dtype=np.float32),
     }
 
 
@@ -56,6 +69,7 @@ def _update_meter(meter: AverageMeterDict, metrics: dict[str, float]) -> None:
 
 
 class _NullTrainerLogger:
+    run_id = None
     def update_metric(self, **kwargs: Any) -> None:
         pass
 
@@ -166,6 +180,43 @@ def _snapshot_step(path: Path) -> int:
     return int(match.group(1))
 
 
+def _network_hash(network: Any) -> str | None:
+    module = getattr(network, "network", network)
+    state_dict = getattr(module, "state_dict", None)
+    if not callable(state_dict):
+        return None
+    digest = hashlib.sha256()
+    for key, value in sorted(state_dict().items()):
+        digest.update(key.encode("utf-8"))
+        digest.update(np.ascontiguousarray(
+            value.detach().cpu().numpy()).tobytes())
+    return digest.hexdigest()
+
+
+def _agent_hashes(agent: Any) -> dict[str, str | None]:
+    return {
+        "actor_hash": _network_hash(getattr(agent, "_actor", None)),
+        "reward_critic_hash": _network_hash(
+            getattr(agent, "_critic", None)),
+        "safety_critic_hash": _network_hash(
+            getattr(agent, "_safety_critic", None)),
+    }
+
+
+def _git_metadata() -> dict[str, Any]:
+    def output(*args: str) -> str:
+        return subprocess.check_output(
+            ["git", *args], text=True).strip()
+    try:
+        return {
+            "commit": output("rev-parse", "HEAD"),
+            "branch": output("branch", "--show-current"),
+            "dirty": bool(output("status", "--porcelain")),
+        }
+    except (OSError, subprocess.CalledProcessError):
+        return {"commit": None, "branch": None, "dirty": None}
+
+
 def save_snapshot(agent, cfg: TrainConfig, step: int) -> Path:
     path = _snapshot_dir(cfg.save_dir, step)
     agent.save(str(path / "agent"))
@@ -238,6 +289,25 @@ def run_training(agent, env, cfg: TrainConfig):
         if cfg.wandb and not cfg.benchmark_only
         else _NullTrainerLogger()
     )
+    run_started_at = datetime.now(timezone.utc)
+    manifest_path = Path(cfg.save_dir) / "manifest.json"
+    initial_hashes = _agent_hashes(agent)
+    manifest: dict[str, Any] = {
+        **_git_metadata(),
+        **{f"initial_{key}": value
+           for key, value in initial_hashes.items()},
+        "seed": int(cfg.seed),
+        "target_speed_mps": float(getattr(env.cfg, "move_speed", np.nan)),
+        "control_frequency_hz": float(inner.control_frequency),
+        "max_steps": int(cfg.max_steps),
+        "start_training": int(cfg.start_training),
+        "agent": str(cfg.agent),
+        "wandb_run_id": logger.run_id,
+        "started_at": run_started_at.isoformat(),
+        "status": "running",
+    }
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
     observation = env.reset()
     if not _is_finite_array(observation):
@@ -245,19 +315,34 @@ def run_training(agent, env, cfg: TrainConfig):
 
     episode_return = 0.0
     episode_length = 0
+    episode_forward_velocity_sum = 0.0
+    episode_tracking_error_sum = 0.0
     completed_step = start_i
     last_saved_step = start_i
     rolling = AverageMeterDict()
-    total_policy_steps = 0
+    total_policy_steps = start_i
     total_falls = 0
     total_recoveries = 0
     total_timeouts = 0
+    replacement_history: deque[bool] = deque(maxlen=32)
+    pending_replacements: list[dict[str, Any]] = []
+    replacement_evaluated = {8: 0, 16: 0, 32: 0}
+    replacement_failures = {8: 0, 16: 0, 32: 0}
+    falls_with_recent_replacement = {8: 0, 16: 0, 32: 0}
+    false_negative_falls_32 = 0
+    policy_replacements = 0
+    policy_no_safe = 0
+    policy_safety_active = 0
+    episode_records: list[dict[str, Any]] = []
     warned_runtime_time_limit = False
 
     max_steps = cfg.benchmark_steps if cfg.benchmark_only else cfg.max_steps
-    iterator = range(start_i, max_steps)
-    if cfg.use_tqdm and tqdm_module is not None:
-        iterator = tqdm_module.tqdm(iterator, smoothing=0.1)
+    progress = (
+        tqdm_module.tqdm(
+            total=max_steps, initial=start_i, smoothing=0.1)
+        if cfg.use_tqdm and tqdm_module is not None
+        else None
+    )
 
     _log(
         f"[train] env ready obs={observation.shape} action={env.action_space.shape} "
@@ -265,16 +350,29 @@ def run_training(agent, env, cfg: TrainConfig):
     )
 
     try:
-        for i in iterator:
+        i = start_i
+        while total_policy_steps < max_steps:
             loop_t0 = time.perf_counter()
+            policy_index = total_policy_steps
 
             sample_t0 = time.perf_counter()
-            if i < cfg.start_training:
+            if policy_index < cfg.start_training:
                 action = env.sample_action() * cfg.explore_action_scale
+                filter_nominal = getattr(agent, "filter_nominal_action", None)
+                if callable(filter_nominal):
+                    action = np.asarray(filter_nominal(
+                        policy_index,
+                        _prev_transition(observation),
+                        action,
+                        training=True,
+                    )[0], dtype=np.float32)
             else:
-                if i == cfg.start_training:
-                    _log(f"[train] === Entering FlashSAC updates at step {i} ===")
-                action = _sample_policy_action(agent, observation, i, training=True)
+                if policy_index == cfg.start_training:
+                    _log(
+                        "[train] === Entering FlashSAC updates at "
+                        f"policy step {policy_index} ===")
+                action = _sample_policy_action(
+                    agent, observation, policy_index, training=True)
             action, action_ok = _safe_action(action, env.action_space.shape)
             sample_ms = (time.perf_counter() - sample_t0) * 1000.0
 
@@ -300,21 +398,32 @@ def run_training(agent, env, cfg: TrainConfig):
             if insert_ok:
                 transition = _batched_transition(observation, action, reward, next_observation, info)
                 repeats = max(1, int(cfg.terminal_replay_repeats) if info.get("terminated") else 1)
-                for _ in range(repeats):
+                for repeat_index in range(repeats):
+                    transition["replay_repeat_index"] = np.asarray(
+                        [repeat_index], dtype=np.int32)
                     agent.process_transition(transition)
 
             update_info = None
             update_elapsed = 0.0
-            if i >= cfg.start_training and insert_ok:
-                update_info, update_elapsed = _update_agent(agent, cfg, i)
+            if policy_index >= cfg.start_training and insert_ok:
+                update_info, update_elapsed = _update_agent(
+                    agent, cfg, policy_index)
             update_ms = update_elapsed * 1000.0
 
             observation = next_observation
             if insert_ok:
                 episode_return += float(reward)
-            if count_policy_step:
+            if policy_step:
                 episode_length += 1
+                forward_velocity = float(
+                    info.get("forward_velocity",
+                             info.get("x_velocity", 0.0)))
+                episode_forward_velocity_sum += forward_velocity
+                episode_tracking_error_sum += abs(
+                    forward_velocity - float(env.cfg.move_speed))
                 total_policy_steps += 1
+                if progress is not None:
+                    progress.update(1)
                 if (
                     not done
                     and not warned_runtime_time_limit
@@ -330,9 +439,49 @@ def run_training(agent, env, cfg: TrainConfig):
                 total_falls += int(bool(info.get("terminated", False)))
                 total_recoveries += int(info.get("safety_mode") == "recovery")
                 total_timeouts += int(info.get("safety_reason") == "recovery_timeout")
+            if policy_step:
+                terminated_now = bool(info.get("terminated", False))
+                for event in pending_replacements:
+                    event["age"] += 1
+                    event["failed"] = bool(event["failed"] or terminated_now)
+                remaining_events: list[dict[str, Any]] = []
+                for event in pending_replacements:
+                    age = int(event["age"])
+                    for horizon in (8, 16, 32):
+                        if age == horizon:
+                            replacement_evaluated[horizon] += 1
+                            replacement_failures[horizon] += int(
+                                bool(event["failed"]))
+                    if age < 32:
+                        remaining_events.append(event)
+                pending_replacements = remaining_events
+
+                replaced_now = bool(
+                    agent.get_metrics().get("safety/replaced", 0.0))
+                active_now = bool(
+                    agent.get_metrics().get("safety/active", 0.0))
+                no_safe_now = bool(
+                    agent.get_metrics().get(
+                        "safety/no_safe_candidate", 0.0))
+                policy_safety_active += int(active_now)
+                policy_replacements += int(replaced_now)
+                policy_no_safe += int(no_safe_now)
+                replacement_history.append(replaced_now)
+                if replaced_now:
+                    pending_replacements.append({
+                        "age": 0,
+                        "failed": terminated_now,
+                    })
+                if terminated_now:
+                    history = list(replacement_history)
+                    for horizon in (8, 16, 32):
+                        falls_with_recent_replacement[horizon] += int(
+                            any(history[-horizon:]))
+                    false_negative_falls_32 += int(
+                        not any(history[-32:]))
 
             loop_elapsed = time.perf_counter() - loop_t0
-            completed_step = i + 1
+            completed_step = total_policy_steps
             timing_metrics = {
                 "timing/step_ms": step_ms,
                 "timing/sample_ms": sample_ms,
@@ -343,7 +492,7 @@ def run_training(agent, env, cfg: TrainConfig):
                     cfg.utd_ratio / loop_elapsed if update_info is not None and loop_elapsed > 0 else 0.0
                 ),
             }
-            if count_policy_step:
+            if policy_step:
                 _update_meter(
                     rolling,
                     {
@@ -359,10 +508,16 @@ def run_training(agent, env, cfg: TrainConfig):
                     },
                 )
 
-            if i % cfg.log_interval == 0 or i == cfg.start_training:
-                phase = "explore" if i < cfg.start_training else "train"
+            if (
+                policy_index % cfg.log_interval == 0
+                or policy_index == cfg.start_training
+            ):
+                phase = (
+                    "explore"
+                    if policy_index < cfg.start_training else "train")
                 _log(
-                    f"[step {i}] phase={phase} mode={info.get('safety_mode', 'policy')} "
+                    f"[step {policy_index}] phase={phase} "
+                    f"mode={info.get('safety_mode', 'policy')} "
                     f"reward={reward:.3f} "
                     f"x_vel={info.get('x_velocity', 0):.3f} "
                     f"replay={insert_ok} update={update_info is not None} "
@@ -379,9 +534,9 @@ def run_training(agent, env, cfg: TrainConfig):
 
             metrics_due = (
                 cfg.metrics_interval <= 1
-                or i % cfg.metrics_interval == 0
+                or policy_index % cfg.metrics_interval == 0
                 or done
-                or i == max_steps - 1
+                or total_policy_steps >= max_steps
             )
             rolling_metrics = rolling.averages() if metrics_due else {}
             if metrics_due:
@@ -415,6 +570,11 @@ def run_training(agent, env, cfg: TrainConfig):
                 }
                 if update_info is not None:
                     log_metrics.update({f"training/{k}": float(v) for k, v in update_info.items()})
+                log_metrics.update({
+                    str(key): float(value)
+                    for key, value in agent.get_metrics().items()
+                    if np.isfinite(float(value))
+                })
                 log_metrics.update(_leg_action_metrics(action))
                 log_metrics.update(_q_target_leg_metrics(info))
                 log_metrics.update(_joint_feedback_leg_metrics(info))
@@ -425,13 +585,41 @@ def run_training(agent, env, cfg: TrainConfig):
                     "rolling/falls_total": float(total_falls),
                     "rolling/recoveries_total": float(total_recoveries),
                     "rolling/timeouts_total": float(total_timeouts),
+                    "safety_control/false_negative_falls_h32": float(
+                        false_negative_falls_32),
+                    "safety_control/policy_active_steps": float(
+                        policy_safety_active),
+                    "safety_control/policy_replacements": float(
+                        policy_replacements),
+                    "safety_control/policy_replacement_rate": float(
+                        policy_replacements
+                        / max(policy_safety_active, 1)),
+                    "safety_control/policy_no_safe": float(policy_no_safe),
+                    "safety_control/policy_no_safe_rate": float(
+                        policy_no_safe / max(policy_safety_active, 1)),
                 })
+                for horizon in (8, 16, 32):
+                    evaluated = replacement_evaluated[horizon]
+                    log_metrics.update({
+                        f"safety_control/replacement_evaluated_h{horizon}":
+                            float(evaluated),
+                        f"safety_control/replacement_failures_h{horizon}":
+                            float(replacement_failures[horizon]),
+                        f"safety_control/replacement_failure_rate_h{horizon}":
+                            float(replacement_failures[horizon]
+                                  / max(evaluated, 1)),
+                        f"safety_control/falls_with_replacement_h{horizon}":
+                            float(falls_with_recent_replacement[horizon]),
+                    })
                 logger.update_metric(**log_metrics)
                 logger.log_metric(step=i)
                 logger.reset()
 
-            if update_info is not None and (i % cfg.log_interval == 0 or i == cfg.start_training):
-                _log(f"[step {i}] update {update_info}")
+            if update_info is not None and (
+                policy_index % cfg.log_interval == 0
+                or policy_index == cfg.start_training
+            ):
+                _log(f"[step {policy_index}] update {update_info}")
 
             if done:
                 if hasattr(env, "clear_action"):
@@ -441,6 +629,21 @@ def run_training(agent, env, cfg: TrainConfig):
                     f"[step {i}] episode done ({reason}) "
                     f"return={episode_return:.2f} policy_len={episode_length}"
                 )
+                if episode_length > 0:
+                    episode_records.append({
+                    "end_step": int(policy_index),
+                        "return": float(episode_return),
+                        "policy_length": int(episode_length),
+                        "reason": str(reason),
+                        "terminated_policy_transition": bool(
+                            policy_step and info.get("terminated", False)),
+                        "forward_velocity_mean": float(
+                            episode_forward_velocity_sum
+                            / episode_length),
+                        "tracking_error_mean": float(
+                            episode_tracking_error_sum
+                            / episode_length),
+                    })
                 logger.update_metric(
                     **{
                         "training/return": episode_return,
@@ -454,6 +657,8 @@ def run_training(agent, env, cfg: TrainConfig):
                     observation = np.zeros(env.observation_space.shape, dtype=np.float32)
                 episode_return = 0.0
                 episode_length = 0
+                episode_forward_velocity_sum = 0.0
+                episode_tracking_error_sum = 0.0
                 warned_runtime_time_limit = False
 
             if (
@@ -461,16 +666,59 @@ def run_training(agent, env, cfg: TrainConfig):
                 and not cfg.benchmark_only
                 and cfg.checkpoint_interval > 0
                 and completed_step % cfg.checkpoint_interval == 0
+                and completed_step != last_saved_step
             ):
                 path = save_snapshot(agent, cfg, completed_step)
                 last_saved_step = completed_step
-                _log(f"[step {i}] checkpoint saved: {path}")
+                _log(
+                    f"[step {completed_step}] checkpoint saved: {path}")
+            i += 1
     finally:
+        if progress is not None:
+            progress.close()
         if hasattr(env, "close"):
             env.close()
         if cfg.save_checkpoints and not cfg.benchmark_only and completed_step > 0 and completed_step != last_saved_step:
             path = save_snapshot(agent, cfg, completed_step)
             _log(f"[train] final checkpoint saved: {path}")
+        final_hashes = _agent_hashes(agent)
+        manifest.update({
+            **{f"final_{key}": value
+               for key, value in final_hashes.items()},
+            "status": "finished" if completed_step >= max_steps else "stopped",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "completed_steps": int(completed_step),
+            "policy_steps": int(total_policy_steps),
+            "falls": int(total_falls),
+            "falls_per_1000_policy_steps": float(
+                1000.0 * total_falls / max(total_policy_steps, 1)),
+            "episodes": len(episode_records),
+            "episode_fall_rate": float(
+                sum(r["terminated_policy_transition"]
+                    for r in episode_records)
+                / max(len(episode_records), 1)),
+            "false_negative_falls_h32": int(false_negative_falls_32),
+            "policy_safety_active_steps": int(policy_safety_active),
+            "policy_replacements": int(policy_replacements),
+            "policy_replacement_rate": float(
+                policy_replacements / max(policy_safety_active, 1)),
+            "policy_no_safe": int(policy_no_safe),
+            "policy_no_safe_rate": float(
+                policy_no_safe / max(policy_safety_active, 1)),
+            "replacement_evaluated": replacement_evaluated,
+            "replacement_failures": replacement_failures,
+            "falls_with_recent_replacement":
+                falls_with_recent_replacement,
+            "agent_metrics": {
+                str(key): float(value)
+                for key, value in agent.get_metrics().items()
+                if np.isfinite(float(value))
+            },
+        })
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        (Path(cfg.save_dir) / "episodes.json").write_text(
+            json.dumps(episode_records, indent=2) + "\n")
 
     if cfg.benchmark_only:
         _log("[benchmark] done")

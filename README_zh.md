@@ -202,6 +202,42 @@ Agent 代码位于 `rl/agents`。
 1. 创建 `rl/agents/<name>/agent.py`，实现 config dataclass 和继承 `BaseAgent` 的 agent。
 2. 在 `rl/agents/<name>/` 下添加 network/update 代码。
 3. 在 `rl/agents/__init__.py` 注册新 agent。
+
+### 50 Hz Q_safe agent
+
+`safe_droq` 是 DroQ 的安全扩展，保留相同 actor、reward critic 和 reward
+replay，并增加独立的 failure critic 与 safety replay。
+
+- `safety_mode: logging`：只计算 SAC nominal action 的风险，不生成 32
+  个候选，也不修改动作，适合测量 Q_safe 本身且尽量不影响 50 Hz 控制。
+- `safety_mode: masking`：一次 batched forward 评估 policy candidates。
+  nominal 安全时保持原动作；nominal 不安全且存在安全候选时才替换；没有
+  安全候选时 abstain 并保持 nominal。
+- Q_safe 在完整 episode 上标记 failure 前 `H` 步，并以 future-failure
+  balanced batch 训练。脚本 recovery transition 不会被当成 policy
+  failure action。
+
+使用同一份 50 Hz overlay 做公平对比：
+
+```bash
+# 原始 DroQ baseline
+python -m train --config config/go2_50hz_safe.yaml --agent droq
+
+# Q_safe logging-only
+python -m train --config config/go2_50hz_safe.yaml --agent safe_droq
+```
+
+启用 masking 前，通过命令行加载已经验证的 critic。这里只迁移 Q_safe，
+新 run 的 DroQ actor/reward critic/replay 仍从零开始：
+
+```bash
+python -m train --config config/go2_50hz_safe.yaml \
+  --agent safe_droq --safety-mode masking \
+  --safety-pretrained-path SOURCE/agent/safety_critic.pt \
+  --save-dir saved/experiments/go2_50hz_masking
+```
+
+三组必须使用不同 `save_dir`。
 4. 在 `train/config.py` 添加默认配置。
 5. 在 `config/common.yaml` 添加 YAML 配置段。
 

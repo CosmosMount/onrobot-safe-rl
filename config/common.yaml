@@ -122,3 +122,25 @@ train:
     use_compile: false
     compile_mode: reduce-overhead
     use_amp: false
+
+  # DroQ-compatible safety agent. The default logging mode computes only the
+  # nominal-action risk and never modifies the action. Set mode to masking
+  # only after validating the transferred Q_safe.
+  safe_droq:
+    safety_mode: logging
+    safety_hidden_dims: [256, 256]
+    safety_lr: 3.0e-4
+    safety_gamma: 0.99
+    safety_target_update_tau: 0.005
+    safety_buffer_max_length: 100000
+    safety_buffer_min_length: 1000
+    safety_batch_size: 256
+    safety_failure_horizon: 32
+    # With Go2 utd_ratio=5 this is one Q_safe update per policy step.
+    safety_update_period: 5
+    safety_future_loss_weight: 0.5
+    safety_num_candidates: 32
+    safety_epsilon: 0.20
+    safety_activation_step: 1000
+    safety_pretrained_path: null
+    freeze_safety_critic: false

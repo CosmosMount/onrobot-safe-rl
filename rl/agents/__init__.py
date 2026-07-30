@@ -40,6 +40,14 @@ def create_agent(
         config = DroQConfig(**cfg_dict)  # type: ignore
         agent = DroQAgent(observation_space, action_space, env_info, config)
 
+    elif agent_type == "safe_droq":
+
+        from rl.agents.safe_droq.agent import SafeDroQAgent, SafeDroQConfig
+
+        config = SafeDroQConfig(**cfg_dict)  # type: ignore
+        agent = SafeDroQAgent(
+            observation_space, action_space, env_info, config)
+
     else:
         raise NotImplementedError
 

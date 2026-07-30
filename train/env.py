@@ -17,6 +17,7 @@ class Go2Env:
         go2_config: Go2Config,
         control_frequency: float,
         max_episode_steps: int,
+        seed: int = 42,
         **_,
     ):
         del dds_config, max_episode_steps
@@ -34,6 +35,7 @@ class Go2Env:
             high=np.ones(self.cfg.num_joints, dtype=np.float32),
             dtype=np.float32,
         )
+        self.action_space.seed(int(seed))
         self._action_tx = SharedMemorySender(self.cfg.runtime_action_shm)
         self._state_rx = SharedMemoryReceiver(self.cfg.runtime_state_shm)
 

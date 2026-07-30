@@ -276,6 +276,7 @@ def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, dict[str,
     train_node = dict(node)
     flashsac = train_node.pop('flashsac', {})
     droq = train_node.pop('droq', {})
+    safe_droq = train_node.pop('safe_droq', {})
 
     cfg = TrainConfig()
     for key, value in train_node.items():
@@ -287,7 +288,11 @@ def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, dict[str,
             value = None
         setattr(cfg, key, value)
 
-    return cfg, {'flashsac': dict(flashsac), 'droq': dict(droq)}
+    return cfg, {
+        'flashsac': dict(flashsac),
+        'droq': dict(droq),
+        'safe_droq': dict(safe_droq),
+    }
 
 
 def _parse_agent(train_cfg: TrainConfig, agent_nodes: dict[str, dict[str, Any]]) -> DictConfig:
@@ -298,6 +303,32 @@ def _parse_agent(train_cfg: TrainConfig, agent_nodes: dict[str, dict[str, Any]])
     elif agent_type == 'droq':
         values = dict(_DROQ_DEFAULTS)
         values.update(agent_nodes.get('droq', {}))
+    elif agent_type == 'safe_droq':
+        values = dict(_DROQ_DEFAULTS)
+        values.update({
+            'safety_mode': 'logging',
+            'safety_hidden_dims': [256, 256],
+            'safety_lr': 3.0e-4,
+            'safety_gamma': 0.99,
+            'safety_target_update_tau': 0.005,
+            'safety_buffer_max_length': 100_000,
+            'safety_buffer_min_length': 1000,
+            'safety_batch_size': 256,
+            'safety_failure_horizon': 32,
+            # run_training calls agent.update UTD times per policy step.
+            # Period 5 gives one auxiliary update with the Go2 UTD=5 setup.
+            'safety_update_period': 5,
+            'safety_future_loss_weight': 0.5,
+            'safety_num_candidates': 32,
+            'safety_epsilon': 0.20,
+            'safety_activation_step': 1000,
+            'safety_pretrained_path': None,
+            'freeze_safety_critic': False,
+        })
+        # DroQ optimizer/network overrides remain shared, while safety-only
+        # settings live under train.safe_droq.
+        values.update(agent_nodes.get('droq', {}))
+        values.update(agent_nodes.get('safe_droq', {}))
     else:
         raise ValueError(f'Unsupported train.agent={train_cfg.agent!r}')
 
@@ -317,6 +348,8 @@ def _parse_agent(train_cfg: TrainConfig, agent_nodes: dict[str, dict[str, Any]])
         values['target_q_min'] = None
     if values.get('target_q_max') == 'null':
         values['target_q_max'] = None
+    if values.get('safety_pretrained_path') == 'null':
+        values['safety_pretrained_path'] = None
     return OmegaConf.create(values)
 
 
