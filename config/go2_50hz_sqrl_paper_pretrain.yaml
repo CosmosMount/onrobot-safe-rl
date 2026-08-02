@@ -14,7 +14,7 @@ train:
   explore_action_scale: 0.5
   # The paper uses SAC, not the project's high-UTD DroQ variant.
   utd_ratio: 1
-  save_dir: saved/experiments/sqrl_paper/seed42/pretrain_strict_async_sac_v1
+  save_dir: saved/experiments/sqrl_paper/seed42/pretrain_strict_async_sac_v2
   checkpoint_interval: 25000
   metrics_interval: 10
   wandb_run_name: sqrl-paper-pretrain-030-seed42

@@ -17,10 +17,10 @@ sys.path.insert(0, str(ROOT))
 
 from runtime.inference.transport import SharedMemoryRingQueue
 
-PRETRAIN_ROOT = ROOT / "saved/experiments/sqrl_paper/seed42/pretrain_strict_async_sac_v1"
+PRETRAIN_ROOT = ROOT / "saved/experiments/sqrl_paper/seed42/pretrain_strict_async_sac_v2"
 SAC_PRETRAIN_ROOT = ROOT / "saved/experiments/sqrl_paper/seed42/pretrain_sac_async_v1"
 SAC_ROOT = ROOT / "saved/experiments/sqrl_paper/seed42/finetune_sac_async_sac_v1"
-SQRL_ROOT = ROOT / "saved/experiments/sqrl_paper/seed42/finetune_sqrl_async_sac_v1"
+SQRL_ROOT = ROOT / "saved/experiments/sqrl_paper/seed42/finetune_sqrl_async_sac_v2"
 RESULT_PATH = ROOT / "saved/experiments/sqrl_paper/seed42/result.json"
 LOG_ROOT = ROOT / "saved/experiments/sqrl_paper/seed42/orchestrator_logs"
 
@@ -90,10 +90,15 @@ def restart_runtime(config: str, settle_seconds: float = 5.0) -> None:
             raise RuntimeError(f"runtime processes did not stop: {victims}")
         time.sleep(0.2)
     SharedMemoryRingQueue.unlink_existing("go2_runtime_state.ordered")
+    LOG_ROOT.mkdir(parents=True, exist_ok=True)
+    stage = Path(config).stem
+    log = (LOG_ROOT / f"runtime_{stage}.log").open("ab", buffering=0)
     subprocess.Popen(
         [sys.executable, "-m", "runtime.inference.runtime",
          "--config", config, "--ordered-state-queue"],
         cwd=ROOT,
+        stdout=log,
+        stderr=subprocess.STDOUT,
         start_new_session=True,
     )
     time.sleep(settle_seconds)

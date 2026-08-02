@@ -11,7 +11,7 @@ train:
   start_training: 0
   agent: paper_sqrl
   utd_ratio: 1
-  save_dir: saved/experiments/sqrl_paper/seed42/finetune_sqrl_async_sac_v1
+  save_dir: saved/experiments/sqrl_paper/seed42/finetune_sqrl_async_sac_v2
   checkpoint_interval: 25000
   metrics_interval: 10
   wandb_run_name: sqrl-paper-finetune-040-seed42

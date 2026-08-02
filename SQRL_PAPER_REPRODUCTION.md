@@ -99,7 +99,7 @@ Train the paper's independent SAC baseline and then fine-tune both methods from
 their own 0.30 m/s checkpoints:
 
 ```bash
-SQRL_PRETRAIN=saved/experiments/sqrl_paper/seed42/pretrain_strict_async_sac_v1/step_000000500000
+SQRL_PRETRAIN=saved/experiments/sqrl_paper/seed42/pretrain_strict_async_sac_v2/step_000000500000
 SAC_PRETRAIN=saved/experiments/sqrl_paper/seed42/pretrain_sac_async_v1/step_000000500000
 
 micromamba run -n oss python -m train \
