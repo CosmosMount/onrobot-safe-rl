@@ -14,8 +14,36 @@ from rl.agents.paper_sqrl.inference import SQRLActionDecision
 from rl.agents.paper_sqrl.inference import export_inference_weights
 from runtime.inference.transport import SharedMemoryReceiver, SharedMemoryRingQueue
 from train.async_collector import PaperSQRLCollectorCore, run_async_collector
+from train.async_loop import _manifest_lineage
 from train.config import load_app_config
 from train.ordered_runtime import RuntimeEnvelope
+
+
+class AsyncManifestLineageTest(unittest.TestCase):
+    def test_resume_preserves_origin_hashes_and_records_resume_hashes(self):
+        existing = {
+            "initial_actor_hash": "origin-actor",
+            "initial_reward_critic_hash": "origin-critic",
+            "initial_safety_critic_hash": "origin-safety",
+        }
+        current = {
+            "actor_hash": "resume-actor",
+            "reward_critic_hash": "resume-critic",
+            "safety_critic_hash": "resume-safety",
+        }
+        lineage = _manifest_lineage(existing, current, 25000)
+        self.assertEqual(lineage["initial_actor_hash"], "origin-actor")
+        self.assertEqual(lineage["resume_actor_hash"], "resume-actor")
+
+    def test_fresh_run_uses_current_hashes_as_origin(self):
+        current = {
+            "actor_hash": "actor",
+            "reward_critic_hash": "critic",
+            "safety_critic_hash": "safety",
+        }
+        lineage = _manifest_lineage({}, current, 0)
+        self.assertEqual(lineage["initial_actor_hash"], "actor")
+        self.assertNotIn("resume_actor_hash", lineage)
 
 
 class FakePolicy:

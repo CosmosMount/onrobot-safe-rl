@@ -35,6 +35,23 @@ def _replace_latest(q: Any, payload: Any) -> None:
         pass
 
 
+def _manifest_lineage(existing: dict[str, Any],
+                      current_hashes: dict[str, str | None],
+                      resume_step: int) -> dict[str, Any]:
+    """Keep true run-origin hashes when a resumed process rewrites manifest."""
+    initial = {}
+    for key, value in current_hashes.items():
+        manifest_key = f"initial_{key}"
+        initial[manifest_key] = (
+            existing.get(manifest_key, value) if resume_step > 0 else value)
+    if resume_step <= 0:
+        return initial
+    return {
+        **initial,
+        **{f"resume_{key}": value for key, value in current_hashes.items()},
+    }
+
+
 def run_async_training(agent: Any, env: Any, cfg: Any,
                        robot_cfg: Any) -> Any:
     """Collect at runtime rate while this process performs learner updates."""
@@ -74,17 +91,25 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
     )
 
     manifest_path = Path(cfg.save_dir) / "manifest.json"
-    initial_hashes = _agent_hashes(agent)
+    existing_manifest = {}
+    if manifest_path.exists():
+        try:
+            existing_manifest = json.loads(manifest_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            existing_manifest = {}
+    current_hashes = _agent_hashes(agent)
+    now = datetime.now(timezone.utc).isoformat()
     manifest = {
         **_git_metadata(),
-        **{f"initial_{key}": value for key, value in initial_hashes.items()},
+        **_manifest_lineage(existing_manifest, current_hashes, start_i),
         "seed": int(cfg.seed),
         "target_speed_mps": float(robot_cfg.move_speed),
         "control_frequency_hz": float(cfg.control_frequency),
         "max_steps": int(cfg.max_steps),
         "agent": str(agent.cfg.agent_type),
         "collector_architecture": "ordered_async_process_v1",
-        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": existing_manifest.get("started_at", now),
+        "last_started_at": now,
         "status": "running",
         "resumed_from_step": start_i,
     }
