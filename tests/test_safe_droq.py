@@ -11,6 +11,7 @@ from rl.agents import create_agent
 from rl.agents.safe_droq.replay import SafetyReplay
 from train.config import load_app_config
 from train.env import Go2Env
+from train.main import _parse_args
 
 
 def _transition(step: int, *, terminated: bool = False, truncated: bool = False):
@@ -79,6 +80,10 @@ class SafetyReplayTest(unittest.TestCase):
 
 class SafeDroQConfigTest(unittest.TestCase):
 
+    def test_cli_accepts_explicit_paired_seed(self):
+        args = _parse_args(["--seed", "46"])
+        self.assertEqual(args.seed, 46)
+
     def test_50hz_overlay_supports_baseline_and_safety_agent(self):
         _, safe_train, safe_cfg = load_app_config(
             path="config/go2_50hz_safe.yaml",
@@ -91,6 +96,38 @@ class SafeDroQConfigTest(unittest.TestCase):
         self.assertEqual(safe_cfg.agent_type, "safe_droq")
         self.assertEqual(sac_cfg.agent_type, "droq")
         self.assertEqual(safe_cfg.safety_mode, "logging")
+
+    def test_adaptive_gated_overlay_delays_and_ramps_masking(self):
+        _, _, cfg = load_app_config(
+            path="config/go2_50hz_safe_adaptive_gated.yaml",
+            agent="safe_droq")
+        self.assertEqual(cfg.safety_activation_step, 2000)
+        self.assertEqual(cfg.safety_masking_ramp_steps, 2000)
+        self.assertAlmostEqual(cfg.safety_max_action_rms, 0.35)
+        self.assertAlmostEqual(cfg.safety_reward_q_margin, 10.0)
+        self.assertAlmostEqual(cfg.safety_min_risk_improvement, 0.05)
+
+        agent = self._cpu_agent()
+        agent._cfg.safety_activation_step = 2000
+        agent._cfg.safety_masking_ramp_steps = 2000
+        self.assertEqual(agent._masking_progress(1999), 0.0)
+        self.assertAlmostEqual(agent._masking_progress(2999), 0.5)
+        self.assertEqual(agent._masking_progress(3999), 1.0)
+
+        _, _, strict = load_app_config(
+            path="config/go2_50hz_safe_adaptive_gated_v2.yaml",
+            agent="safe_droq")
+        self.assertEqual(strict.safety_activation_step, 5000)
+        self.assertAlmostEqual(strict.safety_max_action_rms, 0.15)
+        self.assertAlmostEqual(strict.safety_reward_q_margin, 0.0)
+
+        _, _, local = load_app_config(
+            path="config/go2_50hz_safe_adaptive_gated_v3.yaml",
+            agent="safe_droq")
+        self.assertEqual(local.safety_update_period, 25)
+        self.assertTrue(local.safety_contract_candidates)
+        self.assertAlmostEqual(local.safety_min_risk_improvement, 0.02)
+        self.assertAlmostEqual(local.safety_max_action_rms, 0.15)
 
     def _cpu_agent(self, *, frozen: bool = False):
         _, _, cfg = load_app_config(

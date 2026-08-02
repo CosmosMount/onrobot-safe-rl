@@ -34,6 +34,11 @@ class SafeDroQConfig(DroQConfig):
     safety_num_candidates: int
     safety_epsilon: float
     safety_activation_step: int
+    safety_masking_ramp_steps: int
+    safety_min_risk_improvement: float
+    safety_max_action_rms: float
+    safety_contract_candidates: bool
+    safety_reward_q_margin: Optional[float]
     safety_pretrained_path: Optional[str]
     freeze_safety_critic: bool
 
@@ -60,6 +65,17 @@ class SafeDroQAgent(DroQAgent):
             raise ValueError("safety_num_candidates must be at least 2")
         if not 0.0 <= cfg.safety_epsilon <= 1.0:
             raise ValueError("safety_epsilon must be in [0, 1]")
+        if cfg.safety_masking_ramp_steps < 0:
+            raise ValueError("safety_masking_ramp_steps must be non-negative")
+        if cfg.safety_min_risk_improvement < 0.0:
+            raise ValueError("safety_min_risk_improvement must be non-negative")
+        if cfg.safety_max_action_rms <= 0.0:
+            raise ValueError("safety_max_action_rms must be positive")
+        if (
+            cfg.safety_reward_q_margin is not None
+            and cfg.safety_reward_q_margin < 0.0
+        ):
+            raise ValueError("safety_reward_q_margin must be non-negative")
         super().__init__(observation_space, action_space, env_info, cfg)
         self._cfg = cfg
         observation_dim = int(observation_space.shape[-1])  # type: ignore[union-attr]
@@ -122,6 +138,31 @@ class SafeDroQAgent(DroQAgent):
             training=False)
         return torch.sigmoid(logits)
 
+    @torch.no_grad()
+    def _reward_values(
+        self,
+        observations: torch.Tensor,
+        actions: torch.Tensor,
+    ) -> torch.Tensor:
+        values, _ = self._critic(
+            observations=observations,
+            actions=actions,
+            training=False)
+        # Match the conservative actor objective used by this DroQ config.
+        return values.min(dim=0).values.reshape(-1)
+
+    def _masking_progress(self, interaction_step: int) -> float:
+        if interaction_step < self._cfg.safety_activation_step:
+            return 0.0
+        ramp_steps = int(self._cfg.safety_masking_ramp_steps)
+        if ramp_steps == 0:
+            return 1.0
+        return float(np.clip(
+            (interaction_step - self._cfg.safety_activation_step + 1)
+            / ramp_steps,
+            0.0,
+            1.0))
+
     def sample_actions(
         self,
         interaction_step: int,
@@ -170,6 +211,7 @@ class SafeDroQAgent(DroQAgent):
             self._cfg.safety_mode == "masking"
             and ready
             and interaction_step >= self._cfg.safety_activation_step)
+        masking_progress = self._masking_progress(interaction_step)
         selected = nominal
         replaced = False
         no_safe = False
@@ -185,15 +227,52 @@ class SafeDroQAgent(DroQAgent):
                         training=False,
                         sample=training)
                 candidates = torch.cat([nominal, alternatives], dim=0)
+                if self._cfg.safety_contract_candidates:
+                    # Keep counterfactual actions in a local neighborhood of
+                    # the nominal action.  Raw policy samples are often far
+                    # outside the action support where Q_safe was trained.
+                    delta = candidates - nominal
+                    delta_rms = torch.sqrt(torch.mean(
+                        torch.square(delta), dim=-1, keepdim=True))
+                    max_rms = (
+                        self._cfg.safety_max_action_rms
+                        * masking_progress)
+                    contraction = torch.clamp(
+                        max_rms / torch.clamp(delta_rms, min=1e-8),
+                        max=1.0)
+                    candidates = torch.clamp(
+                        nominal + contraction * delta, -1.0, 1.0)
                 critic_observations = observations.repeat(
                     self._cfg.safety_num_candidates, 1)
                 risks = self._risks(critic_observations, candidates)
-                safe = risks <= self._cfg.safety_epsilon
-                if bool(safe[0]):
+                risk_safe = risks <= self._cfg.safety_epsilon
+                nominal_risk = risks[0]
+                action_rms = torch.sqrt(torch.mean(
+                    torch.square(candidates - nominal), dim=-1))
+                effective_max_rms = (
+                    self._cfg.safety_max_action_rms * masking_progress)
+                supported = action_rms <= effective_max_rms
+                improved = (
+                    risks
+                    <= nominal_risk
+                    - self._cfg.safety_min_risk_improvement)
+                reward_values = self._reward_values(
+                    critic_observations, candidates)
+                if self._cfg.safety_reward_q_margin is None:
+                    performance_ok = torch.ones_like(
+                        risk_safe, dtype=torch.bool)
+                else:
+                    performance_ok = (
+                        reward_values
+                        >= reward_values[0]
+                        - self._cfg.safety_reward_q_margin)
+                eligible = risk_safe & supported & improved & performance_ok
+                eligible[0] = False
+                if bool(risk_safe[0]):
                     selected = candidates[:1]
-                elif bool(torch.any(safe)):
+                elif bool(torch.any(eligible)):
                     safe_risks = torch.where(
-                        safe, risks, torch.full_like(risks, torch.inf))
+                        eligible, risks, torch.full_like(risks, torch.inf))
                     selected_index = int(torch.argmin(safe_risks).item())
                     selected = candidates[selected_index:selected_index + 1]
                     replaced = selected_index != 0
@@ -210,7 +289,20 @@ class SafeDroQAgent(DroQAgent):
                     "safety/candidate_risk_min": float(risks.min().item()),
                     "safety/candidate_risk_max": float(risks.max().item()),
                     "safety/safe_candidate_rate": float(
-                        safe.float().mean().item()),
+                        risk_safe.float().mean().item()),
+                    "safety/eligible_candidate_rate": float(
+                        eligible.float().mean().item()),
+                    "safety/support_candidate_rate": float(
+                        supported.float().mean().item()),
+                    "safety/performance_candidate_rate": float(
+                        performance_ok.float().mean().item()),
+                    "safety/masking_progress": masking_progress,
+                    "safety/effective_max_action_rms": effective_max_rms,
+                    "safety/nominal_reward_q": float(
+                        reward_values[0].item()),
+                    "safety/selected_reward_q": float(
+                        self._reward_values(
+                            observations, selected).item()),
                 })
             else:
                 risk = float(self._risks(observations, nominal).item())
@@ -224,6 +316,7 @@ class SafeDroQAgent(DroQAgent):
             "safety/active": float(active),
             "safety/replaced": float(replaced),
             "safety/no_safe_candidate": float(no_safe),
+            "safety/masking_progress": masking_progress,
             "safety/sample_ms": (
                 time.perf_counter() - started) * 1000.0,
             "safety/replay_size": float(len(self._safety_replay)),
