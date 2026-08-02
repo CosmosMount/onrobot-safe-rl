@@ -40,6 +40,7 @@ class Go2Env:
         self.action_space.seed(int(seed))
         self._action_tx = SharedMemorySender(self.cfg.runtime_action_shm)
         self._state_rx = SharedMemoryReceiver(self.cfg.runtime_state_shm)
+        self._action_sequence = 0
 
     def reset(self, **_) -> np.ndarray:
         self._state_rx.bind()
@@ -58,10 +59,18 @@ class Go2Env:
                 raise TimeoutError(
                     "runtime did not acknowledge episode reset")
 
-    def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, dict]:
+    def step(self, action: np.ndarray, *, interaction_step: int | None = None,
+             policy_update_step: int | None = None) -> tuple[np.ndarray, float, bool, dict]:
         action = np.asarray(action, dtype=np.float32).reshape(self.action_space.shape)
         self._state_rx.recv_latest()
-        self._action_tx.send({"action": np.clip(action, -1.0, 1.0)})
+        self._action_sequence += 1
+        self._action_tx.send({
+            "action": np.clip(action, -1.0, 1.0),
+            "action_sequence": self._action_sequence,
+            "action_interaction_step": -1 if interaction_step is None else int(interaction_step),
+            "action_policy_update_step": -1 if policy_update_step is None else int(policy_update_step),
+            "action_sent_time_ns": time.monotonic_ns(),
+        })
         message = self._recv_step()
         return (
             np.asarray(message["observation"], dtype=np.float32),

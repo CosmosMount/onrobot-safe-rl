@@ -6,9 +6,11 @@ from typing import Any, MutableMapping, Optional, cast
 import gymnasium as gym
 import torch
 import torch.optim as optim
+import numpy as np
 from torch.amp.grad_scaler import GradScaler
 
 from rl.agents.base.agent import BaseAgent
+from rl.agents.base.update import PolicyUpdateRequest, UpdateCounters
 from rl.agents.flashsac.network import (
     FlashSACActor,
     FlashSACDoubleCritic,
@@ -55,6 +57,8 @@ class FlashSACConfig:
     actor_noise_zeta_mu: float
     actor_noise_zeta_max: int
     actor_update_period: int
+    actor_update_interval: int
+    actor_update_unit: str
 
     critic_num_blocks: int
     critic_hidden_dim: int
@@ -384,6 +388,11 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
             device=self._device,
         )
         self._update_step = 0
+        self._update_counters = UpdateCounters()
+        if self._cfg.actor_update_interval <= 0:
+            raise ValueError("actor_update_interval must be positive")
+        if self._cfg.actor_update_unit not in {"policy_step", "critic_step"}:
+            raise ValueError("actor_update_unit must be policy_step or critic_step")
 
         # Grad scaler for FP16 AMP
         self._grad_scaler = GradScaler(device=self._device.type, enabled=self._cfg.use_amp)
@@ -454,12 +463,23 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
 
         return actions.cpu().numpy()
 
+    def get_update_step(self) -> int:
+        return self._update_step
+
+    def get_policy_update_step(self) -> int:
+        return int(self._update_counters.actor_steps)
+
+    def get_update_counters(self) -> dict[str, int]:
+        return {key: int(value) for key, value in
+                self._update_counters.state_dict().items()
+                if key != "legacy_counters_inferred"}
+
     def process_transition(self, transition: MutableMapping[str, Tensor]) -> None:
         # add to replay buffer
         self._replay_buffer.add_batch(transition)
 
         # update reward normalizer
-        if self._cfg.normalize_reward:
+        if self._cfg.normalize_reward and self._is_original_interaction(transition):
             assert "reward" in transition and self.reward_normalizer is not None
             self.reward_normalizer.update_reward_stats(
                 reward=torch.as_tensor(transition["reward"], device=self._device),
@@ -467,8 +487,89 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
                 truncated=torch.as_tensor(transition["truncated"], device=self._device),
             )
 
+    @staticmethod
+    def _is_original_interaction(transition: MutableMapping[str, Tensor]) -> bool:
+        value = transition.get("replay_repeat_index")
+        if value is None:
+            return True
+        return int(np.asarray(value).reshape(-1)[0]) == 0
+
     def can_start_training(self) -> bool:
         return self._replay_buffer.can_sample()
+
+    def _prepare_training_batch(self) -> dict[str, torch.Tensor]:
+        batch = cast(dict[str, torch.Tensor], self._replay_buffer.sample())
+        for key, value in batch.items():
+            batch[key] = value.to(self._device, non_blocking=True)
+        if self._cfg.asymmetric_observation:
+            batch["actor_observation"] = batch["observation"][:, :self._actor_observation_dim]
+            batch["actor_next_observation"] = batch["next_observation"][:, :self._actor_observation_dim]
+        else:
+            batch["actor_observation"] = batch["observation"]
+            batch["actor_next_observation"] = batch["next_observation"]
+        if self._cfg.normalize_reward:
+            assert self.reward_normalizer is not None
+            batch["reward"] = self.reward_normalizer.normalize_rewards(batch["reward"])
+        return batch
+
+    def _update_metrics(self, metrics: dict[str, Any], request: PolicyUpdateRequest,
+                        actor_steps: int) -> dict[str, Any]:
+        c = self._update_counters
+        metrics.update({
+            "updates/call_policy_steps": float(request.policy_steps),
+            "updates/call_critic_steps": float(request.critic_updates),
+            "updates/call_actor_steps": float(actor_steps),
+            "updates/call_temperature_steps": float(actor_steps),
+            "updates/call_target_steps": float(request.critic_updates),
+            "updates/call_auxiliary_steps": 0.0,
+            "updates/total_policy_steps": float(c.policy_steps),
+            "updates/total_critic_steps": float(c.critic_steps),
+            "updates/total_actor_steps": float(c.actor_steps),
+            "updates/total_temperature_steps": float(c.temperature_steps),
+            "updates/total_target_steps": float(c.target_steps),
+            "updates/total_auxiliary_steps": float(c.auxiliary_steps),
+            "updates/critic_per_policy_step": c.critic_steps / max(c.policy_steps, 1),
+            "updates/actor_per_policy_step": c.actor_steps / max(c.policy_steps, 1),
+            "updates/auxiliary_per_policy_step": c.auxiliary_steps / max(c.policy_steps, 1),
+        })
+        return metrics
+
+    def update_policy_steps(self, request: PolicyUpdateRequest) -> dict[str, Any]:
+        metrics: dict[str, Any] = {}
+        actor_steps = 0
+        policy_before = self._update_counters.policy_steps
+        for critic_index in range(request.critic_updates):
+            batch = self._prepare_training_batch()
+            critic_before = self._update_counters.critic_steps
+            if self._cfg.actor_update_unit == "critic_step":
+                do_actor = critic_before % self._cfg.actor_update_interval == 0
+            else:
+                policy_completed_before = policy_before + (
+                    critic_index // request.critic_updates_per_policy_step)
+                policy_completed = policy_before + (
+                    (critic_index + 1)
+                    // request.critic_updates_per_policy_step)
+                do_actor = (
+                    (critic_index + 1)
+                    % request.critic_updates_per_policy_step == 0
+                    and (policy_completed_before // self._cfg.actor_update_interval)
+                    < (policy_completed // self._cfg.actor_update_interval))
+            info = _update_networks(
+                batch=batch, actor=self._actor, critic=self._critic,
+                target_critic=self._target_critic, temperature=self._temperature,
+                cfg=self._cfg, do_actor_update=do_actor,
+                device=self._device, grad_scaler=self._grad_scaler)
+            metrics.update({key: value.item() if isinstance(value, torch.Tensor) else value
+                            for key, value in info.items()})
+            self._update_counters.critic_steps += 1
+            self._update_counters.target_steps += 1
+            if do_actor:
+                self._update_counters.actor_steps += 1
+                self._update_counters.temperature_steps += 1
+                actor_steps += 1
+        self._update_counters.policy_steps += request.policy_steps
+        self._update_step = self._update_counters.critic_steps
+        return self._update_metrics(metrics, request, actor_steps)
 
     def update(self) -> dict[str, Any]:
         batch = cast(dict[str, torch.Tensor], self._replay_buffer.sample())
@@ -500,7 +601,14 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
             device=self._device,
             grad_scaler=self._grad_scaler,
         )
+        did_actor = (self._update_step % self._cfg.actor_update_period == 0)
         self._update_step += 1
+        self._update_counters.critic_steps += 1
+        self._update_counters.target_steps += 1
+        self._update_counters.policy_steps += 1
+        if did_actor:
+            self._update_counters.actor_steps += 1
+            self._update_counters.temperature_steps += 1
 
         # Convert tensors to floats
         update_info: dict[str, float] = {}
@@ -523,6 +631,7 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
 
         agent_state: dict[str, Any] = {
             "update_step": self._update_step,
+            "update_counters": self._update_counters.state_dict(),
             "grad_scaler_state_dict": self._grad_scaler.state_dict(),
         }
         torch.save(agent_state, os.path.join(path, "agent_state.pt"))
@@ -544,7 +653,18 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
             agent_state_path = os.path.join(path, "agent_state.pt")
             assert os.path.exists(agent_state_path)
             agent_state = torch.load(agent_state_path, map_location=self._device)
-            self._update_step = agent_state["update_step"]
+            self._update_step = int(agent_state["update_step"])
+            if "update_counters" in agent_state:
+                self._update_counters.load_state_dict(agent_state["update_counters"])
+            else:
+                self._update_counters.critic_steps = self._update_step
+                self._update_counters.target_steps = self._update_step
+                period = max(int(self._cfg.actor_update_period), 1)
+                self._update_counters.actor_steps = (
+                    0 if self._update_step == 0 else
+                    (self._update_step - 1) // period + 1)
+                self._update_counters.temperature_steps = self._update_counters.actor_steps
+                self._update_counters.legacy_counters_inferred = True
             self._grad_scaler.load_state_dict(agent_state["grad_scaler_state_dict"])
 
         if self._cfg.load_reward_normalizer:

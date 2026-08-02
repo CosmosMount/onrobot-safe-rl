@@ -13,6 +13,7 @@ import torch.optim as optim
 
 from rl.agents.base.network import Network
 from rl.agents.droq.agent import DroQAgent, DroQConfig
+from rl.agents.base.update import PolicyUpdateRequest
 from rl.agents.droq.update import update_critic, update_temperature
 from rl.agents.safe_droq.network import SafetyCritic
 from rl.agents.paper_sqrl.replay import RecentTrajectoryReplay
@@ -362,6 +363,7 @@ class PaperSQRLAgent(DroQAgent):
         self._safety_critic.optimizer.step()
         self._target_safety_critic.ema_update_parameters()
         self._safety_updates += 1
+        self._update_counters.auxiliary_steps += 1
         return {
             "safety/loss": float(loss.detach().item()),
             "safety/mean_q": float(prediction.detach().mean().item()),
@@ -441,6 +443,12 @@ class PaperSQRLAgent(DroQAgent):
             info.update(update_temperature(
                 self._temperature, entropy, float(self._target_entropy)))
         self._update_step += 1
+        self._update_counters.critic_steps += 1
+        self._update_counters.target_steps += 1
+        self._update_counters.policy_steps += 1
+        if self._update_step % max(int(self._cfg.actor_update_period), 1) == 1:
+            self._update_counters.actor_steps += 1
+            self._update_counters.temperature_steps += 1
         return {key: float(value.item()) for key, value in info.items()}
 
     def update(self) -> dict[str, Any]:
@@ -461,6 +469,40 @@ class PaperSQRLAgent(DroQAgent):
         info.update(safety_info)
         self._latest_metrics.update({k: float(v) for k, v in info.items()})
         return info
+
+    def update_policy_steps(self, request: PolicyUpdateRequest) -> dict[str, Any]:
+        """Adapt the existing SQRL phase machine to the shared entrypoint."""
+        policy_before = self._update_counters.policy_steps
+        critic_before = self._update_counters.critic_steps
+        actor_before = self._update_counters.actor_steps
+        temperature_before = self._update_counters.temperature_steps
+        target_before = self._update_counters.target_steps
+        auxiliary_before = self._update_counters.auxiliary_steps
+        metrics: dict[str, Any] = {}
+        for _ in range(request.critic_updates):
+            metrics.update(self.update())
+        self._update_counters.policy_steps = policy_before + request.policy_steps
+        metrics.update({
+            "updates/call_policy_steps": float(request.policy_steps),
+            "updates/call_critic_steps": float(self._update_counters.critic_steps - critic_before),
+            "updates/call_actor_steps": float(self._update_counters.actor_steps - actor_before),
+            "updates/call_temperature_steps": float(self._update_counters.temperature_steps - temperature_before),
+            "updates/call_target_steps": float(self._update_counters.target_steps - target_before),
+            "updates/call_auxiliary_steps": float(self._update_counters.auxiliary_steps - auxiliary_before),
+            "updates/total_policy_steps": float(
+                self._update_counters.policy_steps),
+            "updates/total_critic_steps": float(
+                self._update_counters.critic_steps),
+            "updates/total_actor_steps": float(
+                self._update_counters.actor_steps),
+            "updates/total_temperature_steps": float(
+                self._update_counters.temperature_steps),
+            "updates/total_target_steps": float(
+                self._update_counters.target_steps),
+            "updates/total_auxiliary_steps": float(
+                self._update_counters.auxiliary_steps),
+        })
+        return metrics
 
     def save(self, path: str) -> None:
         super().save(path)

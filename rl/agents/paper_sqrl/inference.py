@@ -225,6 +225,11 @@ def export_inference_weights(agent: Any, *, version: int) -> dict[str, Any]:
     payload = {
         "version": int(version),
         "actor": cpu_state(agent._actor.network),
+        "snapshot_version": int(version),
+        "actor_steps": int(agent.get_update_counters().get("actor_steps", 0)),
+        "critic_steps": int(agent.get_update_counters().get("critic_steps", 0)),
+        "temperature_steps": int(agent.get_update_counters().get("temperature_steps", 0)),
+        "auxiliary_steps": int(agent.get_update_counters().get("auxiliary_steps", 0)),
     }
     safety_critic = getattr(agent, "_safety_critic", None)
     if safety_critic is not None:
@@ -234,5 +239,7 @@ def export_inference_weights(agent: Any, *, version: int) -> dict[str, Any]:
             "task_steps_in_cycle": int(agent._task_steps_in_cycle),
             "safety_episodes_in_cycle": int(
                 agent._safety_episodes_in_cycle),
+            "safety_update_step": int(agent.get_update_counters().get(
+                "auxiliary_steps", 0)),
         })
     return payload

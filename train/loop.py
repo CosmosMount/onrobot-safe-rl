@@ -22,6 +22,7 @@ except ImportError:
     tqdm_module = None
 
 from rl.utils.logger import AverageMeterDict, WandbTrainerLogger
+from rl.agents.base.update import PolicyUpdateRequest
 from train.config import TrainConfig
 
 
@@ -39,14 +40,37 @@ def _is_finite_array(x: Any) -> bool:
 
 def _batched_transition(
     observation: np.ndarray,
-    action: np.ndarray,
+    action_nominal: np.ndarray,
+    action_requested: np.ndarray,
+    action_executed: np.ndarray,
+    action_q_target: np.ndarray,
     reward: float,
     next_observation: np.ndarray,
     info: dict[str, Any],
 ) -> dict[str, np.ndarray]:
+    action_nominal = np.asarray(action_nominal, dtype=np.float32)
+    action_requested = np.asarray(action_requested, dtype=np.float32)
+    action_executed = np.asarray(action_executed, dtype=np.float32)
+    action_q_target = np.asarray(action_q_target, dtype=np.float32)
+    safety_delta = action_requested - action_nominal
+    runtime_delta = action_executed - action_requested
+    total_delta = action_executed - action_nominal
+    safety_norm = float(np.linalg.norm(safety_delta))
+    runtime_norm = float(np.linalg.norm(runtime_delta))
+    total_norm = float(np.linalg.norm(total_delta))
     return {
         "observation": np.asarray(observation, dtype=np.float32)[None, ...],
-        "action": np.asarray(action, dtype=np.float32)[None, ...],
+        "action": action_requested[None, ...],
+        "action_nominal": action_nominal[None, ...],
+        "action_requested": action_requested[None, ...],
+        "action_executed": action_executed[None, ...],
+        "action_q_target": action_q_target[None, ...],
+        "action_safety_intervened": np.asarray([safety_norm > 1e-6], dtype=np.float32),
+        "action_safety_intervention_norm": np.asarray([safety_norm], dtype=np.float32),
+        "action_runtime_intervened": np.asarray([runtime_norm > 1e-6], dtype=np.float32),
+        "action_runtime_intervention_norm": np.asarray([runtime_norm], dtype=np.float32),
+        "action_total_intervened": np.asarray([total_norm > 1e-6], dtype=np.float32),
+        "action_total_intervention_norm": np.asarray([total_norm], dtype=np.float32),
         "reward": np.asarray([reward], dtype=np.float32),
         "terminated": np.asarray([bool(info.get("terminated", False))], dtype=np.float32),
         "truncated": np.asarray([bool(info.get("truncated", False))], dtype=np.float32),
@@ -109,7 +133,7 @@ def _leg_action_metrics(action: np.ndarray) -> dict[str, float]:
 
 def _q_target_leg_metrics(info: dict[str, Any]) -> dict[str, float]:
     values: dict[str, float] = {}
-    q_target = info.get("executed_q_target")
+    q_target = info.get("action_q_target", info.get("executed_q_target"))
     if q_target is None:
         return values
     q = np.asarray(q_target, dtype=np.float32).reshape(-1)
@@ -244,16 +268,17 @@ def _update_agent(agent, cfg: TrainConfig, source_step: int) -> tuple[dict[str, 
         return None, 0.0
 
     last_info: dict[str, float] | None = None
-    for _ in range(max(1, int(cfg.utd_ratio))):
-        info = agent.update()
-        finite_info: dict[str, float] = {}
-        for key, value in info.items():
-            fv = float(value)
-            if not np.isfinite(fv):
-                _log(f"[train] WARNING: non-finite update metric {key} at step {source_step}")
-                return last_info, time.perf_counter() - update_t0
-            finite_info[key] = fv
-        last_info = finite_info
+    info = agent.update_policy_steps(PolicyUpdateRequest(
+        policy_steps=1,
+        critic_updates_per_policy_step=int(cfg.utd_ratio)))
+    finite_info: dict[str, float] = {}
+    for key, value in info.items():
+        fv = float(value)
+        if not np.isfinite(fv):
+            _log(f"[train] WARNING: non-finite update metric {key} at step {source_step}")
+            return last_info, time.perf_counter() - update_t0
+        finite_info[key] = fv
+    last_info = finite_info
     return last_info, time.perf_counter() - update_t0
 
 
@@ -357,27 +382,42 @@ def run_training(agent, env, cfg: TrainConfig):
 
             sample_t0 = time.perf_counter()
             if policy_index < cfg.start_training:
-                action = env.sample_action() * cfg.explore_action_scale
+                action_nominal = env.sample_action() * cfg.explore_action_scale
                 filter_nominal = getattr(agent, "filter_nominal_action", None)
                 if callable(filter_nominal):
-                    action = np.asarray(filter_nominal(
+                    action_sampled = np.asarray(filter_nominal(
                         policy_index,
                         _prev_transition(observation),
-                        action,
+                        action_nominal,
                         training=True,
                     )[0], dtype=np.float32)
+                else:
+                    action_sampled = action_nominal
             else:
                 if policy_index == cfg.start_training:
                     _log(
                         "[train] === Entering FlashSAC updates at "
                         f"policy step {policy_index} ===")
-                action = _sample_policy_action(
+                action_sampled = _sample_policy_action(
                     agent, observation, policy_index, training=True)
-            action, action_ok = _safe_action(action, env.action_space.shape)
+                action_trace = agent.get_last_action_trace()
+                action_nominal = np.asarray(action_trace.get(
+                    "action_nominal", action_sampled), dtype=np.float32)
+            action_requested, action_ok = _safe_action(
+                action_sampled, env.action_space.shape)
+            action_trace = agent.get_last_action_trace()
+            if "action_nominal" in action_trace:
+                action_nominal = np.asarray(action_trace["action_nominal"], dtype=np.float32).reshape(env.action_space.shape)
+            action_nominal, nominal_ok = _safe_action(action_nominal, env.action_space.shape)
+            action_ok = action_ok and nominal_ok
             sample_ms = (time.perf_counter() - sample_t0) * 1000.0
 
             step_t0 = time.perf_counter()
-            next_observation, reward, done, info = env.step(action)
+            next_observation, reward, done, info = env.step(
+                action_requested,
+                interaction_step=policy_index,
+                policy_update_step=agent.get_policy_update_step(),
+            )
             step_ms = (time.perf_counter() - step_t0) * 1000.0
 
             if not _is_finite_array(next_observation):
@@ -395,8 +435,31 @@ def run_training(agent, env, cfg: TrainConfig):
                 and _is_finite_array(next_observation)
                 and np.isfinite(reward)
             )
+            # Diagnostics are also logged for non-replay runtime ticks
+            # (stand-up, recovery, and controller-wait phases).  Initialize
+            # them before the replay insertion branch so those phases cannot
+            # reference an unbound local.
+            action_executed = np.full(
+                env.action_space.shape, np.nan, dtype=np.float32)
+            action_q_target = np.full(
+                (12,), np.nan, dtype=np.float32)
             if insert_ok:
-                transition = _batched_transition(observation, action, reward, next_observation, info)
+                action_executed = np.asarray(info.get("action_executed", np.full(env.action_space.shape, np.nan)), dtype=np.float32)
+                action_q_target = np.asarray(info.get("action_q_target", info.get("executed_q_target", np.full((12,), np.nan))), dtype=np.float32)
+                executed_valid = (
+                    action_executed.shape == env.action_space.shape
+                    and _is_finite_array(action_executed)
+                    and np.all(action_executed >= -1.000001)
+                    and np.all(action_executed <= 1.000001)
+                )
+                q_target_valid = action_q_target.shape == (12,) and _is_finite_array(action_q_target)
+                if not executed_valid:
+                    action_executed = np.full(env.action_space.shape, np.nan, dtype=np.float32)
+                if not q_target_valid:
+                    action_q_target = np.full((12,), np.nan, dtype=np.float32)
+                transition = _batched_transition(
+                    observation, action_nominal, action_requested,
+                    action_executed, action_q_target, reward, next_observation, info)
                 repeats = max(1, int(cfg.terminal_replay_repeats) if info.get("terminated") else 1)
                 for repeat_index in range(repeats):
                     transition["replay_repeat_index"] = np.asarray(
@@ -489,7 +552,9 @@ def run_training(agent, env, cfg: TrainConfig):
                 "timing/loop_ms": loop_elapsed * 1000.0,
                 "timing/effective_hz": 1.0 / loop_elapsed if loop_elapsed > 0 else 0.0,
                 "timing/critic_updates_per_sec": (
-                    cfg.utd_ratio / loop_elapsed if update_info is not None and loop_elapsed > 0 else 0.0
+                    float(update_info.get("updates/call_critic_steps", 0.0))
+                    / loop_elapsed
+                    if update_info is not None and loop_elapsed > 0 else 0.0
                 ),
             }
             if policy_step:
@@ -500,9 +565,9 @@ def run_training(agent, env, cfg: TrainConfig):
                         "rolling/upright_ratio": float(info.get("upright_gate", 1.0)),
                         "rolling/action_frequency_hz_mean": float(info.get("action_frequency_hz", np.nan)),
                         "rolling/control_hold_overrun_ms_mean": float(info.get("control_hold_overrun_ms", 0.0)),
-                        "rolling/action_mean": float(np.mean(action)),
-                        "rolling/action_std": float(np.std(action)),
-                        "rolling/action_saturation_rate": float(np.mean(np.abs(action) >= 0.99)),
+                        "rolling/action_mean": float(np.mean(action_requested)),
+                        "rolling/action_std": float(np.std(action_requested)),
+                        "rolling/action_saturation_rate": float(np.mean(np.abs(action_requested) >= 0.99)),
                         "rolling/effective_hz_mean": timing_metrics["timing/effective_hz"],
                         "rolling/update_ms_mean": update_ms,
                     },
@@ -552,6 +617,9 @@ def run_training(agent, env, cfg: TrainConfig):
                     "env/episode_return": float(episode_return),
                     "env/episode_length": float(episode_length),
                     "env/action_frequency_hz": float(info.get("action_frequency_hz", np.nan)),
+                    "env/action_mean": float(np.mean(action_requested)),
+                    "env/action_std": float(np.std(action_requested)),
+                    "env/action_saturation": float(np.mean(np.abs(action_requested) >= 0.99)),
                     "env/control_hold_overrun_ms": float(info.get("control_hold_overrun_ms", 0.0)),
                     "env/controller_phase": float(info.get("controller_phase", -1)),
                     "env/count_policy_step": float(count_policy_step),
@@ -575,7 +643,33 @@ def run_training(agent, env, cfg: TrainConfig):
                     for key, value in agent.get_metrics().items()
                     if np.isfinite(float(value))
                 })
-                log_metrics.update(_leg_action_metrics(action))
+                log_metrics.update(_leg_action_metrics(action_requested))
+                log_metrics.update({
+                    "env/action_nominal_mean": float(np.mean(action_nominal)),
+                    "env/action_nominal_std": float(np.std(action_nominal)),
+                    "env/action_nominal_saturation": float(np.mean(np.abs(action_nominal) >= 0.99)),
+                    "env/action_requested_mean": float(np.mean(action_requested)),
+                    "env/action_requested_std": float(np.std(action_requested)),
+                    "env/action_requested_saturation": float(np.mean(np.abs(action_requested) >= 0.99)),
+                    "env/action_executed_mean": (
+                        float(np.mean(action_executed))
+                        if np.all(np.isfinite(action_executed)) else float("nan")
+                    ),
+                    "env/action_executed_std": (
+                        float(np.std(action_executed))
+                        if np.all(np.isfinite(action_executed)) else float("nan")
+                    ),
+                    "env/action_safety_intervened": float(info.get("action_safety_intervened", False)),
+                    "env/action_safety_intervention_norm": float(info.get("action_safety_intervention_norm", np.linalg.norm(action_requested-action_nominal))),
+                    "env/action_runtime_intervened": float(info.get("action_runtime_intervened", False)),
+                    "env/action_runtime_intervention_norm": float(info.get("action_runtime_intervention_norm", np.linalg.norm(action_executed-action_requested)) if np.all(np.isfinite(action_executed)) else 0.0),
+                    "env/action_total_intervened": float(np.linalg.norm(action_executed-action_nominal) > 1e-6) if np.all(np.isfinite(action_executed)) else 0.0,
+                    "timing/action_age_ms": float(info.get("action_age_ms", np.nan)),
+                    "timing/action_repeated_steps": float(info.get("action_repeated_steps", 0)),
+                    "timing/action_sequence": float(info.get("action_sequence", -1)),
+                    "timing/action_interaction_step": float(info.get("action_interaction_step", -1)),
+                    "timing/action_policy_update_step": float(info.get("action_policy_update_step", -1)),
+                })
                 log_metrics.update(_q_target_leg_metrics(info))
                 log_metrics.update(_joint_feedback_leg_metrics(info))
                 log_metrics.update(timing_metrics)

@@ -17,6 +17,12 @@ _TRANSITION_KEYS = (
     "truncated",
     "next_observation",
 )
+_ACTION_DIAGNOSTIC_FIELDS = (
+    "action_nominal", "action_executed", "action_q_target",
+    "action_safety_intervened", "action_safety_intervention_norm",
+    "action_runtime_intervened", "action_runtime_intervention_norm",
+    "action_total_intervened", "action_total_intervention_norm",
+)
 
 _NP_TO_TORCH_DTYPE: dict[np.dtype[Any], torch.dtype] = {
     np.dtype(np.float64): torch.float32,
@@ -94,6 +100,11 @@ class TorchUniformBuffer(BaseBuffer):
         self._next_observations = torch.empty(
             (m,) + observation_shape, dtype=observation_dtype, device=self._device, pin_memory=pin
         )
+        self._actions_nominal = torch.empty((m,) + action_shape, dtype=torch.float32, device=self._device)
+        self._actions_executed = torch.empty((m,) + action_shape, dtype=torch.float32, device=self._device)
+        self._actions_q_target = torch.empty((m,) + action_shape, dtype=torch.float32, device=self._device)
+        for key in _ACTION_DIAGNOSTIC_FIELDS[3:]:
+            setattr(self, f"_{key.replace('action_', 'actions_')}", torch.empty((m,), dtype=torch.float32, device=self._device))
 
         self._pending: list[deque[dict[str, torch.Tensor]]] = []
         self._num_in_buffer = 0
@@ -128,13 +139,21 @@ class TorchUniformBuffer(BaseBuffer):
         for key, expected_shape in expected_shapes.items():
             if tuple(batch[key].shape) != expected_shape:
                 raise ValueError(f"{key} has shape {tuple(batch[key].shape)}, expected {expected_shape}.")
+        for key in _ACTION_DIAGNOSTIC_FIELDS:
+            if key not in transitions:
+                continue
+            value = self._to_tensor(transitions[key])
+            expected = (batch_size,) + action_shape if key in _ACTION_DIAGNOSTIC_FIELDS[:3] else (batch_size,)
+            if tuple(value.shape) != expected:
+                raise ValueError(f"{key} has shape {tuple(value.shape)}, expected {expected}.")
+            batch[key] = value
 
         return batch
 
     def _make_single_env_transition(
         self, batch: dict[str, torch.Tensor], env_idx: int
     ) -> dict[str, torch.Tensor]:
-        return {
+        result = {
             "observation": batch["observation"][env_idx].clone(),
             "action": batch["action"][env_idx].clone(),
             "reward": batch["reward"][env_idx].to(dtype=torch.float32).clone(),
@@ -142,6 +161,14 @@ class TorchUniformBuffer(BaseBuffer):
             "truncated": batch["truncated"][env_idx].to(dtype=torch.float32).clone(),
             "next_observation": batch["next_observation"][env_idx].clone(),
         }
+        defaults = {
+            "action_nominal": batch["action"], "action_executed": batch["action"],
+            "action_q_target": torch.full_like(batch["action"], float("nan")),
+            **{key: torch.zeros((batch["action"].shape[0],), device=self._device) for key in _ACTION_DIAGNOSTIC_FIELDS[3:]},
+        }
+        for key in _ACTION_DIAGNOSTIC_FIELDS:
+            result[key] = batch.get(key, defaults[key])[env_idx].clone()
+        return result
 
     def _build_n_step_transition(self, queue: deque[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
         first = queue[0]
@@ -171,6 +198,7 @@ class TorchUniformBuffer(BaseBuffer):
             "terminated": terminated.to(dtype=torch.float32),
             "truncated": truncated.to(dtype=torch.float32),
             "next_observation": next_observation,
+            **{key: first[key] for key in _ACTION_DIAGNOSTIC_FIELDS},
         }
 
     def _write_batch(self, transitions: dict[str, torch.Tensor]) -> None:
@@ -188,6 +216,11 @@ class TorchUniformBuffer(BaseBuffer):
         self._terminateds[idxs] = transitions["terminated"].to(dtype=torch.float32)
         self._truncateds[idxs] = transitions["truncated"].to(dtype=torch.float32)
         self._next_observations[idxs] = transitions["next_observation"].to(dtype=self._next_observations.dtype)
+        self._actions_nominal[idxs] = transitions["action_nominal"].to(dtype=torch.float32)
+        self._actions_executed[idxs] = transitions["action_executed"].to(dtype=torch.float32)
+        self._actions_q_target[idxs] = transitions["action_q_target"].to(dtype=torch.float32)
+        for key in _ACTION_DIAGNOSTIC_FIELDS[3:]:
+            getattr(self, f"_{key.replace('action_', 'actions_')}")[idxs] = transitions[key].to(dtype=torch.float32)
 
         self._num_in_buffer = min(self._num_in_buffer + add_batch_size, self._max_length)
         self._current_idx = (self._current_idx + add_batch_size) % self._max_length
@@ -258,6 +291,13 @@ class TorchUniformBuffer(BaseBuffer):
         batch["terminated"] = self._terminateds[idxs]
         batch["truncated"] = self._truncateds[idxs]
         batch["next_observation"] = self._next_observations[idxs]
+        batch.update({key: getattr(self, f"_{key.replace('action_', 'actions_')}")[idxs]
+                      for key in _ACTION_DIAGNOSTIC_FIELDS[3:]})
+        batch.update({
+            "action_nominal": self._actions_nominal[idxs],
+            "action_executed": self._actions_executed[idxs],
+            "action_q_target": self._actions_q_target[idxs],
+        })
         return batch
 
     def save(self, path: str) -> None:
@@ -275,6 +315,11 @@ class TorchUniformBuffer(BaseBuffer):
             "terminated": self._terminateds[:n],
             "truncated": self._truncateds[:n],
             "next_observation": self._next_observations[:n],
+            "action_nominal": self._actions_nominal[:n],
+            "action_executed": self._actions_executed[:n],
+            "action_q_target": self._actions_q_target[:n],
+            **{key: getattr(self, f"_{key.replace('action_', 'actions_')}")[:n]
+               for key in _ACTION_DIAGNOSTIC_FIELDS[3:]},
             "num_in_buffer": self._num_in_buffer,
             "current_idx": self._current_idx,
         }
@@ -295,6 +340,17 @@ class TorchUniformBuffer(BaseBuffer):
         self._terminateds[:n] = dataset["terminated"]
         self._truncateds[:n] = dataset["truncated"]
         self._next_observations[:n] = dataset["next_observation"]
+        defaults = {
+            "action_nominal": dataset["action"],
+            "action_executed": dataset["action"],
+            "action_q_target": torch.full((n,) + self._actions.shape[1:], float("nan"), device=self._device),
+            **{key: torch.zeros((n,), device=self._device) for key in _ACTION_DIAGNOSTIC_FIELDS[3:]},
+        }
+        for key in _ACTION_DIAGNOSTIC_FIELDS:
+            value = dataset.get(key, defaults[key])
+            if not isinstance(value, torch.Tensor):
+                value = torch.as_tensor(value, device=self._device)
+            getattr(self, f"_{key.replace('action_', 'actions_')}")[:n] = value
 
         self._num_in_buffer = n
         self._current_idx = int(dataset["current_idx"])

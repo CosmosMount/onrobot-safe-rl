@@ -4,11 +4,35 @@ from typing import Any, Generic, MutableMapping, TypeVar
 import gymnasium as gym
 
 from rl.utils.types import NDArray, Tensor
+from rl.agents.base.update import PolicyUpdateRequest
 
 Config = TypeVar("Config")
 
 
 class BaseAgent(Generic[Config], ABC):
+    def get_last_action_trace(self) -> dict[str, Any]:
+        """Return metadata for the most recently sampled action."""
+        return {}
+
+    def get_update_step(self) -> int:
+        """Return the current policy learner update step."""
+        return 0
+
+    def update_policy_steps(
+        self,
+        request: PolicyUpdateRequest,
+    ) -> dict[str, Any]:
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement "
+            "update_policy_steps()")
+
+    def get_update_counters(self) -> dict[str, int]:
+        return {}
+
+    def get_policy_update_step(self) -> int:
+        counters = self.get_update_counters()
+        return int(counters.get("actor_steps", 0))
+
     def __init__(
         self,
         observation_space: gym.spaces.Space[NDArray],

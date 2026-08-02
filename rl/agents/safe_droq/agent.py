@@ -13,6 +13,7 @@ import torch.optim as optim
 
 from rl.agents.base.network import Network
 from rl.agents.droq.agent import DroQAgent, DroQConfig
+from rl.agents.base.update import PolicyUpdateRequest
 from rl.agents.safe_droq.network import SafetyCritic
 from rl.agents.safe_droq.replay import SafetyReplay
 from rl.utils.types import NDArray, Tensor
@@ -30,6 +31,9 @@ class SafeDroQConfig(DroQConfig):
     safety_batch_size: int
     safety_failure_horizon: int
     safety_update_period: int
+    safety_update_interval: int
+    safety_update_unit: str
+    safety_updates_per_event: int
     safety_future_loss_weight: float
     safety_num_candidates: int
     safety_epsilon: float
@@ -76,6 +80,12 @@ class SafeDroQAgent(DroQAgent):
             and cfg.safety_reward_q_margin < 0.0
         ):
             raise ValueError("safety_reward_q_margin must be non-negative")
+        if cfg.safety_update_interval <= 0:
+            raise ValueError("safety_update_interval must be positive")
+        if cfg.safety_update_unit not in {"policy_step", "critic_step"}:
+            raise ValueError("safety_update_unit must be policy_step or critic_step")
+        if cfg.safety_updates_per_event < 0:
+            raise ValueError("safety_updates_per_event must be non-negative")
         super().__init__(observation_space, action_space, env_info, cfg)
         self._cfg = cfg
         observation_dim = int(observation_space.shape[-1])  # type: ignore[union-attr]
@@ -327,6 +337,17 @@ class SafeDroQAgent(DroQAgent):
         self._safety_active_steps += int(active)
         self._safety_replacements += int(replaced)
         self._safety_no_safe += int(no_safe)
+        action_nominal_copy = nominal_np[0].copy()
+        action_selected_copy = selected.detach().cpu().numpy()[0].copy()
+        self._last_action_trace = {
+            "action_nominal": action_nominal_copy,
+            "action_requested": action_selected_copy,
+            "action_safety_replaced": bool(replaced),
+            "action_safety_no_safe_candidate": bool(no_safe),
+            "action_safety_intervened": bool(replaced),
+            "action_safety_intervention_norm": float(np.linalg.norm(
+                action_selected_copy - action_nominal_copy)),
+        }
         self._latest_safety_metrics.update({
             "safety/action_steps": float(self._safety_action_steps),
             "safety/active_steps": float(self._safety_active_steps),
@@ -340,6 +361,14 @@ class SafeDroQAgent(DroQAgent):
                 / max(self._safety_active_steps, 1)),
         })
         return selected.cpu().numpy()
+
+    def get_last_action_trace(self) -> dict[str, Any]:
+        trace = getattr(self, "_last_action_trace", {})
+        result = dict(trace)
+        for key in ("action_nominal", "action_requested"):
+            if key in result:
+                result[key] = np.asarray(result[key], dtype=np.float32).copy()
+        return result
 
     def process_transition(
         self,
@@ -389,6 +418,7 @@ class SafeDroQAgent(DroQAgent):
         self._safety_critic.optimizer.step()
         self._target_safety_critic.ema_update_parameters()
         self._safety_updates += 1
+        self._update_counters.auxiliary_steps += 1
         labels = batch["future_failure"]
         with torch.no_grad():
             positive = labels >= 0.5
@@ -435,6 +465,34 @@ class SafeDroQAgent(DroQAgent):
             safety_info = self._update_safety()
             info.update(safety_info)
             self._latest_safety_metrics.update(safety_info)
+        return info
+
+    def update_policy_steps(self, request: PolicyUpdateRequest) -> dict[str, Any]:
+        info = super().update_policy_steps(request)
+        if self._cfg.freeze_safety_critic:
+            return info
+        if self._cfg.safety_update_unit == "policy_step":
+            before = self._update_counters.policy_steps - request.policy_steps
+            after = self._update_counters.policy_steps
+        else:
+            before = self._update_counters.critic_steps - request.critic_updates
+            after = self._update_counters.critic_steps
+        first = before // self._cfg.safety_update_interval + 1
+        last = after // self._cfg.safety_update_interval
+        call_auxiliary = 0
+        for _ in range(max(0, last - first + 1)):
+            for _ in range(self._cfg.safety_updates_per_event):
+                safety_info = self._update_safety()
+                if safety_info:
+                    info.update(safety_info)
+                    self._latest_safety_metrics.update(safety_info)
+                    call_auxiliary += 1
+        info["updates/call_auxiliary_steps"] = float(call_auxiliary)
+        info["updates/total_auxiliary_steps"] = float(
+            self._update_counters.auxiliary_steps)
+        info["updates/auxiliary_per_policy_step"] = (
+            self._update_counters.auxiliary_steps
+            / max(self._update_counters.policy_steps, 1))
         return info
 
     def save(self, path: str) -> None:

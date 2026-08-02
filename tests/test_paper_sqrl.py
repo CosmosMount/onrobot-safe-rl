@@ -14,7 +14,7 @@ from rl.agents.paper_sqrl.inference import (
     export_inference_weights,
 )
 from rl.agents.paper_sqrl.replay import RecentTrajectoryReplay
-from runtime.inference.runtime import PolicyInferenceRuntime
+from runtime.inference.__main__ import PolicyInferenceRuntime
 from train.config import load_app_config
 from train.env import Go2Env
 

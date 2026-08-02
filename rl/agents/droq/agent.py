@@ -8,6 +8,7 @@ import torch.optim as optim
 from torch.amp.grad_scaler import GradScaler
 
 from rl.agents.base.agent import BaseAgent
+from rl.agents.base.update import PolicyUpdateRequest, UpdateCounters
 from rl.agents.base.network import Network
 from rl.agents.droq.network import DroQActor, DroQEnsembleCritic, DroQTemperature
 from rl.agents.droq.update import update_actor, update_critic, update_temperature
@@ -46,6 +47,8 @@ class DroQConfig:
 
     asymmetric_observation: bool
     actor_update_period: int
+    actor_update_interval: int
+    actor_update_unit: str
     use_compile: bool
     compile_mode: str
     use_amp: bool
@@ -150,6 +153,10 @@ class DroQAgent(BaseAgent[DroQConfig]):
             and cfg.target_q_min > cfg.target_q_max
         ):
             raise ValueError("target_q_min must be <= target_q_max")
+        if cfg.actor_update_interval <= 0:
+            raise ValueError("actor_update_interval must be positive")
+        if cfg.actor_update_unit not in {"policy_step", "critic_step"}:
+            raise ValueError("actor_update_unit must be policy_step or critic_step")
         self._target_entropy = cfg.target_entropy
         if self._target_entropy is None:
             self._target_entropy = -0.5 * self._action_dim
@@ -162,6 +169,7 @@ class DroQAgent(BaseAgent[DroQConfig]):
             device=self._device,
         )
         self._update_step = 0
+        self._update_counters = UpdateCounters()
         self._grad_scaler = GradScaler(device=self._device.type, enabled=cfg.use_amp)
 
         self._replay_buffer = TorchUniformBuffer(
@@ -195,6 +203,132 @@ class DroQAgent(BaseAgent[DroQConfig]):
                 sample=training,
             )
         return actions.cpu().numpy()
+
+    def get_update_step(self) -> int:
+        return self._update_step
+
+    def get_policy_update_step(self) -> int:
+        return int(self._update_counters.actor_steps)
+
+    def get_update_counters(self) -> dict[str, int]:
+        return {
+            key: int(value) for key, value in
+            self._update_counters.state_dict().items()
+            if key != "legacy_counters_inferred"
+        }
+
+    def _prepare_training_batch(self) -> dict[str, torch.Tensor]:
+        batch = cast(dict[str, torch.Tensor], self._replay_buffer.sample())
+        for key, value in batch.items():
+            batch[key] = value.to(self._device, non_blocking=True)
+        if self._cfg.asymmetric_observation:
+            batch["actor_observation"] = batch["observation"][:, :self._actor_observation_dim]
+            batch["actor_next_observation"] = batch["next_observation"][:, :self._actor_observation_dim]
+        else:
+            batch["actor_observation"] = batch["observation"]
+            batch["actor_next_observation"] = batch["next_observation"]
+        return batch
+
+    def _attach_update_metrics(
+        self, metrics: dict[str, Any], *, before: UpdateCounters,
+        call_policy_steps: int, call_critic_steps: int,
+        call_actor_steps: int, call_temperature_steps: int,
+        call_target_steps: int, call_auxiliary_steps: int = 0,
+    ) -> dict[str, Any]:
+        now = self._update_counters
+        metrics.update({
+            "updates/call_policy_steps": float(call_policy_steps),
+            "updates/call_critic_steps": float(call_critic_steps),
+            "updates/call_actor_steps": float(call_actor_steps),
+            "updates/call_temperature_steps": float(call_temperature_steps),
+            "updates/call_target_steps": float(call_target_steps),
+            "updates/call_auxiliary_steps": float(call_auxiliary_steps),
+            "updates/total_policy_steps": float(now.policy_steps),
+            "updates/total_critic_steps": float(now.critic_steps),
+            "updates/total_actor_steps": float(now.actor_steps),
+            "updates/total_temperature_steps": float(now.temperature_steps),
+            "updates/total_target_steps": float(now.target_steps),
+            "updates/total_auxiliary_steps": float(now.auxiliary_steps),
+            "updates/critic_per_policy_step": now.critic_steps / max(now.policy_steps, 1),
+            "updates/actor_per_policy_step": now.actor_steps / max(now.policy_steps, 1),
+            "updates/auxiliary_per_policy_step": now.auxiliary_steps / max(now.policy_steps, 1),
+        })
+        return metrics
+
+    def update_policy_steps(self, request: PolicyUpdateRequest) -> dict[str, Any]:
+        if self._cfg.actor_update_unit not in {"policy_step", "critic_step"}:
+            raise ValueError("actor_update_unit must be policy_step or critic_step")
+        before = UpdateCounters(**{
+            key: int(value) for key, value in self._update_counters.state_dict().items()
+            if key != "legacy_counters_inferred"})
+        metrics: dict[str, Any] = {}
+        last_batch: dict[str, torch.Tensor] | None = None
+        call_actor = 0
+        for critic_index in range(request.critic_updates):
+            batch = self._prepare_training_batch()
+            last_batch = batch
+            info = update_critic(
+                actor=self._actor, critic=self._critic,
+                target_critic=self._target_critic, temperature=self._temperature,
+                batch=batch, num_min_qs=self._cfg.num_min_qs,
+                sampled_backup=self._cfg.sampled_backup,
+                target_q_min=self._cfg.target_q_min,
+                target_q_max=self._cfg.target_q_max, device=self._device,
+                use_amp=self._cfg.use_amp, grad_scaler=self._grad_scaler)
+            metrics.update({key: value.item() if isinstance(value, torch.Tensor) else value
+                            for key, value in info.items()})
+            self._update_counters.critic_steps += 1
+            self._update_counters.target_steps += 1
+            if self._cfg.actor_update_unit == "critic_step":
+                event = ((self._update_counters.critic_steps - 1)
+                         % self._cfg.actor_update_interval == 0)
+            else:
+                event = False
+            if event:
+                actor_info = update_actor(
+                    actor=self._actor, critic=self._critic,
+                    temperature=self._temperature, batch=last_batch,
+                    actor_q_reduction=self._cfg.actor_q_reduction,
+                    device=self._device, use_amp=self._cfg.use_amp,
+                    grad_scaler=self._grad_scaler)
+                metrics.update({key: value.item() if isinstance(value, torch.Tensor) else value
+                                for key, value in actor_info.items()})
+                temp_info = update_temperature(
+                    temperature=self._temperature,
+                    entropy=actor_info["actor/entropy"],
+                    target_entropy=float(self._target_entropy))
+                metrics.update({key: value.item() if isinstance(value, torch.Tensor) else value
+                                for key, value in temp_info.items()})
+                self._update_counters.actor_steps += 1
+                self._update_counters.temperature_steps += 1
+                call_actor += 1
+        policy_before = self._update_counters.policy_steps
+        self._update_counters.policy_steps += request.policy_steps
+        if self._cfg.actor_update_unit == "policy_step" and last_batch is not None:
+            first = policy_before // self._cfg.actor_update_interval + 1
+            last = self._update_counters.policy_steps // self._cfg.actor_update_interval
+            for _ in range(max(0, last - first + 1)):
+                actor_info = update_actor(
+                    actor=self._actor, critic=self._critic,
+                    temperature=self._temperature, batch=last_batch,
+                    actor_q_reduction=self._cfg.actor_q_reduction,
+                    device=self._device, use_amp=self._cfg.use_amp,
+                    grad_scaler=self._grad_scaler)
+                temp_info = update_temperature(
+                    temperature=self._temperature,
+                    entropy=actor_info["actor/entropy"],
+                    target_entropy=float(self._target_entropy))
+                metrics.update({key: value.item() if isinstance(value, torch.Tensor) else value
+                                for key, value in {**actor_info, **temp_info}.items()})
+                self._update_counters.actor_steps += 1
+                self._update_counters.temperature_steps += 1
+                call_actor += 1
+        self._update_step = self._update_counters.critic_steps
+        return self._attach_update_metrics(
+            metrics, before=before, call_policy_steps=request.policy_steps,
+            call_critic_steps=request.critic_updates, call_actor_steps=call_actor,
+            call_temperature_steps=call_actor,
+            call_target_steps=request.critic_updates)
 
     def process_transition(self, transition: MutableMapping[str, Tensor]) -> None:
         self._replay_buffer.add_batch(transition)
@@ -231,6 +365,7 @@ class DroQAgent(BaseAgent[DroQConfig]):
         )
         update_info.update(critic_info)
 
+        did_actor = False
         if self._update_step % self._cfg.actor_update_period == 0:
             actor_info = update_actor(
                 actor=self._actor,
@@ -249,8 +384,15 @@ class DroQAgent(BaseAgent[DroQConfig]):
                 target_entropy=float(self._target_entropy),
             )
             update_info.update(temp_info)
+            did_actor = True
 
         self._update_step += 1
+        self._update_counters.critic_steps += 1
+        self._update_counters.target_steps += 1
+        self._update_counters.policy_steps += 1
+        if did_actor:
+            self._update_counters.actor_steps += 1
+            self._update_counters.temperature_steps += 1
 
         return {
             key: value.item() if isinstance(value, torch.Tensor) else float(value)
@@ -266,6 +408,7 @@ class DroQAgent(BaseAgent[DroQConfig]):
         torch.save(
             {
                 "update_step": self._update_step,
+                "update_counters": self._update_counters.state_dict(),
                 "grad_scaler_state_dict": self._grad_scaler.state_dict(),
             },
             os.path.join(path, "agent_state.pt"),
@@ -286,6 +429,17 @@ class DroQAgent(BaseAgent[DroQConfig]):
         if load_optimizer:
             agent_state = torch.load(os.path.join(path, "agent_state.pt"), map_location=self._device)
             self._update_step = int(agent_state["update_step"])
+            if "update_counters" in agent_state:
+                self._update_counters.load_state_dict(agent_state["update_counters"])
+            else:
+                self._update_counters.critic_steps = self._update_step
+                self._update_counters.target_steps = self._update_step
+                period = max(int(self._cfg.actor_update_period), 1)
+                self._update_counters.actor_steps = (
+                    0 if self._update_step == 0 else
+                    (self._update_step - 1) // period + 1)
+                self._update_counters.temperature_steps = self._update_counters.actor_steps
+                self._update_counters.legacy_counters_inferred = True
             self._grad_scaler.load_state_dict(agent_state["grad_scaler_state_dict"])
 
         print(f"\033[32m[DroQ]\033[0m Successfully loaded checkpoint from {path}.")

@@ -17,6 +17,12 @@ _TRANSITION_KEYS = (
     "truncated",
     "next_observation",
 )
+_ACTION_DIAGNOSTIC_FIELDS = (
+    "action_nominal", "action_executed", "action_q_target",
+    "action_safety_intervened", "action_safety_intervention_norm",
+    "action_runtime_intervened", "action_runtime_intervention_norm",
+    "action_total_intervened", "action_total_intervention_norm",
+)
 
 
 class NpyUniformBuffer(BaseBuffer):
@@ -70,6 +76,15 @@ class NpyUniformBuffer(BaseBuffer):
         self._terminateds = np.empty((m,), dtype=np.float32)
         self._truncateds = np.empty((m,), dtype=np.float32)
         self._next_observations = np.empty((m,) + observation_shape, dtype=observation_dtype)
+        self._actions_nominal = np.empty((m,) + action_shape, dtype=np.float32)
+        self._actions_executed = np.empty((m,) + action_shape, dtype=np.float32)
+        self._actions_q_target = np.empty((m,) + action_shape, dtype=np.float32)
+        self._actions_safety_intervened = np.empty((m,), dtype=np.float32)
+        self._actions_safety_intervention_norm = np.empty((m,), dtype=np.float32)
+        self._actions_runtime_intervened = np.empty((m,), dtype=np.float32)
+        self._actions_runtime_intervention_norm = np.empty((m,), dtype=np.float32)
+        self._actions_total_intervened = np.empty((m,), dtype=np.float32)
+        self._actions_total_intervention_norm = np.empty((m,), dtype=np.float32)
 
         self._pending: list[deque[dict[str, NDArray]]] = []
         self._num_in_buffer = 0
@@ -99,10 +114,19 @@ class NpyUniformBuffer(BaseBuffer):
             if batch[key].shape != expected_shape:
                 raise ValueError(f"{key} has shape {batch[key].shape}, expected {expected_shape}.")
 
+        for key in _ACTION_DIAGNOSTIC_FIELDS:
+            if key not in transitions:
+                continue
+            value = np.asarray(transitions[key])
+            expected = (batch_size,) + action_shape if key in _ACTION_DIAGNOSTIC_FIELDS[:3] else (batch_size,)
+            if value.shape != expected:
+                raise ValueError(f"{key} has shape {value.shape}, expected {expected}.")
+            batch[key] = value
+
         return batch
 
     def _make_single_env_transition(self, batch: dict[str, NDArray], env_idx: int) -> dict[str, NDArray]:
-        return {
+        result = {
             "observation": np.array(batch["observation"][env_idx], copy=True),
             "action": np.array(batch["action"][env_idx], copy=True),
             "reward": np.asarray(batch["reward"][env_idx], dtype=np.float32),
@@ -110,6 +134,21 @@ class NpyUniformBuffer(BaseBuffer):
             "truncated": np.asarray(batch["truncated"][env_idx], dtype=np.float32),
             "next_observation": np.array(batch["next_observation"][env_idx], copy=True),
         }
+        defaults = {
+            "action_nominal": batch["action"],
+            "action_executed": batch["action"],
+            "action_q_target": np.full_like(batch["action"], np.nan),
+            "action_safety_intervened": np.zeros((batch["action"].shape[0],), dtype=np.float32),
+            "action_safety_intervention_norm": np.zeros((batch["action"].shape[0],), dtype=np.float32),
+            "action_runtime_intervened": np.zeros((batch["action"].shape[0],), dtype=np.float32),
+            "action_runtime_intervention_norm": np.zeros((batch["action"].shape[0],), dtype=np.float32),
+            "action_total_intervened": np.zeros((batch["action"].shape[0],), dtype=np.float32),
+            "action_total_intervention_norm": np.zeros((batch["action"].shape[0],), dtype=np.float32),
+        }
+        for key in _ACTION_DIAGNOSTIC_FIELDS:
+            value = batch.get(key, defaults[key])
+            result[key] = np.array(value[env_idx], copy=True)
+        return result
 
     def _build_n_step_transition(self, queue: deque[dict[str, NDArray]]) -> dict[str, NDArray]:
         first = queue[0]
@@ -139,6 +178,7 @@ class NpyUniformBuffer(BaseBuffer):
             "terminated": np.asarray(terminated, dtype=np.float32),
             "truncated": np.asarray(truncated, dtype=np.float32),
             "next_observation": next_observation,
+            **{key: first[key] for key in _ACTION_DIAGNOSTIC_FIELDS},
         }
 
     def _write_batch(self, transitions: dict[str, NDArray]) -> None:
@@ -154,6 +194,11 @@ class NpyUniformBuffer(BaseBuffer):
         self._next_observations[add_idxs] = transitions["next_observation"].astype(
             self._next_observations.dtype, copy=False
         )
+        self._actions_nominal[add_idxs] = transitions["action_nominal"]
+        self._actions_executed[add_idxs] = transitions["action_executed"]
+        self._actions_q_target[add_idxs] = transitions["action_q_target"]
+        for key in _ACTION_DIAGNOSTIC_FIELDS[3:]:
+            getattr(self, f"_{key.replace('action_', 'actions_')}")[add_idxs] = transitions[key]
 
         self._num_in_buffer = min(self._num_in_buffer + add_batch_size, self._max_length)
         self._current_idx = (self._current_idx + add_batch_size) % self._max_length
@@ -222,6 +267,17 @@ class NpyUniformBuffer(BaseBuffer):
         batch["terminated"] = self._terminateds[idxs]
         batch["truncated"] = self._truncateds[idxs]
         batch["next_observation"] = self._next_observations[idxs]
+        batch.update({
+            "action_nominal": self._actions_nominal[idxs],
+            "action_executed": self._actions_executed[idxs],
+            "action_q_target": self._actions_q_target[idxs],
+            "action_safety_intervened": self._actions_safety_intervened[idxs],
+            "action_safety_intervention_norm": self._actions_safety_intervention_norm[idxs],
+            "action_runtime_intervened": self._actions_runtime_intervened[idxs],
+            "action_runtime_intervention_norm": self._actions_runtime_intervention_norm[idxs],
+            "action_total_intervened": self._actions_total_intervened[idxs],
+            "action_total_intervention_norm": self._actions_total_intervention_norm[idxs],
+        })
         return batch
 
     def save(self, path: str) -> None:
@@ -236,6 +292,10 @@ class NpyUniformBuffer(BaseBuffer):
             "terminated": self._terminateds[:n],
             "truncated": self._truncateds[:n],
             "next_observation": self._next_observations[:n],
+            "action_nominal": self._actions_nominal[:n],
+            "action_executed": self._actions_executed[:n],
+            "action_q_target": self._actions_q_target[:n],
+            **{key: getattr(self, f"_{key.replace('action_', 'actions_')}")[:n] for key in _ACTION_DIAGNOSTIC_FIELDS[3:]},
             "num_in_buffer": self._num_in_buffer,
             "current_idx": self._current_idx,
         }
@@ -258,6 +318,14 @@ class NpyUniformBuffer(BaseBuffer):
         self._terminateds[:n] = dataset["terminated"]
         self._truncateds[:n] = dataset["truncated"]
         self._next_observations[:n] = dataset["next_observation"]
+        action_shape = self._actions.shape[1:]
+        defaults = {
+            "action_nominal": dataset["action"], "action_executed": dataset["action"],
+            "action_q_target": np.full((n,) + action_shape, np.nan, dtype=np.float32),
+            **{key: np.zeros((n,), dtype=np.float32) for key in _ACTION_DIAGNOSTIC_FIELDS[3:]},
+        }
+        for key in _ACTION_DIAGNOSTIC_FIELDS:
+            getattr(self, f"_{key.replace('action_', 'actions_')}")[:n] = dataset.get(key, defaults[key])
 
         self._num_in_buffer = n
         self._current_idx = int(dataset.get("current_idx", n % self._max_length))

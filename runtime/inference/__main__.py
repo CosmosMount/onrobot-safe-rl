@@ -94,6 +94,11 @@ class PolicyInferenceRuntime:
         self._runtime_step_id = 0
         self._episode_id = 0
         self._latest_action_id = -1
+        self._action_sequence_latest = -1
+        self._action_interaction_step_latest = -1
+        self._action_policy_update_step_latest = -1
+        self._action_sent_time_ns_latest = 0
+        self._action_repeated_steps = 0
         self._awaiting_reset_pose = False
         self._reset_pose_stable_count = 0
         self._reset_pose_wait_steps = 0
@@ -169,8 +174,8 @@ class PolicyInferenceRuntime:
         self._last_motion_request_time = 0.0
         self._recovery_upgrade_sent = False
         state = self._state_reader.get_state()
-        policy_action, q_send = self._action_applier.project(action, state.joint_q)
-        self._policy_client.send_target(q_send)
+        projection = self._action_applier.project(action, state.joint_q)
+        self._policy_client.send_target(projection.action_q_target)
         now = time.perf_counter()
         interval_ms = (
             (now - self._last_send_time) * 1000.0
@@ -178,11 +183,18 @@ class PolicyInferenceRuntime:
             else float("nan")
         )
         self._last_send_time = now
-        self._prev_requested_action = q_send.astype(np.float32).copy()
+        self._prev_requested_action = projection.action_q_target.astype(np.float32).copy()
         self._policy_action_cleared = False
+        runtime_delta = projection.action_executed - projection.action_requested
+        runtime_norm = float(np.linalg.norm(runtime_delta))
         return {
-            "projected_action": policy_action.copy(),
-            "executed_q_target": q_send.copy(),
+            "action_requested": projection.action_requested.copy(),
+            "action_executed": projection.action_executed.copy(),
+            "action_q_target": projection.action_q_target.copy(),
+            "projected_action": projection.action_requested.copy(),
+            "executed_q_target": projection.action_q_target.copy(),
+            "action_runtime_intervened": runtime_norm > 1e-6,
+            "action_runtime_intervention_norm": runtime_norm,
             "action_interval_ms": interval_ms,
             "action_frequency_hz": (
                 1000.0 / interval_ms
@@ -310,6 +322,11 @@ class PolicyInferenceRuntime:
         self._prev_requested_action = self.robot_cfg.init_qpos.astype(np.float32).copy()
         self._action_applier.reset_filter()
         self._action_rx.clear()
+        self._action_sequence_latest = -1
+        self._action_interaction_step_latest = -1
+        self._action_policy_update_step_latest = -1
+        self._action_sent_time_ns_latest = 0
+        self._action_repeated_steps = 0
         self._policy_action_cleared = True
 
     def _receive_action(self) -> None:
@@ -325,16 +342,28 @@ class PolicyInferenceRuntime:
         action = np.asarray(message.get("action", self._latest_action), dtype=np.float32)
         if action.shape == self._latest_action.shape and np.all(np.isfinite(action)):
             action_id = int(message.get("action_id", self._latest_action_id + 1))
+            action_sequence = int(message.get("action_sequence", action_id))
             if action_id < self._latest_action_id:
+                return
+            if action_sequence < self._action_sequence_latest:
                 return
             self._latest_action = np.clip(action, -1.0, 1.0)
             self._latest_action_id = action_id
+            if action_sequence > self._action_sequence_latest:
+                self._action_sequence_latest = action_sequence
+                self._action_interaction_step_latest = int(message.get("action_interaction_step", -1))
+                self._action_policy_update_step_latest = int(message.get("action_policy_update_step", -1))
+                self._action_sent_time_ns_latest = int(message.get("action_sent_time_ns", 0))
+                self._action_repeated_steps = 0
             self._policy_action_cleared = False
             self._recovery_upgrade_sent = False
 
     def _runtime_step(self) -> dict[str, Any]:
         self._runtime_step_id += 1
+        previous_sequence = self._action_sequence_latest
         self._receive_action()
+        if previous_sequence == self._action_sequence_latest and self._action_sequence_latest >= 0:
+            self._action_repeated_steps += 1
         state = self._state_reader.get_state()
         controller_policy = int(state.phase) == CONTROLLER_PHASE_POLICY
         safety_before = self._safety.update(state)
@@ -494,6 +523,14 @@ class PolicyInferenceRuntime:
             # -1 explicitly means no policy action was executed on this
             # runtime tick (stand-up/recovery/reset supervision).
             "applied_action_id": self._latest_action_id if policy_step else -1,
+            "action_sequence": self._action_sequence_latest if policy_step else -1,
+            "action_interaction_step": self._action_interaction_step_latest if policy_step else -1,
+            "action_policy_update_step": self._action_policy_update_step_latest if policy_step else -1,
+            "action_age_ms": (
+                (time.monotonic_ns() - self._action_sent_time_ns_latest) / 1_000_000.0
+                if policy_step and self._action_sent_time_ns_latest > 0 else float("nan")
+            ),
+            "action_repeated_steps": self._action_repeated_steps if policy_step else 0,
             "terminal_penalty": float(terminal_penalty),
             **runtime_info,
             **reward_info,

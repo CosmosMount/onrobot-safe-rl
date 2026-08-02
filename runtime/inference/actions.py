@@ -86,6 +86,13 @@ def qpos_to_action(
     return np.clip(action, -1.0, 1.0).astype(np.float32)
 
 
+@dataclass(frozen=True)
+class ActionProjection:
+    action_requested: np.ndarray
+    action_executed: np.ndarray
+    action_q_target: np.ndarray
+
+
 @dataclass
 class ActionApplier:
     """Convert normalized policy actions into executable joint targets."""
@@ -106,10 +113,10 @@ class ActionApplier:
         if self.action_filter is not None:
             self.action_filter.init_history(qpos)
 
-    def project(self, action: np.ndarray, current_qpos: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        policy_action = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
+    def project(self, action: np.ndarray, current_qpos: np.ndarray) -> ActionProjection:
+        action_requested = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
         q_desired = action_to_qpos(
-            policy_action,
+            action_requested,
             init_qpos=self.init_qpos,
             action_offset=self.action_offset,
             joint_min=self.joint_min,
@@ -122,7 +129,12 @@ class ActionApplier:
             q_send = q_desired
         if self.action_filter is not None:
             q_send = self.action_filter.filter(q_send)
-        return policy_action, q_send.astype(np.float32)
+        action_q_target = q_send.astype(np.float32)
+        return ActionProjection(
+            action_requested=action_requested.copy(),
+            action_executed=self.executed_action(action_q_target),
+            action_q_target=action_q_target.copy(),
+        )
 
     def executed_action(self, q_target: np.ndarray) -> np.ndarray:
         return qpos_to_action(

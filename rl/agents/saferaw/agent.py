@@ -239,6 +239,22 @@ class RandomAgent(BaseAgent[Config]):
     def update(self) -> dict[str, Any]:
         return {}
 
+    def update_policy_steps(self, request) -> dict[str, Any]:
+        return {
+            "updates/call_policy_steps": float(request.policy_steps),
+            "updates/call_critic_steps": 0.0,
+            "updates/call_actor_steps": 0.0,
+            "updates/call_temperature_steps": 0.0,
+            "updates/call_target_steps": 0.0,
+            "updates/call_auxiliary_steps": 0.0,
+            "updates/total_policy_steps": 0.0,
+            "updates/total_critic_steps": 0.0,
+            "updates/total_actor_steps": 0.0,
+            "updates/total_temperature_steps": 0.0,
+            "updates/total_target_steps": 0.0,
+            "updates/total_auxiliary_steps": 0.0,
+        }
+
     def get_metrics(self) -> dict[str, Any]:
         return {}
 

@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 
+from rl.agents.base.update import PolicyUpdateRequest
 from rl.agents.paper_sqrl.inference import export_inference_weights
 from train.async_collector import run_async_collector
 from train.loop import (
@@ -53,7 +54,8 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
         maxsize=int(cfg.async_transition_queue_capacity))
     weight_queue = ctx.Queue(maxsize=2)
     control_queue = ctx.Queue(maxsize=4)
-    initial_update_version = int(getattr(agent, "_update_step", 0))
+    initial_update_version = int(resume_state.get("snapshot_version", 0))
+    snapshot_version = initial_update_version
     weight_queue.put(export_inference_weights(
         agent, version=initial_update_version))
     collector = ctx.Process(
@@ -92,9 +94,10 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
 
     steps = start_i
     falls = int(resume_state.get("falls", 0))
-    updates = initial_update_version
+    updates = int(agent.get_update_counters().get("critic_steps", 0))
     learner_calls = int(resume_state.get("learner_calls", 0))
-    last_published_version = initial_update_version
+    last_published_critic_steps = int(agent.get_update_counters().get(
+        "critic_steps", 0))
     last_saved = start_i
     checkpoint_interval = int(cfg.checkpoint_interval)
     next_checkpoint = (
@@ -108,6 +111,7 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
     max_runtime_queue_depth = 0
     max_transition_queue_depth = 0
     final_inference_weight_version = initial_update_version
+    last_update_info: dict[str, float] = {}
     repeated_action_steps_base = int(resume_state.get(
         "repeated_action_steps", 0))
     repeated_action_steps = repeated_action_steps_base
@@ -150,23 +154,29 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
                 pass
 
             if steps >= int(cfg.start_training) and agent.can_start_training():
-                for _ in range(max(1, int(cfg.utd_ratio))):
-                    update_info = agent.update()
-                    if not all(np.isfinite(float(v))
-                               for v in update_info.values()):
-                        raise FloatingPointError(
-                            f"non-finite learner update at step {steps}")
-                    learner_calls += 1
-                updates = int(getattr(agent, "_update_step", updates))
+                update_info = agent.update_policy_steps(PolicyUpdateRequest(
+                    policy_steps=1,
+                    critic_updates_per_policy_step=int(cfg.utd_ratio)))
+                if not all(np.isfinite(float(v))
+                           for v in update_info.values()):
+                    raise FloatingPointError(
+                        f"non-finite learner update at step {steps}")
+                last_update_info = {key: float(value)
+                                    for key, value in update_info.items()}
+                learner_calls += 1
+                updates = int(agent.get_update_counters().get(
+                    "critic_steps", updates))
                 sync_period = int(cfg.inference_sync_updates)
                 if (sync_period > 0
-                        and updates > last_published_version
+                        and updates > last_published_critic_steps
                         and updates // sync_period
-                        > last_published_version // sync_period):
+                        > last_published_critic_steps // sync_period):
+                    snapshot_version += 1
                     _replace_latest(
                         weight_queue,
-                        export_inference_weights(agent, version=updates))
-                    last_published_version = updates
+                        export_inference_weights(agent, version=snapshot_version))
+                    last_published_critic_steps = updates
+                    final_inference_weight_version = snapshot_version
 
             done = bool(transition["terminated"][0]
                         or transition["truncated"][0])
@@ -183,7 +193,9 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
             if steps % max(1, int(cfg.log_interval)) == 0:
                 recent = intervals[-min(len(intervals), 500):]
                 print(
-                    f"[async step {steps}] falls={falls} updates={updates} "
+                    f"[async step {steps}] falls={falls} "
+                    f"critic_updates={updates} "
+                    f"actor_updates={int(agent.get_update_counters().get('actor_steps', 0))} "
                     f"collector_ms_p50={np.median(recent):.2f} "
                     f"runtime_q={item.get('runtime_queue_depth', 0)}",
                     flush=True)
@@ -198,6 +210,7 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
                     "episode_length": episode_length,
                     "repeated_action_steps": repeated_action_steps,
                     "learner_calls": learner_calls,
+                    "snapshot_version": snapshot_version,
                 }, indent=2) + "\n")
                 last_saved = steps
                 while next_checkpoint <= steps:
@@ -225,6 +238,7 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
                 "episode_length": episode_length,
                 "repeated_action_steps": repeated_action_steps,
                 "learner_calls": learner_calls,
+                "snapshot_version": snapshot_version,
             }, indent=2) + "\n")
         final_hashes = _agent_hashes(agent)
         recent = np.asarray(intervals, dtype=np.float64)
@@ -242,6 +256,9 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
                 / max(len(episodes), 1)),
             "learner_updates": updates,
             "learner_calls": learner_calls,
+            "update_counters": agent.get_update_counters(),
+            "last_update_metrics": last_update_info,
+            "snapshot_version": snapshot_version,
             "collector_interval_ms_p50": (
                 float(np.percentile(recent, 50)) if recent.size else None),
             "collector_interval_ms_p95": (

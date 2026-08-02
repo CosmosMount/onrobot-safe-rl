@@ -226,6 +226,8 @@ _FLASHSAC_DEFAULTS: dict[str, Any] = {
     'actor_noise_zeta_mu': 2.0,
     'actor_noise_zeta_max': 10,
     'actor_update_period': 1,
+    'actor_update_interval': 2,
+    'actor_update_unit': 'critic_step',
     'critic_num_blocks': 2,
     'critic_hidden_dim': 256,
     'critic_num_bins': 101,
@@ -268,6 +270,8 @@ _DROQ_DEFAULTS: dict[str, Any] = {
     'target_q_max': 1000.0,
     'asymmetric_observation': False,
     'actor_update_period': 1,
+    'actor_update_interval': 1,
+    'actor_update_unit': 'policy_step',
     'use_compile': False,
     'compile_mode': 'reduce-overhead',
     'use_amp': False,
@@ -292,6 +296,9 @@ def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, dict[str,
             value = None
         setattr(cfg, key, value)
 
+    if cfg.utd_ratio <= 0:
+        raise ValueError('utd_ratio must be positive')
+
     return cfg, {
         'flashsac': dict(flashsac),
         'droq': dict(droq),
@@ -304,10 +311,18 @@ def _parse_agent(train_cfg: TrainConfig, agent_nodes: dict[str, dict[str, Any]])
     agent_type = str(train_cfg.agent).lower()
     if agent_type == 'flashsac':
         values = dict(_FLASHSAC_DEFAULTS)
-        values.update(agent_nodes.get('flashsac', {}))
+        node = agent_nodes.get('flashsac', {})
+        values.update(node)
+        if 'actor_update_interval' not in node and 'actor_update_period' in node:
+            values['actor_update_interval'] = values['actor_update_period']
+            values['actor_update_unit'] = 'critic_step'
     elif agent_type == 'droq':
         values = dict(_DROQ_DEFAULTS)
-        values.update(agent_nodes.get('droq', {}))
+        node = agent_nodes.get('droq', {})
+        values.update(node)
+        if 'actor_update_interval' not in node and 'actor_update_period' in node:
+            values['actor_update_interval'] = values['actor_update_period']
+            values['actor_update_unit'] = 'policy_step'
     elif agent_type == 'safe_droq':
         values = dict(_DROQ_DEFAULTS)
         values.update({
@@ -320,9 +335,12 @@ def _parse_agent(train_cfg: TrainConfig, agent_nodes: dict[str, dict[str, Any]])
             'safety_buffer_min_length': 1000,
             'safety_batch_size': 256,
             'safety_failure_horizon': 32,
-            # run_training calls agent.update UTD times per policy step.
-            # Period 5 gives one auxiliary update with the Go2 UTD=5 setup.
+            # Legacy compatibility fields. New scheduling uses the explicit
+            # safety_update_interval/unit pair below when configured.
             'safety_update_period': 5,
+            'safety_update_interval': 1,
+            'safety_update_unit': 'policy_step',
+            'safety_updates_per_event': 1,
             'safety_future_loss_weight': 0.5,
             'safety_num_candidates': 32,
             'safety_epsilon': 0.20,
@@ -339,6 +357,11 @@ def _parse_agent(train_cfg: TrainConfig, agent_nodes: dict[str, dict[str, Any]])
         # settings live under train.safe_droq.
         values.update(agent_nodes.get('droq', {}))
         values.update(agent_nodes.get('safe_droq', {}))
+        safe_node = agent_nodes.get('safe_droq', {})
+        if ('safety_update_interval' not in safe_node
+                and 'safety_update_period' in safe_node):
+            values['safety_update_interval'] = values['safety_update_period']
+            values['safety_update_unit'] = 'critic_step'
     elif agent_type == 'paper_sqrl':
         values = dict(_DROQ_DEFAULTS)
         values.update({
@@ -389,6 +412,17 @@ def _parse_agent(train_cfg: TrainConfig, agent_nodes: dict[str, dict[str, Any]])
         values['safety_pretrained_path'] = None
     if values.get('safety_reward_q_margin') == 'null':
         values['safety_reward_q_margin'] = None
+    if int(values.get('actor_update_interval', 1)) <= 0:
+        raise ValueError('actor_update_interval must be positive')
+    if values.get('actor_update_unit') not in {'policy_step', 'critic_step'}:
+        raise ValueError('actor_update_unit must be policy_step or critic_step')
+    if 'safety_update_interval' in values:
+        if int(values['safety_update_interval']) <= 0:
+            raise ValueError('safety_update_interval must be positive')
+        if values.get('safety_update_unit') not in {'policy_step', 'critic_step'}:
+            raise ValueError('safety_update_unit must be policy_step or critic_step')
+        if int(values.get('safety_updates_per_event', 0)) < 0:
+            raise ValueError('safety_updates_per_event must be non-negative')
     return OmegaConf.create(values)
 
 
