@@ -11,16 +11,19 @@ from rl.agents.saferaw.agent import SafeRawSupervisor
 from runtime.inference.actions import ActionApplier, ActionFilterButter
 from runtime.inference.dds import DdsConfig, StateReader
 from runtime.inference.ipc import PolicyClient
+from runtime.inference.leg_activity import LegActivityState
 from runtime.inference.observations import (
     build_observation,
     get_run_reward_from_state,
     get_terminal_penalty,
+    RewardContext,
 )
 from runtime.inference.transport import (
     SharedMemoryReceiver,
     SharedMemoryRingQueue,
     SharedMemorySender,
 )
+from robots.go2.joint_layout import JOINT_NAMES, LEG_NAMES, LEG_SLICES, mapping_summary
 
 
 PolicyFn = Callable[[np.ndarray], np.ndarray]
@@ -80,7 +83,9 @@ class PolicyInferenceRuntime:
             max_joint_delta=max_joint_delta,
             action_filter=action_filter,
         )
-        self._prev_requested_action = robot_cfg.init_qpos.astype(np.float32).copy()
+        self._previous_action_q_target = robot_cfg.init_qpos.astype(np.float32).copy()
+        self._action_requested_previous: np.ndarray | None = None
+        self._leg_activity = LegActivityState.create()
         self._last_send_time: float | None = None
         self._latest_action = np.zeros(robot_cfg.num_joints, dtype=np.float32)
         self._policy_action_cleared = True
@@ -125,6 +130,7 @@ class PolicyInferenceRuntime:
             timeout_steps=standup_timeout_steps,
         )
         self._max_episode_steps = int(max_episode_steps)
+        print("[runtime] canonical Go2 policy/controller mapping:\n" + mapping_summary(), flush=True)
 
     def _begin_reset_pose_wait(self) -> None:
         self._awaiting_reset_pose = True
@@ -164,7 +170,7 @@ class PolicyInferenceRuntime:
         state = self._state_reader.get_state()
         return build_observation(
             state,
-            self._prev_requested_action,
+            self._previous_action_q_target,
             self.robot_cfg,
         )
 
@@ -175,6 +181,10 @@ class PolicyInferenceRuntime:
         self._recovery_upgrade_sent = False
         state = self._state_reader.get_state()
         projection = self._action_applier.project(action, state.joint_q)
+        previous_requested = (
+            projection.action_requested.copy()
+            if self._action_requested_previous is None
+            else self._action_requested_previous.copy())
         self._policy_client.send_target(projection.action_q_target)
         now = time.perf_counter()
         interval_ms = (
@@ -183,12 +193,14 @@ class PolicyInferenceRuntime:
             else float("nan")
         )
         self._last_send_time = now
-        self._prev_requested_action = projection.action_q_target.astype(np.float32).copy()
+        self._previous_action_q_target = projection.action_q_target.astype(np.float32).copy()
+        self._action_requested_previous = projection.action_requested.copy()
         self._policy_action_cleared = False
         runtime_delta = projection.action_executed - projection.action_requested
         runtime_norm = float(np.linalg.norm(runtime_delta))
         return {
             "action_requested": projection.action_requested.copy(),
+            "action_requested_previous": previous_requested,
             "action_executed": projection.action_executed.copy(),
             "action_q_target": projection.action_q_target.copy(),
             "projected_action": projection.action_requested.copy(),
@@ -319,7 +331,9 @@ class PolicyInferenceRuntime:
         if self._policy_action_cleared:
             return
         self._latest_action.fill(0.0)
-        self._prev_requested_action = self.robot_cfg.init_qpos.astype(np.float32).copy()
+        self._previous_action_q_target = self.robot_cfg.init_qpos.astype(np.float32).copy()
+        self._action_requested_previous = None
+        self._leg_activity.reset()
         self._action_applier.reset_filter()
         self._action_rx.clear()
         self._action_sequence_latest = -1
@@ -459,9 +473,37 @@ class PolicyInferenceRuntime:
         state = self._state_reader.get_state()
         reset_pose_error = self._reset_pose_error(state)
         reset_pose_ready = reset_pose_error < self._reset_joint_tolerance
-        reward, reward_info = get_run_reward_from_state(state, self.robot_cfg)
         controller_policy = int(state.phase) == CONTROLLER_PHASE_POLICY
         policy_step = action_debug == "policy"
+        if policy_step:
+            action_requested = np.asarray(runtime_info["action_requested"], dtype=np.float32)
+            action_previous = np.asarray(runtime_info["action_requested_previous"], dtype=np.float32)
+            action_delta = action_requested - action_previous
+            action_delta_rms = np.asarray([
+                np.sqrt(np.mean(action_delta[LEG_SLICES[name]] ** 2)) for name in LEG_NAMES
+            ], dtype=np.float32)
+            joint_velocity_rms = np.asarray([
+                np.sqrt(np.mean(state.joint_dq[LEG_SLICES[name]] ** 2)) for name in LEG_NAMES
+            ], dtype=np.float32)
+            activity_info = self._leg_activity.update(
+                action_delta, state.joint_dq,
+                forward_velocity=float(state.body_velocity[0]),
+                beta=self.robot_cfg.leg_activity_ema_beta,
+                minimum_action_delta_rms=self.robot_cfg.leg_activity_minimum_action_delta_rms,
+                minimum_joint_velocity_rms=self.robot_cfg.leg_activity_minimum_joint_velocity_rms,
+                inactive_grace_steps=self.robot_cfg.leg_activity_inactive_grace_steps,
+            )
+        else:
+            action_requested = np.zeros(12, dtype=np.float32)
+            action_previous = action_requested.copy()
+            action_delta_rms = np.zeros(4, dtype=np.float32)
+            joint_velocity_rms = np.zeros(4, dtype=np.float32)
+            activity_info = {}
+        reward, reward_info = get_run_reward_from_state(
+            state, self.robot_cfg,
+            RewardContext(action_requested, action_previous, action_delta_rms,
+                          joint_velocity_rms),
+        )
         replay_enabled = policy_step
         count_policy_step = policy_step and not safety.fallen and not safety.inverted
         if not controller_policy and safety.policy_enabled:
@@ -472,6 +514,8 @@ class PolicyInferenceRuntime:
         truncated = self._step_count >= self._max_episode_steps
         terminated = bool(safety.terminated)
         terminal_penalty = get_terminal_penalty(terminated=terminated, cfg=self.robot_cfg)
+        reward_info["reward/terminal_penalty"] = float(terminal_penalty)
+        reward_info["reward/total"] = float(reward + terminal_penalty)
         done = terminated or truncated
         if done:
             if terminated:
@@ -534,14 +578,38 @@ class PolicyInferenceRuntime:
             "terminal_penalty": float(terminal_penalty),
             **runtime_info,
             **reward_info,
+            **activity_info,
         }
         info["joint_q"] = state.joint_q.copy()
         info["joint_dq"] = state.joint_dq.copy()
-        q_target = info.get("executed_q_target")
+        q_target = info.get("action_q_target", info.get("executed_q_target"))
         if q_target is not None:
             info["joint_tracking_error"] = (
-                state.joint_q.astype(np.float32) - np.asarray(q_target, dtype=np.float32)
+                np.asarray(q_target, dtype=np.float32) - state.joint_q.astype(np.float32)
             )
+        if policy_step:
+            info["action_nominal"] = np.asarray(self._latest_action, dtype=np.float32).copy()
+            tracking = np.asarray(info["joint_tracking_error"], dtype=np.float32)
+            executed = np.asarray(runtime_info["action_executed"], dtype=np.float32)
+            requested = np.asarray(runtime_info["action_requested"], dtype=np.float32)
+            target = np.asarray(runtime_info["action_q_target"], dtype=np.float32)
+            nominal = np.asarray(self._latest_action, dtype=np.float32)
+            for i, name in enumerate(JOINT_NAMES):
+                info[f"action_nominal_{name}"] = float(nominal[i])
+                info[f"action_requested_{name}"] = float(requested[i])
+                info[f"action_executed_{name}"] = float(executed[i])
+                info[f"q_target_{name}"] = float(target[i])
+                info[f"joint_q_{name}"] = float(state.joint_q[i])
+                info[f"joint_dq_{name}"] = float(state.joint_dq[i])
+                info[f"joint_tracking_error_{name}"] = float(tracking[i])
+            for name in LEG_NAMES:
+                sl = LEG_SLICES[name]
+                info[f"leg_{name}_action_abs_mean"] = float(np.mean(np.abs(requested[sl])))
+                info[f"leg_{name}_action_delta_rms"] = float(np.sqrt(np.mean((requested[sl] - action_previous[sl]) ** 2)))
+                info[f"leg_{name}_joint_dq_rms"] = float(np.sqrt(np.mean(state.joint_dq[sl] ** 2)))
+                info[f"leg_{name}_tracking_error_rms"] = float(np.sqrt(np.mean(tracking[sl] ** 2)))
+                info[f"leg_{name}_projection_ratio"] = float(np.linalg.norm(executed[sl]) / (np.linalg.norm(requested[sl]) + 1e-6))
+                info[f"leg_{name}_projection_delta_rms"] = float(np.sqrt(np.mean((executed[sl] - requested[sl]) ** 2)))
         return {
             "observation": observation,
             "reward": float(reward + terminal_penalty),

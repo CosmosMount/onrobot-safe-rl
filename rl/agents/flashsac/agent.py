@@ -11,6 +11,7 @@ from torch.amp.grad_scaler import GradScaler
 
 from rl.agents.base.agent import BaseAgent
 from rl.agents.base.update import PolicyUpdateRequest, UpdateCounters
+from rl.agents.base.inference_snapshot import inference_snapshot
 from rl.agents.flashsac.network import (
     FlashSACActor,
     FlashSACDoubleCritic,
@@ -336,6 +337,13 @@ def _resolve_compile_mode(mode: str) -> str:
 
 
 class FlashSACAgent(BaseAgent[FlashSACConfig]):
+    def export_inference_snapshot(self, *, snapshot_version: int) -> dict[str, Any]:
+        return inference_snapshot(
+            agent_type=str(getattr(self._cfg, "agent_type", "flashsac")),
+            snapshot_version=snapshot_version,
+            actor=self._actor.network,
+            counters=self.get_update_counters(),
+        )
     def __init__(
         self,
         observation_space: gym.spaces.Space[NDArray],

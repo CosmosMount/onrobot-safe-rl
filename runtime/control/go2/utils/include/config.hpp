@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <stdexcept>
 #include <string>
 
@@ -28,6 +29,23 @@ namespace control
         }
         for (size_t i = 0; i < 12; i++) {
             out[i] = node[i].as<float>();
+            if (!std::isfinite(out[i])) {
+                throw std::runtime_error("Joint configuration contains a non-finite value");
+            }
+        }
+    }
+
+    inline void validate_joint_bounds(const std::array<float, 12>& init,
+                                      const std::array<float, 12>& min,
+                                      const std::array<float, 12>& max)
+    {
+        for (size_t i = 0; i < 12; ++i) {
+            if (!(min[i] < max[i])) {
+                throw std::runtime_error("joint_min must be less than joint_max");
+            }
+            if (init[i] < min[i] || init[i] > max[i]) {
+                throw std::runtime_error("init_qpos is outside joint limits");
+            }
         }
     }
 
@@ -117,6 +135,10 @@ namespace control
         load_joint_array(root["init_qpos"], cfg.init_qpos);
         load_joint_array(root["joint_min"], cfg.joint_min);
         load_joint_array(root["joint_max"], cfg.joint_max);
+        validate_joint_bounds(cfg.init_qpos, cfg.joint_min, cfg.joint_max);
+        if (!std::isfinite(cfg.kp) || !std::isfinite(cfg.kd) || cfg.kp < 0.f || cfg.kd < 0.f) {
+            throw std::runtime_error("kp and kd must be finite and non-negative");
+        }
 
         const YAML::Node stand_node = root["stand_up"];
         if (stand_node) {
@@ -124,6 +146,27 @@ namespace control
         }
 
         app.recovery = load_recovery_config(root["recovery"]);
+
+        const auto validate_target = [&](const std::array<float, 12>& target,
+                                         const char* name) {
+            for (size_t i = 0; i < 12; ++i) {
+                if (target[i] < cfg.joint_min[i] || target[i] > cfg.joint_max[i]) {
+                    throw std::runtime_error(std::string(name) + " is outside joint limits");
+                }
+            }
+        };
+        if (stand_node) {
+            for (int i = 0; i < app.stand_up.num_phases; ++i) {
+                validate_target(app.stand_up.keyframes[i], "stand_up target");
+            }
+            validate_target(app.stand_up.stable_pose, "stand_up stable target");
+        }
+        if (root["recovery"]) {
+            validate_target(app.recovery.fold_jpos, "recovery fold target");
+            validate_target(app.recovery.above_jpos, "recovery above target");
+            validate_target(app.recovery.swing_down_jpos, "recovery swing_down target");
+            validate_target(app.recovery.push_jpos, "recovery push target");
+        }
 
         const YAML::Node imu_node = root["imu"];
         if (imu_node) {

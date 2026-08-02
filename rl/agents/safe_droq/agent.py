@@ -14,6 +14,7 @@ import torch.optim as optim
 from rl.agents.base.network import Network
 from rl.agents.droq.agent import DroQAgent, DroQConfig
 from rl.agents.base.update import PolicyUpdateRequest
+from rl.agents.base.inference_snapshot import inference_snapshot
 from rl.agents.safe_droq.network import SafetyCritic
 from rl.agents.safe_droq.replay import SafetyReplay
 from rl.utils.types import NDArray, Tensor
@@ -48,6 +49,16 @@ class SafeDroQConfig(DroQConfig):
 
 
 class SafeDroQAgent(DroQAgent):
+    def export_inference_snapshot(self, *, snapshot_version: int) -> dict[str, Any]:
+        return inference_snapshot(
+            agent_type=str(getattr(self._cfg, "agent_type", "safe_droq")),
+            snapshot_version=snapshot_version,
+            actor=self._actor.network,
+            auxiliary=self._safety_critic.network,
+            critic=self._critic.network,
+            counters=self.get_update_counters(),
+            algorithm_state={"safety_ready": bool(self._safety_ready)},
+        )
     """DroQ plus an auxiliary failure critic and optional action masking.
 
     ``logging`` predicts only the risk of the exact DroQ action and therefore

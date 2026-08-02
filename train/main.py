@@ -219,11 +219,22 @@ def main(argv=None) -> int:
             checkpoint=args.checkpoint,
             episodes=args.play_episodes,
         )
-    if train_cfg.async_collection:
-        if str(agent_cfg.agent_type) not in {"paper_sqrl", "droq"}:
-            raise SystemExit(
-                "train.async_collection requires agent=paper_sqrl or droq")
-        run_async_training(agent, env, train_cfg, robot_cfg)
-    else:
-        run_training(agent, env, train_cfg)
+    try:
+        if train_cfg.async_collection:
+            if str(agent_cfg.agent_type) not in {"paper_sqrl", "droq", "flashsac", "safe_droq"}:
+                raise SystemExit(
+                    "train.async_collection requires an agent with an inference policy: "
+                    "droq, flashsac, safe_droq, or paper_sqrl")
+            if not callable(getattr(agent, "export_inference_snapshot", None)):
+                raise SystemExit(f"agent={agent_cfg.agent_type} lacks export_inference_snapshot")
+            run_async_training(agent, env, train_cfg, robot_cfg)
+        else:
+            run_training(agent, env, train_cfg)
+    except KeyboardInterrupt:
+        # run_training/run_async_training perform their own checkpoint and
+        # transport cleanup in finally blocks.  Convert Ctrl-C into a clean
+        # CLI exit instead of printing a traceback and invoking shutdown code
+        # a second time from the interpreter.
+        print("[train] interrupted; shutdown complete", flush=True)
+        return 130
     return 0

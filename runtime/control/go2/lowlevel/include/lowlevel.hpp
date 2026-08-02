@@ -5,6 +5,7 @@
 
 #include <unitree/idl/go2/LowCmd_.hpp>
 #include "crc32.hpp"
+#include "joint_layout.hpp"
 
 namespace lowlevel
 {

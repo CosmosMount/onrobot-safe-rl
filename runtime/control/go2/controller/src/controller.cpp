@@ -1,6 +1,7 @@
 #include "controller.hpp"
 
 #include <cmath>
+#include <iostream>
 
 namespace control
 {
@@ -128,6 +129,13 @@ namespace control
         });
 
         cmd_.init(low_cmd_);
+        std::cout << "[controller] policy/controller joint mapping" << std::endl;
+        for (size_t policy_index = 0; policy_index < 12; ++policy_index)
+        {
+            std::cout << "  policy[" << policy_index << "] -> motor["
+                      << go2_layout::kPolicyToMotorIndex[policy_index] << "]"
+                      << std::endl;
+        }
     }
 
     void controller::start()
@@ -197,9 +205,10 @@ namespace control
             packet.sport_state_count = sport_state_received ? 1u : 0u;
             for (size_t i = 0; i < 12; ++i)
             {
-                packet.joint_q[i] = state.motor_state()[i].q();
-                packet.joint_dq[i] = state.motor_state()[i].dq();
-                packet.q_target[i] = q_target[i];
+                const int policy_index = go2_layout::kMotorToPolicyIndex[i];
+                packet.joint_q[policy_index] = state.motor_state()[i].q();
+                packet.joint_dq[policy_index] = state.motor_state()[i].dq();
+                packet.q_target[policy_index] = q_target[policy_index];
             }
             for (size_t i = 0; i < 4; ++i)
             {
@@ -306,18 +315,18 @@ namespace control
                 else if (has_target) 
                 {
                     constexpr float max_delta_per_tick = 0.01f;
-                    for (size_t i = 0; i < q_target.size(); ++i) 
+                    for (size_t i = 0; i < q_target.size(); ++i)
                     {
                         const float err = config_.init_qpos[i] - q_target[i];
                         if (err > max_delta_per_tick) 
                         {
                             q_target[i] += max_delta_per_tick;
-                        } 
+                        }
                         else if (err < -max_delta_per_tick) 
                         {
                             q_target[i] -= max_delta_per_tick;
-                        } 
-                        else 
+                        }
+                        else
                         {
                             q_target[i] = config_.init_qpos[i];
                         }
@@ -325,7 +334,27 @@ namespace control
                 } 
                 else 
                 {
-                    q_target = config_.init_qpos;
+                    // A cleared/stale policy target must not cause an
+                    // instantaneous jump back to the nominal pose.  Ramp
+                    // toward the nominal pose until stand-up/recovery takes
+                    // ownership of the controller.
+                    constexpr float max_delta_per_tick = 0.01f;
+                    for (size_t i = 0; i < q_target.size(); ++i)
+                    {
+                        const float err = config_.init_qpos[i] - q_target[i];
+                        if (err > max_delta_per_tick)
+                        {
+                            q_target[i] += max_delta_per_tick;
+                        }
+                        else if (err < -max_delta_per_tick)
+                        {
+                            q_target[i] -= max_delta_per_tick;
+                        }
+                        else
+                        {
+                            q_target[i] = config_.init_qpos[i];
+                        }
+                    }
                 }
 
                 cmd_.fill(low_cmd_, q_target);

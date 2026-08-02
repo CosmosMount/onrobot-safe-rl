@@ -36,14 +36,15 @@ namespace lowlevel
     void cmd::fill(unitree_go::msg::dds_::LowCmd_& _cmd,
                                     const std::array<float, 12>& q_target) const
     {
-        for (int i = 0; i < 12; i++)
+        for (int policy_index = 0; policy_index < 12; policy_index++)
         {
-            _cmd.motor_cmd()[i].mode() = 0x01;
-            _cmd.motor_cmd()[i].q() = clip_joints(i, q_target[i]);
-            _cmd.motor_cmd()[i].dq() = 0.f;
-            _cmd.motor_cmd()[i].kp() = config_.kp;
-            _cmd.motor_cmd()[i].kd() = config_.kd;
-            _cmd.motor_cmd()[i].tau() = 0.f;
+            const int motor_index = go2_layout::kPolicyToMotorIndex[policy_index];
+            _cmd.motor_cmd()[motor_index].mode() = 0x01;
+            _cmd.motor_cmd()[motor_index].q() = clip_joints(motor_index, q_target[policy_index]);
+            _cmd.motor_cmd()[motor_index].dq() = 0.f;
+            _cmd.motor_cmd()[motor_index].kp() = config_.kp;
+            _cmd.motor_cmd()[motor_index].kd() = config_.kd;
+            _cmd.motor_cmd()[motor_index].tau() = 0.f;
         }
         _cmd.crc() = crc32_core(reinterpret_cast<uint32_t*>(&_cmd),
                             (sizeof(_cmd) >> 2) - 1);

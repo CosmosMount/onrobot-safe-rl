@@ -17,6 +17,7 @@ class WandbTrainerLogger:
             config=dict_cfg,  # type: ignore
         )
         self.run_id = wandb.run.id if wandb.run is not None else None
+        self._closed = False
         self.media_dict: dict[str, Any] = {}
         self.reset()
 
@@ -38,6 +39,25 @@ class WandbTrainerLogger:
     def reset(self) -> None:
         self.average_meter_dict = AverageMeterDict()
         self.media_dict.clear()
+
+    def close(self) -> None:
+        """Finish the W&B run before interpreter shutdown.
+
+        W&B otherwise relies on an ``atexit`` callback to tear down its
+        service process.  That callback is especially fragile after a
+        ``KeyboardInterrupt`` (and can leave the process waiting forever).
+        Keep this method idempotent because training cleanup may run through
+        more than one shutdown path.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._wandb.finish(quiet=True)
+        except Exception as exc:
+            # Logging must never prevent the environment/checkpoint cleanup
+            # that follows it during an interrupted training run.
+            print(f"[train] warning: W&B shutdown failed: {exc}", flush=True)
 
 
 class AverageMeter:

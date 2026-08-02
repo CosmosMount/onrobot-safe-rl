@@ -8,6 +8,12 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.signal import butter
 
+from robots.go2.joint_layout import (
+    CONTROLLER_TO_PYTHON_INDEX,
+    PYTHON_TO_CONTROLLER_INDEX,
+    validate_joint_vector,
+)
+
 
 class ActionFilterButter:
     """Low-pass Butterworth filter on absolute joint position commands."""
@@ -68,8 +74,9 @@ def action_to_qpos(
     joint_max: np.ndarray,
 ) -> np.ndarray:
     """Map normalized policy action [-1, 1] to clipped joint targets."""
-    clipped = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
-    desired = init_qpos + clipped * action_offset
+    clipped = np.clip(validate_joint_vector("action", action), -1.0, 1.0)
+    desired_policy = init_qpos + clipped * action_offset
+    desired = desired_policy[PYTHON_TO_CONTROLLER_INDEX][CONTROLLER_TO_PYTHON_INDEX]
     action_min = np.maximum(joint_min, init_qpos - action_offset)
     action_max = np.minimum(joint_max, init_qpos + action_offset)
     return np.clip(desired, action_min, action_max).astype(np.float32)

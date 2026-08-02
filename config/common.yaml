@@ -84,8 +84,6 @@ train:
     actor_noise_zeta_mu: 2.0
     actor_noise_zeta_max: 10
     actor_update_period: 1
-    actor_update_interval: 2
-    actor_update_unit: critic_step
     critic_num_blocks: 2
     critic_hidden_dim: 256
     critic_num_bins: 101
@@ -121,8 +119,6 @@ train:
     target_q_max: 1000.0
     asymmetric_observation: false
     actor_update_period: 1
-    actor_update_interval: 1
-    actor_update_unit: policy_step
     use_compile: false
     compile_mode: reduce-overhead
     use_amp: false

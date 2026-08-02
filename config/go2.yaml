@@ -1,5 +1,5 @@
 # Default online Go2 training profile. Inherits config/common.yaml.
-
+reward_profile: locomotion_straight
 train:
   agent: droq
   explore_action_scale: 0.5

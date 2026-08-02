@@ -14,6 +14,7 @@ import torch.optim as optim
 from rl.agents.base.network import Network
 from rl.agents.droq.agent import DroQAgent, DroQConfig
 from rl.agents.base.update import PolicyUpdateRequest
+from rl.agents.base.inference_snapshot import inference_snapshot
 from rl.agents.droq.update import update_critic, update_temperature
 from rl.agents.safe_droq.network import SafetyCritic
 from rl.agents.paper_sqrl.replay import RecentTrajectoryReplay
@@ -44,6 +45,19 @@ class PaperSQRLConfig(DroQConfig):
 
 
 class PaperSQRLAgent(DroQAgent):
+    def export_inference_snapshot(self, *, snapshot_version: int) -> dict[str, Any]:
+        return inference_snapshot(
+            agent_type=str(getattr(self._cfg, "agent_type", "paper_sqrl")),
+            snapshot_version=snapshot_version,
+            actor=self._actor.network,
+            auxiliary=self._safety_critic.network,
+            counters=self.get_update_counters(),
+            algorithm_state={
+                "collection_phase": str(self._collection_phase),
+                "task_steps": int(self._task_steps_in_cycle),
+                "safety_episodes": int(self._safety_episodes_in_cycle),
+            },
+        )
     """SQRL as specified by Srinivasan et al. (arXiv:2010.14603).
 
     The implementation intentionally excludes later project extensions such

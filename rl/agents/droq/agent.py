@@ -9,6 +9,7 @@ from torch.amp.grad_scaler import GradScaler
 
 from rl.agents.base.agent import BaseAgent
 from rl.agents.base.update import PolicyUpdateRequest, UpdateCounters
+from rl.agents.base.inference_snapshot import inference_snapshot
 from rl.agents.base.network import Network
 from rl.agents.droq.network import DroQActor, DroQEnsembleCritic, DroQTemperature
 from rl.agents.droq.update import update_actor, update_critic, update_temperature
@@ -127,6 +128,16 @@ def _init_droq_networks(
 
 
 class DroQAgent(BaseAgent[DroQConfig]):
+    def get_inference_observation_dim(self) -> int:
+        return int(self._actor_observation_dim)
+
+    def export_inference_snapshot(self, *, snapshot_version: int) -> dict[str, Any]:
+        return inference_snapshot(
+            agent_type=str(getattr(self._cfg, "agent_type", "droq")),
+            snapshot_version=snapshot_version,
+            actor=self._actor.network,
+            counters=self.get_update_counters(),
+        )
     def __init__(
         self,
         observation_space: gym.spaces.Space[NDArray],

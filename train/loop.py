@@ -24,9 +24,7 @@ except ImportError:
 from rl.utils.logger import AverageMeterDict, WandbTrainerLogger
 from rl.agents.base.update import PolicyUpdateRequest
 from train.config import TrainConfig
-
-
-LEG_NAMES = ("FR", "FL", "RR", "RL")
+from robots.go2.joint_layout import LEG_NAMES, LEG_SLICES
 
 
 def _log(msg: str) -> None:
@@ -101,6 +99,9 @@ class _NullTrainerLogger:
         pass
 
     def reset(self) -> None:
+        pass
+
+    def close(self) -> None:
         pass
 
 
@@ -672,6 +673,17 @@ def run_training(agent, env, cfg: TrainConfig):
                 })
                 log_metrics.update(_q_target_leg_metrics(info))
                 log_metrics.update(_joint_feedback_leg_metrics(info))
+                # Runtime owns the canonical per-joint and per-leg diagnostic
+                # names; forward all scalar diagnostics without inventing a
+                # second naming/layout scheme in the learner.
+                log_metrics.update({
+                    str(key): float(value)
+                    for key, value in info.items()
+                    if (str(key).startswith(('reward/', 'env/'))
+                        or str(key).startswith(('action_requested_', 'action_executed_', 'q_target_',
+                                                 'joint_q_', 'joint_dq_', 'joint_tracking_error_', 'leg_')))
+                    and np.isscalar(value) and np.isfinite(float(value))
+                })
                 log_metrics.update(timing_metrics)
                 log_metrics.update(rolling_metrics)
                 log_metrics.update({
@@ -768,6 +780,10 @@ def run_training(agent, env, cfg: TrainConfig):
                     f"[step {completed_step}] checkpoint saved: {path}")
             i += 1
     finally:
+        # Explicitly finish W&B before interpreter shutdown.  Otherwise its
+        # atexit handler may be the first code to tear down the service after
+        # Ctrl-C, which can hang while waiting for the service socket.
+        logger.close()
         if progress is not None:
             progress.close()
         if hasattr(env, "close"):

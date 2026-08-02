@@ -11,6 +11,8 @@ import numpy as np
 import yaml
 from omegaconf import DictConfig, OmegaConf
 
+from robots.go2.joint_layout import validate_joint_vector
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = REPO_ROOT / 'config/go2.yaml'
 
@@ -18,9 +20,7 @@ PAPER_ACTION_OFFSET = np.asarray([0.2, 0.4, 0.4] * 4, dtype=np.float32)
 
 
 def _load_float_array(node, name: str) -> np.ndarray:
-    if not isinstance(node, list) or len(node) != 12:
-        raise ValueError(f'{name} must be a YAML sequence of length 12')
-    return np.asarray(node, dtype=np.float32)
+    return validate_joint_vector(name, node)
 
 
 @dataclass(frozen=True)
@@ -29,6 +29,40 @@ class Go2Config:
     action_offset: np.ndarray      # rad
     joint_min: np.ndarray            # rad
     joint_max: np.ndarray            # rad
+    kp: np.ndarray                    # Nm/rad, explicit 12-vector view
+    kd: np.ndarray                    # Nms/rad, explicit 12-vector view
+    reward_profile: str
+    reward_forward_weight: float
+    reward_upright_exponent: float
+    reward_roll_pitch_rate_weight: float
+    reward_lateral_velocity_weight: float
+    reward_vertical_velocity_weight: float
+    reward_action_rate_weight: float
+    reward_leg_activity_balance_weight: float
+    reward_angular_rate_scale: float
+    reward_lateral_velocity_scale: float
+    reward_vertical_velocity_scale: float
+    reward_action_rate_scale: float
+    reward_leg_activity_epsilon: float
+    reward_leg_balance_speed_gate: float
+    leg_activity_ema_beta: float
+    leg_activity_minimum_action_delta_rms: float
+    leg_activity_minimum_joint_velocity_rms: float
+    leg_activity_inactive_grace_steps: int
+    reward_tracking_lin_vel_weight: float
+    reward_tracking_ang_vel_weight: float
+    reward_similar_to_default_weight: float
+    reward_base_height_weight: float
+    reward_tracking_sigma: float
+    reward_base_height_target: float
+    reward_command_vx: float
+    reward_orientation_weight: float
+    reward_dof_velocity_weight: float
+    reward_dof_velocity_scale: float
+    reward_joint_limit_weight: float
+    reward_joint_limit_margin: float
+    reward_forward_tilt_weight: float
+    reward_forward_pitch_rate_weight: float
     ipc_socket: str
     state_socket: str
     runtime_action_shm: str
@@ -59,7 +93,7 @@ class Go2Config:
     @property
     def obs_dim(self) -> int:
         # joint_q, joint_dq, gyro, body_velocity, quaternion,
-        # previous_requested_action.
+        # previous_action_q_target (absolute joint target, not normalized action).
         return 3 * self.num_joints + 10
 
     @property
@@ -83,7 +117,7 @@ class TrainConfig:
     recovery_stable_steps: int = 10
     standup_timeout_steps: int = 200
     abort_on_unstable_reset: bool = True
-    max_joint_delta: float | None = None
+    max_joint_delta: np.ndarray | None = None
     use_action_filter: bool = True
     explore_action_scale: float = 0.2
     max_steps: int = 1_000_000
@@ -156,6 +190,43 @@ def _parse_robot(root: dict[str, Any]) -> Go2Config:
         action_offset = _load_float_array(root['action_offset'], 'action_offset')
     else:
         action_offset = PAPER_ACTION_OFFSET.copy()
+    if np.any(np.abs(action_offset) < 1e-6):
+        raise ValueError('action_offset must not contain zero or near-zero values')
+    if np.any(joint_min >= joint_max):
+        raise ValueError('joint_min must be strictly less than joint_max')
+    if np.any((init_qpos < joint_min) | (init_qpos > joint_max)):
+        raise ValueError('init_qpos must lie within joint_min and joint_max')
+
+    kp = validate_joint_vector('kp', root.get('kp', 60.0), allow_scalar=True)
+    kd = validate_joint_vector('kd', root.get('kd', 10.0), allow_scalar=True)
+    reward_profile = str(root.get('reward_profile', 'upstream'))
+    if reward_profile not in {'baseline', 'upstream', 'locomotion_straight'}:
+        raise ValueError(f'Unknown reward profile: {reward_profile}')
+    def positive(name: str, default: float) -> float:
+        value = float(root.get(name, default))
+        if not np.isfinite(value) or value < 0:
+            raise ValueError(f'{name} must be finite and non-negative')
+        return value
+    def scale(name: str, default: float) -> float:
+        value = float(root.get(name, default))
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError(f'{name} must be finite and positive')
+        return value
+    def finite_value(name: str, default: float) -> float:
+        value = float(root.get(name, default))
+        if not np.isfinite(value):
+            raise ValueError(f'{name} must be finite')
+        return value
+    upright_exponent = positive('reward_upright_exponent', 1.0)
+    upright_min = float(root.get('reward_upright_min_cos', -1.0))
+    if not np.isfinite(upright_min) or not -1.0 <= upright_min <= 1.0:
+        raise ValueError('reward_upright_min_cos must be in [-1, 1]')
+    ema_beta = float(root.get('leg_activity', {}).get('ema_beta', 0.95))
+    if not np.isfinite(ema_beta) or not 0.0 <= ema_beta < 1.0:
+        raise ValueError('leg_activity.ema_beta must be in [0, 1)')
+    grace = int(root.get('leg_activity', {}).get('inactive_grace_steps', 25))
+    if grace < 0:
+        raise ValueError('leg_activity.inactive_grace_steps must be non-negative')
 
     imu_node = root.get('imu') or {}
 
@@ -164,6 +235,40 @@ def _parse_robot(root: dict[str, Any]) -> Go2Config:
         action_offset=action_offset,
         joint_min=joint_min,
         joint_max=joint_max,
+        kp=kp,
+        kd=kd,
+        reward_profile=reward_profile,
+        reward_forward_weight=positive('reward_forward_weight', 10.0),
+        reward_upright_exponent=upright_exponent,
+        reward_roll_pitch_rate_weight=positive('reward_roll_pitch_rate_weight', 0.20),
+        reward_lateral_velocity_weight=positive('reward_lateral_velocity_weight', 0.10),
+        reward_vertical_velocity_weight=positive('reward_vertical_velocity_weight', 0.10),
+        reward_action_rate_weight=positive('reward_action_rate_weight', 0.05),
+        reward_leg_activity_balance_weight=positive('reward_leg_activity_balance_weight', 0.05),
+        reward_angular_rate_scale=scale('reward_angular_rate_scale', 2.0),
+        reward_lateral_velocity_scale=scale('reward_lateral_velocity_scale', 0.5),
+        reward_vertical_velocity_scale=scale('reward_vertical_velocity_scale', 0.5),
+        reward_action_rate_scale=scale('reward_action_rate_scale', 0.25),
+        reward_leg_activity_epsilon=scale('reward_leg_activity_epsilon', 0.01),
+        reward_leg_balance_speed_gate=positive('reward_leg_balance_speed_gate', 0.05),
+        leg_activity_ema_beta=ema_beta,
+        leg_activity_minimum_action_delta_rms=positive('leg_activity_minimum_action_delta_rms', 0.01),
+        leg_activity_minimum_joint_velocity_rms=positive('leg_activity_minimum_joint_velocity_rms', 0.05),
+        leg_activity_inactive_grace_steps=grace,
+        reward_tracking_lin_vel_weight=positive('reward_tracking_lin_vel_weight', 10.0),
+        reward_tracking_ang_vel_weight=positive('reward_tracking_ang_vel_weight', 0.5),
+        reward_similar_to_default_weight=positive('reward_similar_to_default_weight', 0.02),
+        reward_base_height_weight=positive('reward_base_height_weight', 5.0),
+        reward_tracking_sigma=scale('reward_tracking_sigma', 0.25),
+        reward_base_height_target=positive('reward_base_height_target', 0.445),
+        reward_command_vx=finite_value('reward_command_vx', float(root.get('move_speed', 0.5))),
+        reward_orientation_weight=positive('reward_orientation_weight', 5.0),
+        reward_dof_velocity_weight=positive('reward_dof_velocity_weight', 0.05),
+        reward_dof_velocity_scale=scale('reward_dof_velocity_scale', 4.0),
+        reward_joint_limit_weight=positive('reward_joint_limit_weight', 0.20),
+        reward_joint_limit_margin=scale('reward_joint_limit_margin', 0.10),
+        reward_forward_tilt_weight=positive('reward_forward_tilt_weight', 8.0),
+        reward_forward_pitch_rate_weight=positive('reward_forward_pitch_rate_weight', 1.0),
         ipc_socket=root.get('ipc_socket', '/tmp/go2_policy.sock'),
         state_socket=root.get('state_socket', '/tmp/go2_policy.sock.state'),
         runtime_action_shm=root.get(
@@ -291,13 +396,22 @@ def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, dict[str,
         if not hasattr(cfg, key):
             raise ValueError(f'Unknown train config key: {key}')
         if key == 'max_joint_delta':
-            value = _optional_float(value)
+            value = (None if value is None or value == 'null'
+                     else validate_joint_vector('max_joint_delta', value, allow_scalar=True))
         elif key == 'wandb_run_name' and value == 'null':
             value = None
         setattr(cfg, key, value)
 
     if cfg.utd_ratio <= 0:
         raise ValueError('utd_ratio must be positive')
+    if cfg.max_joint_delta is not None and (
+            not np.all(np.isfinite(cfg.max_joint_delta)) or np.any(cfg.max_joint_delta <= 0)):
+        raise ValueError('max_joint_delta must be finite and positive when enabled')
+    if cfg.async_collection and str(cfg.agent).lower() not in {
+            'droq', 'flashsac', 'safe_droq', 'paper_sqrl'}:
+        raise ValueError(
+            'train.async_collection requires agent= droq, flashsac, '
+            'safe_droq, or paper_sqrl')
 
     return cfg, {
         'flashsac': dict(flashsac),
@@ -440,7 +554,7 @@ def parse_app_config(root: dict[str, Any]) -> tuple[Go2Config, TrainConfig,
 def _load_profile_root(overlay_path: Path) -> dict[str, Any]:
     overlay = _load_yaml(overlay_path)
     reward_profile = str(overlay.get('reward_profile', 'upstream'))
-    if reward_profile not in {'baseline', 'upstream'}:
+    if reward_profile not in {'baseline', 'upstream', 'locomotion_straight'}:
         raise ValueError(f'Unknown reward profile: {reward_profile}')
     return _load_layered_config(
         REPO_ROOT / 'config/common.yaml',

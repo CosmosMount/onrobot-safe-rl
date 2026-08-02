@@ -154,10 +154,10 @@ class MujocoSnapshotEnv:
             sport_state_timestamp=float(self.data.time),
         )
 
-    def observation(self, previous_action: np.ndarray) -> np.ndarray:
+    def observation(self, previous_action_q_target: np.ndarray) -> np.ndarray:
         return build_observation(
             self.robot_state(),
-            np.asarray(previous_action, dtype=np.float32),
+            np.asarray(previous_action_q_target, dtype=np.float32),
             self.cfg)
 
     def measurement(self) -> RolloutMeasurement:

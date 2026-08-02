@@ -33,6 +33,16 @@ class BaseAgent(Generic[Config], ABC):
         counters = self.get_update_counters()
         return int(counters.get("actor_steps", 0))
 
+    def export_inference_snapshot(self, *, snapshot_version: int) -> dict[str, Any]:
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support asynchronous inference snapshots")
+
+    def get_inference_observation_dim(self) -> int:
+        shape = self._observation_space.shape
+        if shape is None or len(shape) != 1:
+            raise ValueError("asynchronous inference requires a flat observation space")
+        return int(shape[0])
+
     def __init__(
         self,
         observation_space: gym.spaces.Space[NDArray],

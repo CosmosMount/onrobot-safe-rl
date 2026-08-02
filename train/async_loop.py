@@ -13,7 +13,6 @@ from typing import Any
 import numpy as np
 
 from rl.agents.base.update import PolicyUpdateRequest
-from rl.agents.paper_sqrl.inference import export_inference_weights
 from train.async_collector import run_async_collector
 from train.loop import (
     _agent_hashes,
@@ -56,8 +55,9 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
     control_queue = ctx.Queue(maxsize=4)
     initial_update_version = int(resume_state.get("snapshot_version", 0))
     snapshot_version = initial_update_version
-    weight_queue.put(export_inference_weights(
-        agent, version=initial_update_version))
+    agent.cfg.actor_observation_dim = int(agent.get_inference_observation_dim())
+    weight_queue.put(agent.export_inference_snapshot(
+        snapshot_version=initial_update_version))
     collector = ctx.Process(
         target=run_async_collector,
         kwargs={
@@ -72,7 +72,7 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
             "control_queue": control_queue,
             "initial_policy_steps": start_i,
         },
-        name="go2-sqrl-collector",
+        name="ordered-async-collector",
     )
 
     manifest_path = Path(cfg.save_dir) / "manifest.json"
@@ -96,8 +96,10 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
     falls = int(resume_state.get("falls", 0))
     updates = int(agent.get_update_counters().get("critic_steps", 0))
     learner_calls = int(resume_state.get("learner_calls", 0))
-    last_published_critic_steps = int(agent.get_update_counters().get(
-        "critic_steps", 0))
+    last_published_critic_steps = int(agent.get_update_counters().get("critic_steps", 0))
+    counters = agent.get_update_counters()
+    last_published_actor_steps = int(counters.get("actor_steps", 0))
+    last_published_auxiliary_steps = int(counters.get("auxiliary_steps", 0))
     last_saved = start_i
     checkpoint_interval = int(cfg.checkpoint_interval)
     next_checkpoint = (
@@ -167,15 +169,21 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
                 updates = int(agent.get_update_counters().get(
                     "critic_steps", updates))
                 sync_period = int(cfg.inference_sync_updates)
-                if (sync_period > 0
-                        and updates > last_published_critic_steps
-                        and updates // sync_period
-                        > last_published_critic_steps // sync_period):
+                counters = agent.get_update_counters()
+                actor_steps = int(counters.get("actor_steps", 0))
+                auxiliary_steps = int(counters.get("auxiliary_steps", 0))
+                crossed_sync = (sync_period > 0 and updates > last_published_critic_steps
+                                 and updates // sync_period > last_published_critic_steps // sync_period)
+                changed = (actor_steps > last_published_actor_steps
+                           or auxiliary_steps > last_published_auxiliary_steps)
+                if crossed_sync and changed:
                     snapshot_version += 1
                     _replace_latest(
                         weight_queue,
-                        export_inference_weights(agent, version=snapshot_version))
+                        agent.export_inference_snapshot(snapshot_version=snapshot_version))
                     last_published_critic_steps = updates
+                    last_published_actor_steps = actor_steps
+                    last_published_auxiliary_steps = auxiliary_steps
                     final_inference_weight_version = snapshot_version
 
             done = bool(transition["terminated"][0]
