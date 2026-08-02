@@ -9,6 +9,7 @@ from rl.agents import create_agent
 from rl.agents.base.agent import BaseAgent
 from runtime.inference.dds import DdsConfig
 from train.config import load_app_config
+from train.async_loop import run_async_training
 from train.env import Go2Env
 from train.loop import run_play, run_training
 from train.replay import install_flashsac_numpy_replay
@@ -35,7 +36,7 @@ def _parse_args(argv=None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--agent",
-        choices=("flashsac", "droq", "safe_droq"),
+        choices=("flashsac", "droq", "safe_droq", "paper_sqrl"),
         default=None,
         help="Override train.agent from the selected configuration profile.",
     )
@@ -43,6 +44,12 @@ def _parse_args(argv=None) -> argparse.Namespace:
         "--checkpoint",
         default=None,
         help="Snapshot directory for --mode play. Defaults to latest in save_dir.",
+    )
+    parser.add_argument(
+        "--initialize-from",
+        default=None,
+        help=("Load agent networks from a snapshot's agent directory but "
+              "start with a fresh target-task replay buffer."),
     )
     parser.add_argument(
         "--safety-mode",
@@ -80,6 +87,17 @@ def _parse_args(argv=None) -> argparse.Namespace:
         type=int,
         default=None,
         help="Override train.max_steps (useful for smoke tests and matched runs).",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume agent, replay, and async collection state from latest checkpoint.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Override the paired experiment seed for agent, replay and action space.",
     )
     parser.add_argument(
         "--no-wandb",
@@ -151,6 +169,11 @@ def main(argv=None) -> int:
         if args.max_steps <= 0:
             raise SystemExit("--max-steps must be positive")
         train_cfg.max_steps = args.max_steps
+    if args.resume:
+        train_cfg.resume_checkpoint = True
+    if args.seed is not None:
+        train_cfg.seed = int(args.seed)
+        agent_cfg.seed = int(args.seed)
     if args.no_wandb:
         train_cfg.wandb = False
     if args.safety_mode is not None:
@@ -169,6 +192,15 @@ def main(argv=None) -> int:
         agent_cfg.freeze_safety_critic = True
     env = _build_env(robot_cfg, train_cfg)
     agent = _build_agent(env, agent_cfg)
+    if args.initialize_from is not None:
+        checkpoint = args.initialize_from
+        agent_dir = (
+            checkpoint if os.path.basename(checkpoint) == "agent"
+            else os.path.join(checkpoint, "agent"))
+        agent.load(agent_dir)
+        print(
+            f"[train] initialized networks from {agent_dir}; replay is fresh",
+            flush=True)
 
     print(
         f"[train] mode={args.mode} profile={args.config_profile} "
@@ -187,5 +219,11 @@ def main(argv=None) -> int:
             checkpoint=args.checkpoint,
             episodes=args.play_episodes,
         )
-    run_training(agent, env, train_cfg)
+    if train_cfg.async_collection:
+        if str(agent_cfg.agent_type) not in {"paper_sqrl", "droq"}:
+            raise SystemExit(
+                "train.async_collection requires agent=paper_sqrl or droq")
+        run_async_training(agent, env, train_cfg, robot_cfg)
+    else:
+        run_training(agent, env, train_cfg)
     return 0

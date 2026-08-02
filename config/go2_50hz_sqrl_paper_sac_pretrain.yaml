@@ -1,0 +1,24 @@
+# Standard twin-Q SAC pre-training baseline used by the SQRL paper comparison.
+reward_profile: upstream
+move_speed: 0.30
+
+train:
+  experiment_name: go2_sqrl_paper_030_pretrain
+  control_frequency: 50.0
+  async_collection: true
+  max_episode_steps: 500
+  max_steps: 500000
+  start_training: 1000
+  agent: droq
+  explore_action_scale: 0.5
+  utd_ratio: 1
+  save_dir: saved/experiments/sqrl_paper/seed42/pretrain_sac_async_v1
+  checkpoint_interval: 25000
+  metrics_interval: 10
+  wandb_run_name: sac-paper-pretrain-030-seed42
+
+  droq:
+    num_qs: 2
+    num_min_qs: 2
+    critic_dropout_rate: 0.0
+    critic_layer_norm: false

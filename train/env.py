@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import gymnasium as gym
 import numpy as np
 
@@ -42,7 +44,19 @@ class Go2Env:
     def reset(self, **_) -> np.ndarray:
         self._state_rx.bind()
         self._action_tx.wait_ready()
-        return self._recv_step()["observation"]
+        self.clear_action()
+        # The transport keeps only the latest value. Wait until runtime has
+        # consumed the clear command before publishing the first action, or a
+        # new client can inherit the previous client's episode counter.
+        deadline = time.monotonic() + 10.0
+        while True:
+            message = self._recv_step()
+            step_count = int(message.get("info", {}).get("step_count", 0))
+            if step_count <= 1:
+                return message["observation"]
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    "runtime did not acknowledge episode reset")
 
     def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, dict]:
         action = np.asarray(action, dtype=np.float32).reshape(self.action_space.shape)
@@ -60,7 +74,9 @@ class Go2Env:
         return self.action_space.sample().astype(np.float32)
 
     def clear_action(self) -> None:
-        self._action_tx.send({"clear": True})
+        # This must be a real mailbox payload. The transport-level {clear:
+        # True} operation only erases the mailbox and cannot notify runtime.
+        self._action_tx.send({"command": "clear"})
 
     def close(self) -> None:
         self.clear_action()

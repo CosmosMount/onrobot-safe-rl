@@ -1,0 +1,41 @@
+# Paper-aligned SQRL pre-training on the Go2 50 Hz stack.
+# Mirrors the Minitaur protocol in arXiv:2010.14603: 0.30 m/s and 500k steps.
+reward_profile: upstream
+move_speed: 0.30
+
+train:
+  experiment_name: go2_sqrl_paper_030_pretrain
+  control_frequency: 50.0
+  async_collection: true
+  max_episode_steps: 500
+  max_steps: 500000
+  start_training: 1000
+  agent: paper_sqrl
+  explore_action_scale: 0.5
+  # The paper uses SAC, not the project's high-UTD DroQ variant.
+  utd_ratio: 1
+  save_dir: saved/experiments/sqrl_paper/seed42/pretrain_strict_async_sac_v1
+  checkpoint_interval: 25000
+  metrics_interval: 10
+  wandb_run_name: sqrl-paper-pretrain-030-seed42
+
+  paper_sqrl:
+    num_qs: 2
+    num_min_qs: 2
+    critic_dropout_rate: 0.0
+    critic_layer_norm: false
+    sqrl_phase: pretrain
+    safety_hidden_dims: [256, 256]
+    safety_gamma: 0.70
+    safety_epsilon: 0.10
+    safety_num_candidates: 100
+    safety_boundary_pool_multiplier: 4
+    safety_replay_trajectories: 10
+    safety_replay_min_transitions: 1
+    safety_batch_size: 256
+    pretrain_task_steps_per_cycle: 1000
+    pretrain_safety_episodes_per_cycle: 1
+    # Algorithm 1 applies one Q_safe gradient update after collecting k
+    # constrained-policy trajectories.
+    safety_updates_per_cycle: 1
+    finetune_update_safety_critic: false

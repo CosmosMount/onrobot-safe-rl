@@ -48,7 +48,22 @@ def create_agent(
         agent = SafeDroQAgent(
             observation_space, action_space, env_info, config)
 
+    elif agent_type == "paper_sqrl":
+
+        from rl.agents.paper_sqrl.agent import (
+            PaperSQRLAgent,
+            PaperSQRLConfig,
+        )
+
+        config = PaperSQRLConfig(**cfg_dict)  # type: ignore
+        agent = PaperSQRLAgent(
+            observation_space, action_space, env_info, config)
+
     else:
         raise NotImplementedError
 
+    # Preserve the selected type on the concrete dataclass. Asynchronous
+    # inference workers receive this optimizer-free config after OmegaConf has
+    # been converted and otherwise cannot distinguish SAC from paper SQRL.
+    setattr(agent.cfg, "agent_type", agent_type)
     return agent

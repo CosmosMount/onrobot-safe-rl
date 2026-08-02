@@ -92,6 +92,9 @@ class TrainConfig:
     utd_ratio: int = 20
     buffer_size: int = 1_000_000
     terminal_replay_repeats: int = 1
+    async_collection: bool = False
+    inference_sync_updates: int = 20
+    async_transition_queue_capacity: int = 8192
     log_interval: int = 100
     metrics_interval: int = 1
     rolling_summary_window: int = 1000
@@ -277,6 +280,7 @@ def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, dict[str,
     flashsac = train_node.pop('flashsac', {})
     droq = train_node.pop('droq', {})
     safe_droq = train_node.pop('safe_droq', {})
+    paper_sqrl = train_node.pop('paper_sqrl', {})
 
     cfg = TrainConfig()
     for key, value in train_node.items():
@@ -292,6 +296,7 @@ def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, dict[str,
         'flashsac': dict(flashsac),
         'droq': dict(droq),
         'safe_droq': dict(safe_droq),
+        'paper_sqrl': dict(paper_sqrl),
     }
 
 
@@ -322,6 +327,11 @@ def _parse_agent(train_cfg: TrainConfig, agent_nodes: dict[str, dict[str, Any]])
             'safety_num_candidates': 32,
             'safety_epsilon': 0.20,
             'safety_activation_step': 1000,
+            'safety_masking_ramp_steps': 0,
+            'safety_min_risk_improvement': 0.0,
+            'safety_max_action_rms': 2.0,
+            'safety_contract_candidates': False,
+            'safety_reward_q_margin': None,
             'safety_pretrained_path': None,
             'freeze_safety_critic': False,
         })
@@ -329,6 +339,33 @@ def _parse_agent(train_cfg: TrainConfig, agent_nodes: dict[str, dict[str, Any]])
         # settings live under train.safe_droq.
         values.update(agent_nodes.get('droq', {}))
         values.update(agent_nodes.get('safe_droq', {}))
+    elif agent_type == 'paper_sqrl':
+        values = dict(_DROQ_DEFAULTS)
+        values.update({
+            'sqrl_phase': 'pretrain',
+            'safety_hidden_dims': [256, 256],
+            'safety_lr': 3.0e-4,
+            'safety_gamma': 0.7,
+            'safety_target_update_tau': 0.005,
+            'safety_replay_trajectories': 10,
+            # Algorithm 1 updates after k complete trajectories; a trajectory
+            # that terminates quickly in failure must still be trainable.
+            'safety_replay_min_transitions': 1,
+            'safety_batch_size': 256,
+            'safety_update_period': 1,
+            'safety_updates_per_cycle': 1,
+            'safety_num_candidates': 100,
+            'safety_boundary_pool_multiplier': 4,
+            'safety_epsilon': 0.1,
+            'pretrain_task_steps_per_cycle': 1000,
+            'pretrain_safety_episodes_per_cycle': 1,
+            'safety_lagrange_lr': 3.0e-4,
+            'safety_lagrange_initial': 1.0,
+            'safety_lagrange_max': 100.0,
+            'finetune_update_safety_critic': False,
+        })
+        values.update(agent_nodes.get('droq', {}))
+        values.update(agent_nodes.get('paper_sqrl', {}))
     else:
         raise ValueError(f'Unsupported train.agent={train_cfg.agent!r}')
 
@@ -350,6 +387,8 @@ def _parse_agent(train_cfg: TrainConfig, agent_nodes: dict[str, dict[str, Any]])
         values['target_q_max'] = None
     if values.get('safety_pretrained_path') == 'null':
         values['safety_pretrained_path'] = None
+    if values.get('safety_reward_q_margin') == 'null':
+        values['safety_reward_q_margin'] = None
     return OmegaConf.create(values)
 
 

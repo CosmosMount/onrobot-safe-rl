@@ -16,7 +16,11 @@ from runtime.inference.observations import (
     get_run_reward_from_state,
     get_terminal_penalty,
 )
-from runtime.inference.transport import SharedMemoryReceiver, SharedMemorySender
+from runtime.inference.transport import (
+    SharedMemoryReceiver,
+    SharedMemoryRingQueue,
+    SharedMemorySender,
+)
 
 
 PolicyFn = Callable[[np.ndarray], np.ndarray]
@@ -45,6 +49,9 @@ class PolicyInferenceRuntime:
         recovery_stable_steps: int = 10,
         standup_timeout_steps: int = 200,
         abort_on_unstable_reset: bool = True,
+        ordered_state_queue: bool = False,
+        ordered_state_queue_capacity: int = 2048,
+        ordered_state_queue_slot_size: int = 16 * 1024,
     ):
         if frequency_hz <= 0:
             raise ValueError("frequency_hz must be positive")
@@ -84,6 +91,9 @@ class PolicyInferenceRuntime:
         self._last_debug_time = 0.0
         self._last_debug_signature: tuple[Any, ...] | None = None
         self._step_count = 0
+        self._runtime_step_id = 0
+        self._episode_id = 0
+        self._latest_action_id = -1
         self._awaiting_reset_pose = False
         self._reset_pose_stable_count = 0
         self._reset_pose_wait_steps = 0
@@ -94,6 +104,14 @@ class PolicyInferenceRuntime:
         self._abort_on_unstable_reset = bool(abort_on_unstable_reset)
         self._action_rx = SharedMemoryReceiver(action_socket or robot_cfg.runtime_action_shm)
         self._train_tx = SharedMemorySender(train_state_socket or robot_cfg.runtime_state_shm)
+        self._ordered_train_tx = (
+            SharedMemoryRingQueue(
+                f"{train_state_socket or robot_cfg.runtime_state_shm}.ordered",
+                capacity=ordered_state_queue_capacity,
+                slot_size=ordered_state_queue_slot_size,
+            )
+            if ordered_state_queue else None
+        )
         self._safety = SafeRawSupervisor(
             inverted_acc_z_threshold=robot_cfg.imu_upside_down_acc_z,
             inverted_body_up_cos_threshold=robot_cfg.imu_upside_down_up_cos,
@@ -279,8 +297,13 @@ class PolicyInferenceRuntime:
         self._state_reader.close()
         self._action_rx.close()
         self._train_tx.close()
+        if self._ordered_train_tx is not None:
+            self._ordered_train_tx.close(unlink=self._ordered_train_tx.owner)
 
-    def _clear_policy_action(self) -> None:
+    def _clear_policy_action(self, *, reset_episode: bool = False) -> None:
+        if reset_episode:
+            self._step_count = 0
+            self._episode_id = getattr(self, "_episode_id", 0) + 1
         if self._policy_action_cleared:
             return
         self._latest_action.fill(0.0)
@@ -293,16 +316,24 @@ class PolicyInferenceRuntime:
         message = self._action_rx.recv_latest()
         if not message:
             return
-        if bool(message.get("clear", False)):
-            self._clear_policy_action()
+        if (bool(message.get("clear", False))
+                or message.get("command") == "clear"):
+            # An explicit client handshake starts a fresh policy episode and
+            # discards an action left in shared memory by an earlier client.
+            self._clear_policy_action(reset_episode=True)
             return
         action = np.asarray(message.get("action", self._latest_action), dtype=np.float32)
         if action.shape == self._latest_action.shape and np.all(np.isfinite(action)):
+            action_id = int(message.get("action_id", self._latest_action_id + 1))
+            if action_id < self._latest_action_id:
+                return
             self._latest_action = np.clip(action, -1.0, 1.0)
+            self._latest_action_id = action_id
             self._policy_action_cleared = False
             self._recovery_upgrade_sent = False
 
     def _runtime_step(self) -> dict[str, Any]:
+        self._runtime_step_id += 1
         self._receive_action()
         state = self._state_reader.get_state()
         controller_policy = int(state.phase) == CONTROLLER_PHASE_POLICY
@@ -366,8 +397,14 @@ class PolicyInferenceRuntime:
             safety = self._safety.update(state)
         elif safety_before.policy_enabled:
             self._end_reset_pose_wait()
-            observation, runtime_info = self.step(self._latest_action)
-            action_debug = "policy"
+            if self._policy_action_cleared:
+                # Do not manufacture policy transitions from a default zero
+                # action before the collector reset handshake has completed.
+                observation, runtime_info = self.step_wait_controller()
+                action_debug = "wait_policy_action"
+            else:
+                observation, runtime_info = self.step(self._latest_action)
+                action_debug = "policy"
             state = self._state_reader.get_state()
             safety = self._safety.update(state)
             if not safety.policy_enabled:
@@ -402,6 +439,7 @@ class PolicyInferenceRuntime:
             safety.reason = "controller_nonpolicy"
         self._runtime_debug(state=state, safety=safety, action=action_debug)
         self._step_count += int(count_policy_step)
+        episode_step = self._step_count
         truncated = self._step_count >= self._max_episode_steps
         terminated = bool(safety.terminated)
         terminal_penalty = get_terminal_penalty(terminated=terminated, cfg=self.robot_cfg)
@@ -446,7 +484,16 @@ class PolicyInferenceRuntime:
             "reset_pose_stable_count": float(self._reset_pose_stable_count),
             "reset_pose_wait_steps": float(self._reset_pose_wait_steps),
             "reset_pose_timed_out": bool(self._reset_pose_timed_out),
-            "step_count": self._step_count,
+            # Preserve the terminal step number in the terminal message. The
+            # internal counter may already have been reset for the next
+            # episode, but consumers need the completed trajectory boundary.
+            "step_count": episode_step,
+            "runtime_step_id": self._runtime_step_id,
+            "episode_id": self._episode_id,
+            "episode_step": episode_step,
+            # -1 explicitly means no policy action was executed on this
+            # runtime tick (stand-up/recovery/reset supervision).
+            "applied_action_id": self._latest_action_id if policy_step else -1,
             "terminal_penalty": float(terminal_penalty),
             **runtime_info,
             **reward_info,
@@ -467,13 +514,26 @@ class PolicyInferenceRuntime:
 
     def run_process(self) -> None:
         self.connect()
+        if self._ordered_train_tx is not None:
+            self._ordered_train_tx.create()
+            if not self._ordered_train_tx.owner:
+                raise RuntimeError(
+                    "ordered state queue already exists; refusing to reset "
+                    "an active/stale collector stream. Stop the old runtime "
+                    "and unlink the stale queue before restarting.")
         print(
             f"[runtime] ready action_shm={self._action_rx.socket_path} "
             f"state_shm={self._train_tx.socket_path} hz={self.frequency_hz}",
             flush=True,
         )
         while True:
-            self._train_tx.send(self._runtime_step())
+            message = self._runtime_step()
+            # Compatibility mailbox remains available for the existing
+            # synchronous client. The async collector consumes the ordered
+            # queue, which never silently overwrites a terminal transition.
+            self._train_tx.send(message)
+            if self._ordered_train_tx is not None:
+                self._ordered_train_tx.write(message)
 
 
 def main(argv=None) -> int:
@@ -485,6 +545,11 @@ def main(argv=None) -> int:
         "--config-profile",
         choices=("go2", "simulation", "real_robot"),
         default="go2",
+    )
+    parser.add_argument(
+        "--ordered-state-queue",
+        action="store_true",
+        help="Publish every runtime step to the ordered async collector queue.",
     )
     parser.add_argument(
         "--config",
@@ -509,6 +574,7 @@ def main(argv=None) -> int:
         recovery_stable_steps=train_cfg.recovery_stable_steps,
         standup_timeout_steps=train_cfg.standup_timeout_steps,
         abort_on_unstable_reset=train_cfg.abort_on_unstable_reset,
+        ordered_state_queue=args.ordered_state_queue,
     )
     runtime.run_process()
     return 0
