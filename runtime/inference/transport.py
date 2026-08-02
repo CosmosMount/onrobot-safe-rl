@@ -6,6 +6,7 @@ import hashlib
 import pickle
 import struct
 import time
+import ctypes
 from multiprocessing import resource_tracker, shared_memory
 from typing import Any
 
@@ -20,6 +21,15 @@ _QUEUE_SLOT_HEADER = struct.Struct("<QI")
 _QUEUE_WRITE_OFFSET = struct.calcsize("<IIQQ")
 _QUEUE_READ_OFFSET = struct.calcsize("<IIQQQ")
 _OWNED_SHM_NAMES: set[str] = set()
+
+
+def _store_u64(buffer: memoryview, offset: int, value: int) -> None:
+    """Publish an aligned cursor with one native uint64 store."""
+    if offset % ctypes.alignment(ctypes.c_uint64):
+        raise RuntimeError(f"unaligned uint64 cursor offset: {offset}")
+    cell = ctypes.c_uint64.from_buffer(buffer, offset)
+    cell.value = int(value)
+    del cell
 
 
 def _open_existing(name: str) -> shared_memory.SharedMemory:
@@ -149,19 +159,29 @@ class SharedMemoryRingQueue:
 
     def _validate_header(self) -> tuple[int, int]:
         assert self._shm is not None
-        magic, version, capacity, slot_size, write_seq, read_seq = (
-            _QUEUE_HEADER.unpack_from(self._shm.buf, 0))
-        if magic != _QUEUE_MAGIC or version != _QUEUE_VERSION:
-            raise RuntimeError(f"Invalid shared memory queue header: {self.name}")
-        if capacity != self.capacity or slot_size != self.slot_size:
-            raise ValueError(
-                "Shared memory queue geometry mismatch: "
-                f"existing=({capacity}, {slot_size}) "
-                f"requested=({self.capacity}, {self.slot_size})")
-        if write_seq < read_seq or write_seq - read_seq > capacity:
-            raise RuntimeError(
-                f"Corrupt shared memory queue cursors: {write_seq}, {read_seq}")
-        return int(write_seq), int(read_seq)
+        last: tuple[int, int] | None = None
+        for _ in range(200):
+            first = _QUEUE_HEADER.unpack_from(self._shm.buf, 0)
+            second = _QUEUE_HEADER.unpack_from(self._shm.buf, 0)
+            magic, version, capacity, slot_size, write_seq, read_seq = second
+            if magic != _QUEUE_MAGIC or version != _QUEUE_VERSION:
+                raise RuntimeError(
+                    f"Invalid shared memory queue header: {self.name}")
+            if capacity != self.capacity or slot_size != self.slot_size:
+                raise ValueError(
+                    "Shared memory queue geometry mismatch: "
+                    f"existing=({capacity}, {slot_size}) "
+                    f"requested=({self.capacity}, {self.slot_size})")
+            last = (int(write_seq), int(read_seq))
+            if (first == second and write_seq >= read_seq
+                    and write_seq - read_seq <= capacity):
+                return last
+            # Cursor publication is concurrent. A transient mixed read is not
+            # corruption; require a stable valid header for up to 20 ms.
+            time.sleep(0.0001)
+        assert last is not None
+        raise RuntimeError(
+            f"Corrupt shared memory queue cursors: {last[0]}, {last[1]}")
 
     def _slot_offset(self, index: int) -> int:
         return (
@@ -188,7 +208,7 @@ class SharedMemoryRingQueue:
         self._shm.buf[payload_offset:payload_offset + len(payload)] = payload
         _QUEUE_SLOT_HEADER.pack_into(
             self._shm.buf, offset, sequence, len(payload))
-        struct.pack_into("<Q", self._shm.buf, _QUEUE_WRITE_OFFSET, sequence)
+        _store_u64(self._shm.buf, _QUEUE_WRITE_OFFSET, sequence)
 
     def read(self) -> Any | None:
         if self._shm is None:
@@ -211,8 +231,7 @@ class SharedMemoryRingQueue:
             sequence2, length2 = _QUEUE_SLOT_HEADER.unpack_from(
                 self._shm.buf, offset)
             if sequence1 == sequence2 and length1 == length2:
-                struct.pack_into(
-                    "<Q", self._shm.buf, _QUEUE_READ_OFFSET, expected)
+                _store_u64(self._shm.buf, _QUEUE_READ_OFFSET, expected)
                 return pickle.loads(payload)
         raise RuntimeError(
             f"Could not read stable shared memory queue slot: {self.name}")
@@ -227,8 +246,8 @@ class SharedMemoryRingQueue:
         if self._shm is None:
             self.create()
         assert self._shm is not None
-        struct.pack_into("<Q", self._shm.buf, _QUEUE_WRITE_OFFSET, 0)
-        struct.pack_into("<Q", self._shm.buf, _QUEUE_READ_OFFSET, 0)
+        _store_u64(self._shm.buf, _QUEUE_WRITE_OFFSET, 0)
+        _store_u64(self._shm.buf, _QUEUE_READ_OFFSET, 0)
         for index in range(self.capacity):
             _QUEUE_SLOT_HEADER.pack_into(
                 self._shm.buf, self._slot_offset(index), 0, 0)

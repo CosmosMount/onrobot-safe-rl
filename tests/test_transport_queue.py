@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import unittest
 import uuid
+import threading
+import time
+
+import runtime.inference.transport as transport
 
 from runtime.inference.transport import (
     SharedMemoryQueueFull,
@@ -57,6 +61,25 @@ class SharedMemoryRingQueueTest(unittest.TestCase):
             self.key, capacity=8, slot_size=1024)
         with self.assertRaises(ValueError):
             incompatible.open()
+
+    def test_transient_mixed_cursor_read_is_retried(self):
+        self.producer.write({"value": 1})
+        self.assertEqual(self.consumer.read(), {"value": 1})
+        assert self.producer._shm is not None
+        transport._store_u64(
+            self.producer._shm.buf, transport._QUEUE_WRITE_OFFSET, 0)
+
+        def restore():
+            time.sleep(0.002)
+            assert self.producer._shm is not None
+            transport._store_u64(
+                self.producer._shm.buf,
+                transport._QUEUE_WRITE_OFFSET, 1)
+
+        thread = threading.Thread(target=restore)
+        thread.start()
+        self.assertEqual(self.consumer.depth(), 0)
+        thread.join()
 
 
 if __name__ == "__main__":
