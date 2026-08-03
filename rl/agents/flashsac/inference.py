@@ -7,7 +7,10 @@ import torch
 
 from rl.agents.base.inference import ActionDecision
 from rl.agents.flashsac.network import FlashSACActor
-from rl.agents.flashsac.agent import _build_truncated_zeta_cdf
+from rl.agents.flashsac.noise import (
+    build_truncated_zeta_cdf,
+    sample_integer_from_cdf,
+)
 
 
 class FlashSACInferencePolicy:
@@ -19,8 +22,11 @@ class FlashSACInferencePolicy:
                                    else ("cuda:0" if str(cfg.device_type).startswith("cuda") else "cpu"))
         self.actor = FlashSACActor(cfg.actor_num_blocks, self.actor_observation_dim,
                                    cfg.actor_hidden_dim, action_dim).to(self.device).eval()
-        self.zeta_cdf = _build_truncated_zeta_cdf(cfg.actor_noise_zeta_mu,
-                                                  cfg.actor_noise_zeta_max).to(self.device)
+        self.zeta_cdf = build_truncated_zeta_cdf(
+            mu=cfg.actor_noise_zeta_mu,
+            max_n=cfg.actor_noise_zeta_max,
+            device=self.device,
+        )
         self.cur_noise_repeat_n = torch.tensor(1, dtype=torch.int32, device=self.device)
         self.cur_noise_repeat_count = torch.tensor(0, dtype=torch.int32, device=self.device)
         self.cached_noise = torch.randn((action_dim,), device=self.device)
@@ -55,8 +61,7 @@ class FlashSACInferencePolicy:
                 reinit = ((self.cur_noise_repeat_count == 0)
                           | (self.cur_noise_repeat_count >= self.cur_noise_repeat_n))
                 new_noise = torch.randn_like(mean)
-                u = torch.rand((), device=self.device)
-                new_n = (torch.argmax((u < torch.cumsum(self.zeta_cdf, 0)).to(torch.int32)) + 1).to(torch.int32)
+                new_n = sample_integer_from_cdf(self.zeta_cdf)
                 self.cached_noise = torch.where(reinit, new_noise, self.cached_noise)
                 self.cur_noise_repeat_n = torch.where(reinit, new_n, self.cur_noise_repeat_n)
                 self.cur_noise_repeat_count = torch.where(reinit, torch.zeros_like(self.cur_noise_repeat_count), self.cur_noise_repeat_count)

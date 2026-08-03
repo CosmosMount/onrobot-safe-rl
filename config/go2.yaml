@@ -5,6 +5,6 @@ train:
   control_frequency: 20.0
   explore_action_scale: 0.5
   max_steps: 15000
-  utd_ratio: 1
+  utd_ratio: 20
   save_dir: saved/checkpoints_46d
   

@@ -17,6 +17,10 @@ from rl.agents.flashsac.network import (
     FlashSACDoubleCritic,
     FlashSACTemperature,
 )
+from rl.agents.flashsac.noise import (
+    build_truncated_zeta_cdf,
+    sample_integer_from_cdf,
+)
 from rl.agents.flashsac.update import (
     update_actor,
     update_critic,
@@ -202,29 +206,6 @@ def _init_flashsac_networks(
     return actor, critic, target_critic, temperature
 
 
-@torch.compile
-def _build_truncated_zeta_cdf(mu: float, max_n: int) -> torch.Tensor:
-    """
-    Build the truncated zeta CDF for the given mu and max_n.
-    """
-    ns = torch.arange(1, max_n + 1, dtype=torch.float32)
-    pmf = ns ** (-mu)
-    pmf = pmf / torch.sum(pmf)
-    cdf = torch.cumsum(pmf, dim=0)
-    return cdf
-
-
-@torch.compile
-def _sample_integer_from_cdf(cdf: torch.Tensor) -> torch.Tensor:
-    """
-    Sample an integer from the given CDF.
-    Returns a 0-d int32 tensor.
-    """
-    u = torch.rand((), device=cdf.device)
-    idx = torch.argmax((u < cdf).to(torch.int32))
-    return (idx + 1).to(torch.int32)
-
-
 def _sample_flashsac_actions(
     actor: Network,
     noise: torch.Tensor,
@@ -250,7 +231,7 @@ def _sample_flashsac_actions(
     reinit = (cur_count == 0) | (cur_count >= cur_n)
 
     new_noise = torch.randn_like(mean)
-    new_n = _sample_integer_from_cdf(zeta_cdf)
+    new_n = sample_integer_from_cdf(zeta_cdf)
 
     noise = torch.where(reinit, new_noise, noise)
     cur_n = torch.where(reinit, new_n, cur_n)
@@ -406,9 +387,11 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
         self._grad_scaler = GradScaler(device=self._device.type, enabled=self._cfg.use_amp)
 
         # Noise repetition (zeta distribution)
-        self._zeta_cdf = _build_truncated_zeta_cdf(
-            mu=self._cfg.actor_noise_zeta_mu, max_n=self._cfg.actor_noise_zeta_max
-        ).to(self._device)
+        self._zeta_cdf = build_truncated_zeta_cdf(
+            mu=self._cfg.actor_noise_zeta_mu,
+            max_n=self._cfg.actor_noise_zeta_max,
+            device=self._device,
+        )
         self._cur_noise_repeat_n = torch.tensor(1, dtype=torch.int32, device=self._device)
         self._cur_noise_repeat_count = torch.tensor(0, dtype=torch.int32, device=self._device)
         action_shape = tuple(action_space.shape) if action_space.shape is not None else ()
