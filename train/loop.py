@@ -258,6 +258,20 @@ def restore_snapshot(agent, cfg: TrainConfig, checkpoint: str | None = None) -> 
     return _snapshot_step(path)
 
 
+def restore_policy_snapshot(agent, cfg: TrainConfig, checkpoint: str | None = None) -> int:
+    """Load only policy state for evaluation; replay is not needed for play."""
+    path = Path(checkpoint) if checkpoint is not None else latest_snapshot(cfg.save_dir)
+    if path is None:
+        raise FileNotFoundError(
+            f"No checkpoint found in {cfg.save_dir!r}; pass --checkpoint explicitly."
+        )
+    agent_path = path / "agent"
+    if not agent_path.exists():
+        raise FileNotFoundError(f"Policy checkpoint not found: {agent_path}")
+    agent.load(str(agent_path))
+    return _snapshot_step(path)
+
+
 def _sample_policy_action(agent, observation: np.ndarray, step: int, *, training: bool) -> np.ndarray:
     sampled = agent.sample_actions(step, _prev_transition(observation), training=training)
     return np.asarray(sampled[0], dtype=np.float32)
@@ -837,7 +851,8 @@ def run_training(agent, env, cfg: TrainConfig):
 
 
 def run_play(agent, env, cfg: TrainConfig, *, checkpoint: str | None, episodes: int) -> int:
-    restore_snapshot(agent, cfg, checkpoint)
+    checkpoint_step = restore_policy_snapshot(agent, cfg, checkpoint)
+    _log(f"[play] loaded policy checkpoint step={checkpoint_step}")
     for episode in range(episodes):
         observation = env.reset()
         done = False

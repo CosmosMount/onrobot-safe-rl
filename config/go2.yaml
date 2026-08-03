@@ -2,8 +2,9 @@
 reward_profile: locomotion_straight
 train:
   agent: droq
+  control_frequency: 20.0
   explore_action_scale: 0.5
   max_steps: 15000
-  utd_ratio: 5
+  utd_ratio: 1
   save_dir: saved/checkpoints_46d
   
