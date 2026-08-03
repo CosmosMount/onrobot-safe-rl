@@ -7,6 +7,7 @@ from rl.agents.droq.inference import DroQInferencePolicy
 from rl.agents.flashsac.inference import FlashSACInferencePolicy
 from rl.agents.safe_droq.inference import SafeDroQInferencePolicy
 from rl.agents.paper_sqrl.inference import PaperSQRLInferencePolicy
+from rl.agents.livesac.inference import LiveSACInferencePolicy
 
 
 def build_inference_policy(observation_dim: int, action_dim: int,
@@ -21,6 +22,7 @@ def build_inference_policy(observation_dim: int, action_dim: int,
         "flashsac": FlashSACInferencePolicy,
         "safe_droq": SafeDroQInferencePolicy,
         "paper_sqrl": PaperSQRLInferencePolicy,
+        "livesac": LiveSACInferencePolicy,
     }
     try:
         return factories[agent_type](observation_dim, action_dim, cfg)

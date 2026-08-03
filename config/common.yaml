@@ -123,6 +123,37 @@ train:
     compile_mode: reduce-overhead
     use_amp: false
 
+  livesac:
+    device_type: cuda
+    buffer_device_type: cpu
+    buffer_min_length: 1000
+    actor_lr: 3.0e-4
+    critic_lr: 3.0e-4
+    temp_lr: 3.0e-4
+    actor_hidden_dims: [256, 256]
+    critic_hidden_dim: 256
+    critic_expansion: 2
+    critic_num_blocks: 1
+    critic_num_qs: 2
+    critic_num_bins: 101
+    critic_min_v: -5.0
+    critic_max_v: 5.0
+    critic_target_update_tau: 0.005
+    normalize_reward: true
+    normalized_G_max: 5.0
+    gamma: 0.99
+    n_step: 1
+    target_entropy: null
+    temp_initial_value: 0.1
+    asymmetric_observation: false
+    actor_update_interval: 1
+    actor_update_unit: policy_step
+    use_compile: false
+    compile_mode: reduce-overhead
+    use_amp: false
+    load_optimizer: true
+    load_reward_normalizer: false
+
   # DroQ-compatible safety agent. The default logging mode computes only the
   # nominal-action risk and never modifies the action. Set mode to masking
   # only after validating the transferred Q_safe.

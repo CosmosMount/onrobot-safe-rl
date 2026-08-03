@@ -25,7 +25,7 @@ def _parse_args(argv=None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--config-profile",
-        choices=("go2", "simulation", "real_robot"),
+        choices=("go2", "simulation", "real_robot", "go2_livesac"),
         default="go2",
         help="Configuration profile.",
     )
@@ -36,7 +36,7 @@ def _parse_args(argv=None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--agent",
-        choices=("flashsac", "droq", "safe_droq", "paper_sqrl"),
+        choices=("flashsac", "droq", "safe_droq", "paper_sqrl", "livesac"),
         default=None,
         help="Override train.agent from the selected configuration profile.",
     )
@@ -221,10 +221,10 @@ def main(argv=None) -> int:
         )
     try:
         if train_cfg.async_collection:
-            if str(agent_cfg.agent_type) not in {"paper_sqrl", "droq", "flashsac", "safe_droq"}:
+            if str(agent_cfg.agent_type) not in {"paper_sqrl", "droq", "flashsac", "safe_droq", "livesac"}:
                 raise SystemExit(
                     "train.async_collection requires an agent with an inference policy: "
-                    "droq, flashsac, safe_droq, or paper_sqrl")
+                    "droq, flashsac, safe_droq, paper_sqrl, or livesac")
             if not callable(getattr(agent, "export_inference_snapshot", None)):
                 raise SystemExit(f"agent={agent_cfg.agent_type} lacks export_inference_snapshot")
             run_async_training(agent, env, train_cfg, robot_cfg)

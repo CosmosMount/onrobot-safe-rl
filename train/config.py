@@ -383,6 +383,19 @@ _DROQ_DEFAULTS: dict[str, Any] = {
     'load_optimizer': True,
 }
 
+_LIVESAC_DEFAULTS: dict[str, Any] = {
+    'device_type': 'cuda', 'buffer_device_type': 'cpu', 'buffer_min_length': 1000,
+    'actor_lr': 3.0e-4, 'critic_lr': 3.0e-4, 'temp_lr': 3.0e-4,
+    'actor_hidden_dims': [256, 256], 'critic_hidden_dim': 256, 'critic_expansion': 2,
+    'critic_num_blocks': 1, 'critic_num_qs': 2, 'critic_num_bins': 101,
+    'critic_min_v': -5.0, 'critic_max_v': 5.0, 'critic_target_update_tau': 0.005,
+    'normalize_reward': True, 'normalized_G_max': 5.0, 'gamma': 0.99, 'n_step': 1,
+    'target_entropy': None, 'temp_initial_value': 0.1, 'asymmetric_observation': False,
+    'actor_update_interval': 1, 'actor_update_unit': 'policy_step', 'use_compile': False,
+    'compile_mode': 'reduce-overhead', 'use_amp': False, 'load_optimizer': True,
+    'load_reward_normalizer': True,
+}
+
 
 def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, dict[str, Any]]]:
     train_node = dict(node)
@@ -390,6 +403,7 @@ def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, dict[str,
     droq = train_node.pop('droq', {})
     safe_droq = train_node.pop('safe_droq', {})
     paper_sqrl = train_node.pop('paper_sqrl', {})
+    livesac = train_node.pop('livesac', {})
 
     cfg = TrainConfig()
     for key, value in train_node.items():
@@ -408,16 +422,19 @@ def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, dict[str,
             not np.all(np.isfinite(cfg.max_joint_delta)) or np.any(cfg.max_joint_delta <= 0)):
         raise ValueError('max_joint_delta must be finite and positive when enabled')
     if cfg.async_collection and str(cfg.agent).lower() not in {
-            'droq', 'flashsac', 'safe_droq', 'paper_sqrl'}:
+            'droq', 'flashsac', 'safe_droq', 'paper_sqrl', 'livesac'}:
         raise ValueError(
             'train.async_collection requires agent= droq, flashsac, '
-            'safe_droq, or paper_sqrl')
+            'safe_droq, paper_sqrl, or livesac')
+    if str(cfg.agent).lower() == 'livesac' and int(cfg.utd_ratio) != 5:
+        raise ValueError('LiveSAC v1.0 requires train.utd_ratio=5')
 
     return cfg, {
         'flashsac': dict(flashsac),
         'droq': dict(droq),
         'safe_droq': dict(safe_droq),
         'paper_sqrl': dict(paper_sqrl),
+        'livesac': dict(livesac),
     }
 
 
@@ -503,6 +520,11 @@ def _parse_agent(train_cfg: TrainConfig, agent_nodes: dict[str, dict[str, Any]])
         })
         values.update(agent_nodes.get('droq', {}))
         values.update(agent_nodes.get('paper_sqrl', {}))
+    elif agent_type == 'livesac':
+        values = dict(_LIVESAC_DEFAULTS)
+        values.update(agent_nodes.get('livesac', {}))
+        if int(train_cfg.utd_ratio) != 5:
+            raise ValueError('LiveSAC v1.0 requires train.utd_ratio=5')
     else:
         raise ValueError(f'Unsupported train.agent={train_cfg.agent!r}')
 
@@ -578,6 +600,7 @@ def load_app_config(
         'go2': DEFAULT_CONFIG_PATH,
         'simulation': REPO_ROOT / 'config/simulation.yaml',
         'real_robot': REPO_ROOT / 'config/real_robot.yaml',
+        'go2_livesac': REPO_ROOT / 'config/go2_livesac.yaml',
     }
     if profile not in profile_paths:
         raise ValueError(f'Unknown config profile: {profile}')
