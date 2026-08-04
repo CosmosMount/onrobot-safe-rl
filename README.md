@@ -134,7 +134,7 @@ DroQ settings are aligned with the better-converging setup:
 - `actor_q_reduction: min`
 - `target_q_min: -100.0`
 - `target_q_max: 1000.0`
-- `terminal_replay_repeats: 4`
+- terminal transitions are inserted once in replay (sync and async)
 - `temp_initial_value: 0.1`
 
 The reward profile defaults to `upstream`, matching `walk_in_the_park` dense run

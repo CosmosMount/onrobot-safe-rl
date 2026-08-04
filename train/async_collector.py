@@ -183,10 +183,11 @@ def run_async_collector(*, robot_cfg: Any, agent_cfg: Any, train_cfg: Any,
                         "reached its bounded capacity")
                 local_transitions.append(collected)
                 last_time = now
-                if core.policy_steps >= int(train_cfg.max_steps):
-                    channel.clear_action()
-                    break
             decision = core.next_decision(message.observation)
             core.remember_action(channel.send_action(decision.action_requested), message.observation, decision)
     finally:
+        # The learner owns the global step budget.  Tell the runtime to stop
+        # publishing before closing the collector; otherwise the runtime can
+        # continue writing into the ordered queue after this process exits.
+        channel.stop()
         channel.close()

@@ -50,7 +50,8 @@ train:
   batch_size: 256
   utd_ratio: 20
   buffer_size: 1000000
-  terminal_replay_repeats: 4
+  # Deprecated compatibility field; terminal transitions are never repeated.
+  terminal_replay_repeats: 1
   log_interval: 100
   metrics_interval: 1
   rolling_summary_window: 1000

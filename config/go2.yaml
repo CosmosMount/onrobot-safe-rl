@@ -8,10 +8,10 @@ reward_tracking_ang_vel_weight: 4.0
 reward_lateral_velocity_weight: 0.5
 reward_roll_pitch_rate_weight: 0.4
 train:
-  agent: livesac
+  agent: droq
   control_frequency: 20.0
   explore_action_scale: 0.5
-  async_collection: false
+  async_collection: true
   max_steps: 15000
   utd_ratio: 5
   save_dir: saved/checkpoints_46d

@@ -132,7 +132,7 @@ DroQ 默认参数与之前更容易收敛的配置对齐：
 - `actor_q_reduction: min`
 - `target_q_min: -100.0`
 - `target_q_max: 1000.0`
-- `terminal_replay_repeats: 4`
+- terminal transition 在同步和异步模式下都只写入 replay 一次
 - `temp_initial_value: 0.1`
 
 reward profile 默认是 `upstream`，对应 `walk_in_the_park` 的 dense run reward：

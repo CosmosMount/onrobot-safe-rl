@@ -476,11 +476,12 @@ def run_training(agent, env, cfg: TrainConfig):
                 transition = _batched_transition(
                     observation, action_nominal, action_requested,
                     action_executed, action_q_target, reward, next_observation, info)
-                repeats = max(1, int(cfg.terminal_replay_repeats) if info.get("terminated") else 1)
-                for repeat_index in range(repeats):
-                    transition["replay_repeat_index"] = np.asarray(
-                        [repeat_index], dtype=np.int32)
-                    agent.process_transition(transition)
+                # Keep synchronous replay semantics identical to the async
+                # collector: every runtime transition, including terminal
+                # transitions, is inserted exactly once.
+                transition["replay_repeat_index"] = np.asarray(
+                    [0], dtype=np.int32)
+                agent.process_transition(transition)
 
             update_info = None
             update_elapsed = 0.0

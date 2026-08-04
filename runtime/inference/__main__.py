@@ -104,6 +104,7 @@ class PolicyInferenceRuntime:
         self._action_policy_update_step_latest = -1
         self._action_sent_time_ns_latest = 0
         self._action_repeated_steps = 0
+        self._stop_requested = False
         self._awaiting_reset_pose = False
         self._reset_pose_stable_count = 0
         self._reset_pose_wait_steps = 0
@@ -346,6 +347,10 @@ class PolicyInferenceRuntime:
     def _receive_action(self) -> None:
         message = self._action_rx.recv_latest()
         if not message:
+            return
+        if message.get("command") == "stop":
+            self._stop_requested = True
+            self._clear_policy_action(reset_episode=False)
             return
         if (bool(message.get("clear", False))
                 or message.get("command") == "clear"):
@@ -633,6 +638,8 @@ class PolicyInferenceRuntime:
         )
         while True:
             message = self._runtime_step()
+            if self._stop_requested:
+                break
             # Compatibility mailbox remains available for the existing
             # synchronous client. The async collector consumes the ordered
             # queue, which never silently overwrites a terminal transition.

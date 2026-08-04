@@ -46,6 +46,7 @@ class OrderedRuntimeChannel:
         self._last_runtime_step_id: int | None = None
         self._last_episode_id: int | None = None
         self._last_applied_action_id = -1
+        self._stop_sent = False
 
     def connect(self, *, timeout: float = 120.0) -> None:
         self._action_tx.wait_ready(timeout=timeout)
@@ -65,6 +66,11 @@ class OrderedRuntimeChannel:
 
     def clear_action(self) -> None:
         self._action_tx.send({"command": "clear"})
+
+    def stop(self) -> None:
+        """Ask the fixed-rate runtime to stop its producer loop."""
+        self._stop_sent = True
+        self._action_tx.send({"command": "stop"})
 
     def recv(self, *, timeout: float = 10.0) -> RuntimeEnvelope:
         message = self._state_rx.recv(timeout=timeout)
@@ -131,6 +137,9 @@ class OrderedRuntimeChannel:
         return self._state_rx.depth()
 
     def close(self) -> None:
-        self.clear_action()
+        # Do not overwrite the stop command with a trailing clear command:
+        # SharedMemorySender is a latest-value mailbox.
+        if not self._stop_sent:
+            self.clear_action()
         self._action_tx.close()
         self._state_rx.close()

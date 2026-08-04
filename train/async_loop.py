@@ -170,8 +170,15 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
                 item = transition_queue.get(timeout=10.0)
             except queue.Empty:
                 if not collector.is_alive():
+                    if collector.exitcode == 0:
+                        # A clean collector exit is a normal shutdown path.
+                        # Drain anything already handed off, then let the
+                        # finally block stop the runtime producer.
+                        status = "finished"
+                        break
                     raise RuntimeError(
-                        f"collector exited unexpectedly: {collector.exitcode}")
+                        "collector exited unexpectedly: "
+                        f"exitcode={collector.exitcode}")
                 continue
             transition = item["transition"]
             info = item["info"]
