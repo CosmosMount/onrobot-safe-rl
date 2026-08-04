@@ -22,8 +22,8 @@ except ImportError:
     tqdm_module = None
 
 from rl.utils.logger import AverageMeterDict, WandbTrainerLogger
-from rl.agents.base.update import PolicyUpdateRequest
 from train.config import TrainConfig
+from train.update_schedule import UTDUpdateScheduler
 from robots.go2.joint_layout import LEG_NAMES, LEG_SLICES
 
 
@@ -284,9 +284,14 @@ def _update_agent(agent, cfg: TrainConfig, source_step: int) -> tuple[dict[str, 
         return None, 0.0
 
     last_info: dict[str, float] | None = None
-    info = agent.update_policy_steps(PolicyUpdateRequest(
-        policy_steps=1,
-        critic_updates_per_policy_step=int(cfg.utd_ratio)))
+    scheduler = getattr(agent, "_utd_update_scheduler", None)
+    if scheduler is None or scheduler.utd_ratio != float(cfg.utd_ratio):
+        scheduler = UTDUpdateScheduler(cfg.utd_ratio)
+        agent._utd_update_scheduler = scheduler
+    request = scheduler.next_request()
+    if request is None:
+        return None, time.perf_counter() - update_t0
+    info = agent.update_policy_steps(request)
     finite_info: dict[str, float] = {}
     for key, value in info.items():
         fv = float(value)

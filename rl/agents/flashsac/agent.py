@@ -535,16 +535,16 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
             if self._cfg.actor_update_unit == "critic_step":
                 do_actor = critic_before % self._cfg.actor_update_interval == 0
             else:
+                # Associate critic updates with the policy-step span in this
+                # request. This also handles fractional UTD batches where one
+                # critic may cover multiple policy steps.
                 policy_completed_before = policy_before + (
-                    critic_index // request.critic_updates_per_policy_step)
+                    critic_index * request.policy_steps / request.critic_updates)
                 policy_completed = policy_before + (
-                    (critic_index + 1)
-                    // request.critic_updates_per_policy_step)
+                    (critic_index + 1) * request.policy_steps / request.critic_updates)
                 do_actor = (
-                    (critic_index + 1)
-                    % request.critic_updates_per_policy_step == 0
-                    and (policy_completed_before // self._cfg.actor_update_interval)
-                    < (policy_completed // self._cfg.actor_update_interval))
+                    int(policy_completed_before // self._cfg.actor_update_interval)
+                    < int(policy_completed // self._cfg.actor_update_interval))
             info = _update_networks(
                 batch=batch, actor=self._actor, critic=self._critic,
                 target_critic=self._target_critic, temperature=self._temperature,

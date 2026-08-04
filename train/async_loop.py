@@ -13,7 +13,6 @@ from typing import Any
 import numpy as np
 from omegaconf import OmegaConf
 
-from rl.agents.base.update import PolicyUpdateRequest
 from rl.utils.logger import WandbTrainerLogger
 from train.async_collector import run_async_collector
 from train.loop import (
@@ -23,6 +22,7 @@ from train.loop import (
     restore_snapshot,
     save_snapshot,
 )
+from train.update_schedule import UTDUpdateScheduler
 
 
 class _NullTrainerLogger:
@@ -157,6 +157,7 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
     max_runtime_queue_depth = 0
     max_transition_queue_depth = 0
     final_inference_weight_version = initial_update_version
+    utd_scheduler = UTDUpdateScheduler(cfg.utd_ratio)
     last_update_info: dict[str, float] = {}
     repeated_action_steps_base = int(resume_state.get(
         "repeated_action_steps", 0))
@@ -207,9 +208,10 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
                 pass
 
             if steps >= int(cfg.start_training) and agent.can_start_training():
-                update_info = agent.update_policy_steps(PolicyUpdateRequest(
-                    policy_steps=1,
-                    critic_updates_per_policy_step=int(cfg.utd_ratio)))
+                request = utd_scheduler.next_request()
+                if request is None:
+                    continue
+                update_info = agent.update_policy_steps(request)
                 if not all(np.isfinite(float(v))
                            for v in update_info.values()):
                     raise FloatingPointError(

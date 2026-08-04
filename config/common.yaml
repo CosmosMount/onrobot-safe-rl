@@ -63,7 +63,7 @@ train:
   benchmark_only: false
   benchmark_steps: 200
   wandb: true
-  wandb_project: go2_walk
+  wandb_project: sacs
   wandb_run_name: null
   agent: droq
 
@@ -126,7 +126,7 @@ train:
 
   livesac:
     device_type: cuda
-    buffer_device_type: cpu
+    buffer_device_type: cuda
     buffer_min_length: 1000
     actor_lr: 3.0e-4
     critic_lr: 3.0e-4
@@ -138,10 +138,10 @@ train:
     critic_num_qs: 5
     critic_num_bins: 101
     critic_dropout_rate: 0.01
-    critic_min_v: -20.0
-    critic_max_v: 100.0
+    critic_min_v: -5.0
+    critic_max_v: 5.0
     critic_target_update_tau: 0.005
-    normalize_reward: false
+    normalize_reward: true
     normalized_G_max: 5.0
     gamma: 0.99
     n_step: 1

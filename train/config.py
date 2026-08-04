@@ -135,7 +135,7 @@ class TrainConfig:
     max_steps: int = 1_000_000
     start_training: int = 1000
     batch_size: int = 256
-    utd_ratio: int = 20
+    utd_ratio: float = 20
     buffer_size: int = 1_000_000
     terminal_replay_repeats: int = 1
     async_collection: bool = False
@@ -445,6 +445,10 @@ def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, dict[str,
 
     if cfg.utd_ratio <= 0:
         raise ValueError('utd_ratio must be positive')
+    if (not math.isfinite(float(cfg.utd_ratio)) or
+            (str(cfg.agent).lower() != 'flashsac' and
+             not float(cfg.utd_ratio).is_integer())):
+        raise ValueError('fractional utd_ratio is supported only for flashsac')
     if cfg.max_joint_delta is not None and (
             not np.all(np.isfinite(cfg.max_joint_delta)) or np.any(cfg.max_joint_delta <= 0)):
         raise ValueError('max_joint_delta must be finite and positive when enabled')

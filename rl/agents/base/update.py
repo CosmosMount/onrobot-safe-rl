@@ -10,7 +10,8 @@ class PolicyUpdateRequest:
     """Update budget produced by one or more real policy transitions."""
 
     policy_steps: int
-    critic_updates_per_policy_step: int
+    critic_updates_per_policy_step: float
+    critic_updates_override: int | None = None
 
     def __post_init__(self) -> None:
         if self.policy_steps <= 0:
@@ -18,10 +19,17 @@ class PolicyUpdateRequest:
         if self.critic_updates_per_policy_step <= 0:
             raise ValueError(
                 "critic_updates_per_policy_step must be positive")
+        if self.critic_updates_override is not None and self.critic_updates_override <= 0:
+            raise ValueError("critic_updates_override must be positive")
 
     @property
     def critic_updates(self) -> int:
-        return self.policy_steps * self.critic_updates_per_policy_step
+        if self.critic_updates_override is not None:
+            return self.critic_updates_override
+        updates = self.policy_steps * self.critic_updates_per_policy_step
+        if not float(updates).is_integer():
+            raise ValueError("fractional UTD requires critic_updates_override")
+        return int(updates)
 
 
 @dataclass
