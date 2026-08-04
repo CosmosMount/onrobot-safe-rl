@@ -229,6 +229,18 @@ def update_critic(
                 max_v=max_v,
             )
             max_entropy_bonus = next_actor_entropy.max()
+            bin_width = (max_v - min_v) / (num_bins - 1)
+            bin_values = torch.linspace(
+                min_v, max_v, num_bins, device=next_actor_log_probs.device,
+                dtype=next_actor_log_probs.dtype).view(1, -1)
+            raw_target_bin_values = (
+                batch["reward"].reshape(-1, 1)
+                + batch["discount"].reshape(-1, 1)
+                * (bin_values - next_actor_entropy.reshape(-1, 1)))
+            target_clamp_low_rate = (raw_target_bin_values < min_v).float().mean()
+            target_clamp_high_rate = (raw_target_bin_values > max_v).float().mean()
+            target_value_min = raw_target_bin_values.min()
+            target_value_max = raw_target_bin_values.max()
 
         # Compute predicted q-value
         pred_qs_all, pred_q_infos = critic(
@@ -263,6 +275,11 @@ def update_critic(
     update_info = {
         "loss": critic_loss,
         "max_entropy_bonus": max_entropy_bonus,
+        "target_clamp_low_rate": target_clamp_low_rate,
+        "target_clamp_high_rate": target_clamp_high_rate,
+        "target_value_min": target_value_min,
+        "target_value_max": target_value_max,
+        "bin_width": torch.as_tensor(bin_width, device=critic_loss.device),
     }
     update_info = add_prefix_to_keys(update_info, "critic")
 

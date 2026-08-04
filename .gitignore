@@ -5,5 +5,4 @@ saved/
 build/
 wandb/
 logs/
-tests/
 __pycache__/

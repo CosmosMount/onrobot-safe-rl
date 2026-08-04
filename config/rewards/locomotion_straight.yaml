@@ -2,8 +2,8 @@
 # No yaw command, lateral command, gait phase, contact, or foot-air-time term.
 reward_profile: locomotion_straight
 
-# v4 zero-based forward task signal.
-reward_forward_weight: 8.0
+# Deprecated compatibility field; locomotion_straight never uses it.
+reward_forward_weight: 0.0
 reward_upright_min_cos: 0.94
 reward_upright_exponent: 2.0
 reward_roll_pitch_rate_weight: 0.20
@@ -15,11 +15,17 @@ reward_angular_rate_scale: 2.0
 reward_lateral_velocity_scale: 0.35
 reward_vertical_velocity_scale: 0.40
 reward_action_rate_scale: 0.25
+reward_action_rate_penalty_max: 4.0
+reward_action_magnitude_weight: 0.02
+reward_action_magnitude_scale: 0.60
+reward_action_magnitude_penalty_max: 2.0
 reward_leg_activity_epsilon: 0.01
 reward_leg_balance_speed_gate: 0.05
+reward_leg_action_activity_scale: 0.05
+reward_leg_joint_velocity_scale: 1.0
 
 # Genesis/Go2 straight command: vx only.
-reward_tracking_lin_vel_weight: 1.0
+reward_tracking_lin_vel_weight: 8.0
 reward_tracking_ang_vel_weight: 0.25
 reward_similar_to_default_weight: 0.05
 reward_base_height_weight: 15.0
@@ -28,13 +34,18 @@ reward_base_height_target: 0.445
 reward_command_vx: 0.5
 
 # Terms available in the current state interface.
-reward_orientation_weight: 8.0
+reward_orientation_weight: 1.0
+reward_orientation_penalty_max: 4.0
 reward_dof_velocity_weight: 0.05
 reward_dof_velocity_scale: 4.0
 reward_joint_limit_weight: 0.20
 reward_joint_limit_margin: 0.10
-reward_forward_tilt_weight: 8.0
-reward_forward_pitch_rate_weight: 1.0
+reward_forward_tilt_weight: 2.0
+reward_pitch_free_rad: 0.10
+reward_pitch_danger_rad: 0.40
+reward_forward_pitch_rate_weight: 0.50
+reward_pitch_rate_scale: 1.0
+reward_pitch_rate_penalty_max: 2.0
 
 fall_terminal_penalty: -100.0
 

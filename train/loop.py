@@ -258,7 +258,7 @@ def restore_snapshot(agent, cfg: TrainConfig, checkpoint: str | None = None) -> 
     return _snapshot_step(path)
 
 
-def restore_policy_snapshot(agent, cfg: TrainConfig, checkpoint: str | None = None) -> int:
+def restore_policy_snapshot(agent, cfg: TrainConfig, checkpoint: str | None = None) -> int | None:
     """Load only policy state for evaluation; replay is not needed for play."""
     path = Path(checkpoint) if checkpoint is not None else latest_snapshot(cfg.save_dir)
     if path is None:
@@ -269,7 +269,8 @@ def restore_policy_snapshot(agent, cfg: TrainConfig, checkpoint: str | None = No
     if not agent_path.exists():
         raise FileNotFoundError(f"Policy checkpoint not found: {agent_path}")
     agent.load(str(agent_path))
-    return _snapshot_step(path)
+    match = re.fullmatch(r"step_(\d+)", path.name)
+    return int(match.group(1)) if match else None
 
 
 def _sample_policy_action(agent, observation: np.ndarray, step: int, *, training: bool) -> np.ndarray:
@@ -768,6 +769,10 @@ def run_training(agent, env, cfg: TrainConfig):
                     **{
                         "training/return": episode_return,
                         "training/length": float(episode_length),
+                        "episode/return": float(episode_return),
+                        "episode/length": float(episode_length),
+                        "episode/terminated": float(
+                            bool(info.get("terminated", False))),
                     }
                 )
                 logger.log_metric(step=i)
@@ -852,7 +857,8 @@ def run_training(agent, env, cfg: TrainConfig):
 
 def run_play(agent, env, cfg: TrainConfig, *, checkpoint: str | None, episodes: int) -> int:
     checkpoint_step = restore_policy_snapshot(agent, cfg, checkpoint)
-    _log(f"[play] loaded policy checkpoint step={checkpoint_step}")
+    checkpoint_label = checkpoint_step if checkpoint_step is not None else "unknown"
+    _log(f"[play] loaded policy checkpoint step={checkpoint_label}")
     for episode in range(episodes):
         observation = env.reset()
         done = False

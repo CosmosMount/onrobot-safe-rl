@@ -69,6 +69,15 @@ def update_actor(
 
     _optimizer_step(actor_loss, actor, use_amp=use_amp, grad_scaler=grad_scaler)
 
+    action_std_per_dim = actions.std(dim=0, unbiased=False).detach()
+    action_metrics = {
+        "action_std_mean": action_std_per_dim.mean(),
+        "action_std_max": action_std_per_dim.max(),
+        "action_saturation": (actions.abs() >= 0.99).float().mean().detach(),
+    }
+    action_metrics.update({
+        f"per_dim_std_{i}": value for i, value in enumerate(action_std_per_dim)
+    })
     return add_prefix_to_keys(
         {
             "loss": actor_loss.detach(),
@@ -76,7 +85,7 @@ def update_actor(
             "q": q.mean().detach(),
             "action_mean": actions.mean().detach(),
             "action_std": actions.std(unbiased=False).detach(),
-            "action_saturation": (actions.abs() >= 0.99).float().mean().detach(),
+            **action_metrics,
             "mean_abs": info["mean"].abs().mean().detach(),
             "log_std_mean": info["log_std"].mean().detach(),
             "log_std_min": info["log_std"].min().detach(),

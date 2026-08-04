@@ -26,7 +26,7 @@ from rl.utils.types import NDArray, Tensor
 class LiveSACConfig:
     seed: int; device_type: str; buffer_device_type: str; buffer_max_length: int; buffer_min_length: int; sample_batch_size: int
     actor_lr: float; critic_lr: float; temp_lr: float; actor_hidden_dims: Sequence[int]
-    critic_hidden_dim: int; critic_expansion: int; critic_num_blocks: int; critic_num_qs: int; critic_num_bins: int
+    critic_hidden_dim: int; critic_expansion: int; critic_num_blocks: int; critic_num_qs: int; critic_num_bins: int; critic_dropout_rate: float
     critic_min_v: float; critic_max_v: float; critic_target_update_tau: float
     normalize_reward: bool; normalized_G_max: float; gamma: float; n_step: int
     target_entropy: Optional[float]; temp_initial_value: float; asymmetric_observation: bool
@@ -52,10 +52,10 @@ class LiveSACAgent(BaseAgent[LiveSACConfig]):
         actor_net = DroQActor(self._actor_observation_dim, self._action_dim, cfg.actor_hidden_dims).to(self._device)
         self._actor = Network(actor_net, optim.Adam(actor_net.parameters(), lr=cfg.actor_lr, fused=fused))
         critic_net = LiveSACDoubleCritic(self._critic_observation_dim, self._action_dim, cfg.critic_hidden_dim, cfg.critic_expansion,
-                                         cfg.critic_num_blocks, cfg.critic_num_qs, cfg.critic_num_bins, cfg.critic_min_v, cfg.critic_max_v).to(self._device)
+                                         cfg.critic_num_blocks, cfg.critic_num_qs, cfg.critic_num_bins, cfg.critic_min_v, cfg.critic_max_v, cfg.critic_dropout_rate).to(self._device)
         self._critic = Network(critic_net, optim.Adam(critic_net.parameters(), lr=cfg.critic_lr, fused=fused), use_weight_normalization=False)
         target_net = LiveSACDoubleCritic(self._critic_observation_dim, self._action_dim, cfg.critic_hidden_dim, cfg.critic_expansion,
-                                         cfg.critic_num_blocks, cfg.critic_num_qs, cfg.critic_num_bins, cfg.critic_min_v, cfg.critic_max_v).to(self._device)
+                                         cfg.critic_num_blocks, cfg.critic_num_qs, cfg.critic_num_bins, cfg.critic_min_v, cfg.critic_max_v, cfg.critic_dropout_rate).to(self._device)
         target_net.load_state_dict(critic_net.state_dict())
         self._target_critic = Network(target_net, use_weight_normalization=False, ema_source=self._critic, ema_tau=cfg.critic_target_update_tau)
         temp_net = DroQTemperature(cfg.temp_initial_value).to(self._device)
@@ -70,16 +70,14 @@ class LiveSACAgent(BaseAgent[LiveSACConfig]):
 
     @staticmethod
     def _validate_config(cfg: LiveSACConfig) -> None:
-        fixed = ((list(cfg.actor_hidden_dims), [256, 256], "actor_hidden_dims"), (cfg.critic_hidden_dim, 256, "critic_hidden_dim"),
-                 (cfg.critic_expansion, 2, "critic_expansion"), (cfg.critic_num_blocks, 1, "critic_num_blocks"), (cfg.critic_num_qs, 2, "critic_num_qs"),
-                 (cfg.critic_num_bins, 101, "critic_num_bins"), (cfg.critic_min_v, -5.0, "critic_min_v"), (cfg.critic_max_v, 5.0, "critic_max_v"),
-                 (cfg.normalize_reward, True, "normalize_reward"), (cfg.normalized_G_max, 5.0, "normalized_G_max"), (cfg.actor_update_interval, 1, "actor_update_interval"), (cfg.actor_update_unit, "policy_step", "actor_update_unit"))
-        for actual, expected, name in fixed:
-            if actual != expected: raise ValueError(f"LiveSAC v1.0 requires {name}={expected!r}")
         if not (0 < cfg.gamma <= 1) or cfg.n_step <= 0 or any(x <= 0 for x in (cfg.actor_lr, cfg.critic_lr, cfg.temp_lr)) or cfg.buffer_min_length <= 0 or cfg.sample_batch_size <= 0:
             raise ValueError("LiveSAC v1.0 requires valid gamma, n_step, learning rates, buffer_min_length, and sample_batch_size")
         if not (0 < cfg.critic_target_update_tau <= 1) or cfg.critic_min_v >= cfg.critic_max_v or cfg.temp_initial_value <= 0:
             raise ValueError("LiveSAC v1.0 requires valid critic support, target tau, and temperature")
+        if cfg.actor_update_interval <= 0 or cfg.actor_update_unit != "policy_step":
+            raise ValueError("LiveSAC actor updates must use a positive policy-step interval")
+        if not 0.0 <= cfg.critic_dropout_rate < 1.0:
+            raise ValueError("LiveSAC critic_dropout_rate must be in [0, 1)")
 
     def _actor_obs(self, value: Tensor) -> torch.Tensor:
         obs = torch.as_tensor(value, dtype=torch.float32, device=self._device)

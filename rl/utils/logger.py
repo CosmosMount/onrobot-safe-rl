@@ -14,6 +14,7 @@ class WandbTrainerLogger:
             project=cfg.project_name,
             entity=cfg.entity_name,
             group=cfg.group_name,
+            name=cfg.run_name,
             config=dict_cfg,  # type: ignore
         )
         self.run_id = wandb.run.id if wandb.run is not None else None

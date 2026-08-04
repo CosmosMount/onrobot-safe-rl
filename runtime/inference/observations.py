@@ -134,8 +134,13 @@ def _body_up(quat: np.ndarray) -> float:
     return float(1.0 - 2.0 * (x * x + y * y))
 
 
-def _leg_balance(values: np.ndarray, epsilon: float) -> tuple[float, float, float]:
-    values = np.asarray(values, dtype=np.float32).reshape(4)
+def _leg_balance(action_activity: np.ndarray, joint_velocity: np.ndarray,
+                 action_scale: float, velocity_scale: float,
+                 epsilon: float) -> tuple[float, float, float]:
+    action_activity = np.asarray(action_activity, dtype=np.float32).reshape(4)
+    joint_velocity = np.asarray(joint_velocity, dtype=np.float32).reshape(4)
+    values = np.sqrt((action_activity / action_scale) ** 2
+                     + (joint_velocity / velocity_scale) ** 2)
     front = float(abs(values[0] - values[1]) / (values[0] + values[1] + epsilon))
     rear = float(abs(values[2] - values[3]) / (values[2] + values[3] + epsilon))
     return front, rear, 0.5 * (front + rear)
@@ -158,12 +163,13 @@ def _get_locomotion_straight_reward(
     droll, dpitch, dyaw = (float(state.imu_gyro[i]) for i in range(3))
     body_up = _body_up(state.imu_quat)
 
-    forward_bounds = (cfg.move_speed, 2.0 * cfg.move_speed)
-    forward_margin = 2.0 * cfg.move_speed
-    forward_raw = _tolerance(vx, forward_bounds, forward_margin)
-    rest_baseline = _tolerance(0.0, forward_bounds, forward_margin)
+    forward_raw = _tolerance(vx, (cfg.move_speed, 2.0 * cfg.move_speed),
+                              2.0 * cfg.move_speed)
     forward_zero_based = float(np.clip(
-        (forward_raw - rest_baseline) / (1.0 - rest_baseline + 1e-6), 0.0, 1.0))
+        (forward_raw - _tolerance(0.0, (cfg.move_speed, 2.0 * cfg.move_speed),
+                                   2.0 * cfg.move_speed))
+        / (1.0 - _tolerance(0.0, (cfg.move_speed, 2.0 * cfg.move_speed),
+                             2.0 * cfg.move_speed) + 1e-6), 0.0, 1.0))
     if vx < 0.0:
         forward_zero_based = 0.0
 
@@ -173,28 +179,47 @@ def _get_locomotion_straight_reward(
     ) ** cfg.reward_upright_exponent)
 
     tracking_sigma = float(cfg.reward_tracking_sigma)
-    linear_error = (cfg.reward_command_vx - vx) ** 2 + vy ** 2
-    linear_tracking = float(np.exp(-linear_error / tracking_sigma))
-    stationary_linear = float(np.exp(-(cfg.reward_command_vx ** 2) / tracking_sigma))
-    linear_tracking_zero_based = float(np.clip(
-        (linear_tracking - stationary_linear)
-        / (1.0 - stationary_linear + 1e-6), 0.0, 1.0))
+    x_error = (cfg.reward_command_vx - vx) ** 2
+    x_tracking_raw = float(np.exp(-x_error / tracking_sigma))
+    x_tracking_idle = float(np.exp(-(cfg.reward_command_vx ** 2) / tracking_sigma))
+    x_tracking_zero_based = float(np.clip(
+        (x_tracking_raw - x_tracking_idle) / (1.0 - x_tracking_idle + 1e-6), 0.0, 1.0))
+    if vx < 0.0:
+        x_tracking_zero_based = 0.0
+    # Legacy diagnostic only: this retains the former vx/vy combined signal
+    # for dashboards and old log consumers, but it never enters dense_total.
+    legacy_linear_tracking = float(np.exp(-((cfg.reward_command_vx - vx) ** 2 + vy ** 2)
+                                          / tracking_sigma))
+    legacy_linear_idle = float(np.exp(-(cfg.reward_command_vx ** 2) / tracking_sigma))
+    legacy_linear_zero_based = float(np.clip(
+        (legacy_linear_tracking - legacy_linear_idle)
+        / (1.0 - legacy_linear_idle + 1e-6), 0.0, 1.0))
     angular_tracking = float(np.exp(-(dyaw ** 2) / tracking_sigma))
     yaw_tracking_penalty = float(np.clip(1.0 - angular_tracking, 0.0, 1.0))
 
     action_delta = (
         np.asarray(context.action_requested, dtype=np.float32)
         - np.asarray(context.action_requested_previous, dtype=np.float32))
-    action_rate_penalty = float(np.clip(
-        np.mean(np.square(action_delta)) / (cfg.reward_action_rate_scale ** 2), 0.0, 1.0))
+    action_rate_rms = float(np.sqrt(np.mean(np.square(action_delta))))
+    action_rate_penalty = float(np.minimum(
+        np.mean(np.square(action_delta)) / (cfg.reward_action_rate_scale ** 2),
+        cfg.reward_action_rate_penalty_max))
+    action_magnitude_rms = float(np.sqrt(np.mean(np.square(context.action_requested))))
+    action_magnitude_penalty = float(np.minimum(
+        np.mean(np.square(context.action_requested)) / (cfg.reward_action_magnitude_scale ** 2),
+        cfg.reward_action_magnitude_penalty_max))
     roll_pitch_penalty = float(np.clip(
         (droll * droll + dpitch * dpitch) / (cfg.reward_angular_rate_scale ** 2), 0.0, 1.0))
-    lateral_penalty = float(np.clip(vy * vy / (cfg.reward_lateral_velocity_scale ** 2), 0.0, 1.0))
-    vertical_penalty = float(np.clip(vz * vz / (cfg.reward_vertical_velocity_scale ** 2), 0.0, 1.0))
+    lateral_penalty = float(np.minimum(vy * vy / (cfg.reward_lateral_velocity_scale ** 2), 1.0))
+    vertical_penalty = float(np.minimum(
+        vz * vz / (cfg.reward_vertical_velocity_scale ** 2),
+        cfg.reward_vertical_velocity_penalty_max))
 
     front_balance, rear_balance, leg_balance = _leg_balance(
-        context.leg_action_delta_rms, cfg.reward_leg_activity_epsilon)
-    if not (vx > cfg.reward_leg_balance_speed_gate or forward_zero_based > 0.01):
+        context.leg_action_delta_rms, context.leg_joint_velocity_rms,
+        cfg.reward_leg_action_activity_scale, cfg.reward_leg_joint_velocity_scale,
+        cfg.reward_leg_activity_epsilon)
+    if not (vx > cfg.reward_leg_balance_speed_gate or x_tracking_zero_based > 0.01):
         front_balance = rear_balance = leg_balance = 0.0
 
     pose_penalty = float(np.sum(np.abs(
@@ -202,11 +227,16 @@ def _get_locomotion_straight_reward(
         - np.asarray(cfg.init_qpos, dtype=np.float32))))
     base_height = float(np.asarray(state.world_position, dtype=np.float32)[2])
     base_height_penalty = float((base_height - cfg.reward_base_height_target) ** 2)
-    orientation_penalty = float(np.clip(1.0 - body_up * body_up, 0.0, 1.0))
+    orientation_penalty = float(np.clip(
+        (1.0 - body_up) / (1.0 - cfg.reward_upright_min_cos + 1e-6),
+        0.0, cfg.reward_orientation_penalty_max))
     forward_tilt_penalty = float(np.clip(
-        max(0.0, pitch - 0.10) / 0.30, 0.0, 1.0) ** 2)
+        (abs(pitch) - cfg.reward_pitch_free_rad)
+        / max(cfg.reward_pitch_danger_rad - cfg.reward_pitch_free_rad, 1e-6),
+        0.0, 1.0) ** 2)
     forward_pitch_rate_penalty = float(np.clip(
-        max(0.0, dpitch) / 1.0, 0.0, 1.0) ** 2)
+        abs(dpitch) / cfg.reward_pitch_rate_scale,
+        0.0, cfg.reward_pitch_rate_penalty_max) ** 2)
     dof_velocity_penalty = float(np.clip(
         np.mean(np.square(np.asarray(state.joint_dq, dtype=np.float32)))
         / (cfg.reward_dof_velocity_scale ** 2), 0.0, 1.0))
@@ -221,13 +251,13 @@ def _get_locomotion_straight_reward(
     joint_limit_penalty = float(np.mean(np.maximum(near_lower, near_upper)))
 
     dense_total = (
-        cfg.reward_forward_weight * forward_zero_based * upright_gate
-        + cfg.reward_tracking_lin_vel_weight * linear_tracking_zero_based * upright_gate
+        cfg.reward_tracking_lin_vel_weight * x_tracking_zero_based * upright_gate
         - cfg.reward_tracking_ang_vel_weight * yaw_tracking_penalty
         - cfg.reward_roll_pitch_rate_weight * roll_pitch_penalty
         - cfg.reward_lateral_velocity_weight * lateral_penalty
         - cfg.reward_vertical_velocity_weight * vertical_penalty
         - cfg.reward_action_rate_weight * action_rate_penalty
+        - cfg.reward_action_magnitude_weight * action_magnitude_penalty
         - cfg.reward_similar_to_default_weight * pose_penalty
         - cfg.reward_base_height_weight * base_height_penalty
         - cfg.reward_leg_activity_balance_weight * leg_balance
@@ -242,14 +272,18 @@ def _get_locomotion_straight_reward(
         'reward/forward_zero_based': forward_zero_based,
         'reward/body_up': body_up,
         'reward/upright_gate': upright_gate,
-        'reward/linear_velocity_tracking': linear_tracking,
-        'reward/linear_tracking_zero_based': linear_tracking_zero_based,
+        'reward/x_tracking_raw': x_tracking_raw,
+        'reward/x_tracking_idle_baseline': x_tracking_idle,
+        'reward/x_tracking_zero_based': x_tracking_zero_based,
+        'reward/linear_velocity_tracking': legacy_linear_tracking,
+        'reward/linear_tracking_zero_based': legacy_linear_zero_based,
         'reward/angular_velocity_tracking': angular_tracking,
         'reward/yaw_tracking_penalty': yaw_tracking_penalty,
         'reward/roll_pitch_rate_penalty': roll_pitch_penalty,
         'reward/lateral_velocity_penalty': lateral_penalty,
         'reward/vertical_velocity_penalty': vertical_penalty,
         'reward/action_rate_penalty': action_rate_penalty,
+        'reward/action_magnitude_penalty': action_magnitude_penalty,
         'reward/similar_to_default_penalty': pose_penalty,
         'reward/base_height_penalty': base_height_penalty,
         'reward/orientation_penalty': orientation_penalty,
@@ -257,6 +291,8 @@ def _get_locomotion_straight_reward(
         'reward/joint_limit_penalty': joint_limit_penalty,
         'reward/forward_tilt_penalty': forward_tilt_penalty,
         'reward/forward_pitch_rate_penalty': forward_pitch_rate_penalty,
+        'reward/pitch_risk_penalty': forward_tilt_penalty,
+        'reward/pitch_rate_risk_penalty': forward_pitch_rate_penalty,
         'reward/leg_activity_balance_penalty': leg_balance,
         'reward/front_activity_balance': front_balance,
         'reward/rear_activity_balance': rear_balance,
@@ -274,6 +310,12 @@ def _get_locomotion_straight_reward(
         'env/vx': vx,
         'env/vy': vy,
         'env/vz': vz,
+        'env/abs_roll': abs(roll),
+        'env/abs_pitch': abs(pitch),
+        'env/roll_pitch_rate_norm': float(np.sqrt(droll * droll + dpitch * dpitch)),
+        'env/abs_vertical_velocity': abs(vz),
+        'env/action_rate_rms': action_rate_rms,
+        'env/action_magnitude_rms': action_magnitude_rms,
         'x_velocity': vx,
         'forward_velocity': vx,
         'cos_pitch': float(np.cos(pitch)),

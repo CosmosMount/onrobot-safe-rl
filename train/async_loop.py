@@ -11,8 +11,10 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from omegaconf import OmegaConf
 
 from rl.agents.base.update import PolicyUpdateRequest
+from rl.utils.logger import WandbTrainerLogger
 from train.async_collector import run_async_collector
 from train.loop import (
     _agent_hashes,
@@ -21,6 +23,22 @@ from train.loop import (
     restore_snapshot,
     save_snapshot,
 )
+
+
+class _NullTrainerLogger:
+    run_id = None
+
+    def update_metric(self, **kwargs: Any) -> None:
+        del kwargs
+
+    def log_metric(self, step: int) -> None:
+        del step
+
+    def reset(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
 
 
 def _replace_latest(q: Any, payload: Any) -> None:
@@ -75,6 +93,31 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
         name="ordered-async-collector",
     )
 
+    logger_cfg = OmegaConf.create({
+        "project_name": cfg.wandb_project,
+        "entity_name": None,
+        "group_name": cfg.experiment_name,
+        "run_name": cfg.wandb_run_name,
+        "config": {
+            "experiment_name": cfg.experiment_name,
+            "agent": str(agent.cfg.agent_type),
+            "seed": cfg.seed,
+            "max_steps": cfg.max_steps,
+            "start_training": cfg.start_training,
+            "batch_size": cfg.batch_size,
+            "utd_ratio": cfg.utd_ratio,
+            "buffer_size": cfg.buffer_size,
+            "control_frequency": cfg.control_frequency,
+            "async_collection": True,
+            "target_speed_mps": robot_cfg.move_speed,
+            "reward_profile": robot_cfg.reward_profile,
+        },
+    })
+    logger = (
+        WandbTrainerLogger(logger_cfg)
+        if cfg.wandb and not cfg.benchmark_only
+        else _NullTrainerLogger()
+    )
     manifest_path = Path(cfg.save_dir) / "manifest.json"
     initial_hashes = _agent_hashes(agent)
     manifest = {
@@ -89,6 +132,7 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "status": "running",
         "resumed_from_step": start_i,
+        "wandb_run_id": logger.run_id,
     }
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
 
@@ -188,6 +232,8 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
 
             done = bool(transition["terminated"][0]
                         or transition["truncated"][0])
+            completed_episode_return = episode_return
+            completed_episode_length = episode_length
             if done:
                 episodes.append({
                     "end_step": steps,
@@ -207,6 +253,50 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
                     f"collector_ms_p50={np.median(recent):.2f} "
                     f"runtime_q={item.get('runtime_queue_depth', 0)}",
                     flush=True)
+            if (cfg.metrics_interval <= 1
+                    or steps % int(cfg.metrics_interval) == 0
+                    or done):
+                metrics = {
+                    "env/reward": float(transition["reward"][0]),
+                    "env/episode_return": float(completed_episode_return),
+                    "env/episode_length": float(completed_episode_length),
+                    "env/x_velocity": float(info.get("x_velocity", 0.0)),
+                    "env/dyaw": float(info.get("dyaw", 0.0)),
+                    "env/vy": float(info.get("vy", 0.0)),
+                    "rolling/falls_total": float(falls),
+                    "timing/collector_interval_ms": float(
+                        item.get("collector_interval_ms", 0.0)),
+                    "timing/runtime_queue_depth": float(
+                        item.get("runtime_queue_depth", 0)),
+                    "timing/repeated_action_rate": float(repeated_action_rate),
+                }
+                if done:
+                    metrics.update({
+                        "episode/return": float(completed_episode_return),
+                        "episode/length": float(completed_episode_length),
+                        "episode/terminated": float(
+                            bool(transition["terminated"][0])),
+                    })
+                if last_update_info:
+                    metrics.update({
+                        f"training/{key}": float(value)
+                        for key, value in last_update_info.items()
+                    })
+                metrics.update({
+                    str(key): float(value)
+                    for key, value in info.items()
+                    if (str(key).startswith(("reward/", "env/"))
+                        and np.isscalar(value)
+                        and np.isfinite(float(value)))
+                })
+                metrics.update({
+                    str(key): float(value)
+                    for key, value in agent.get_metrics().items()
+                    if np.isfinite(float(value))
+                })
+                logger.update_metric(**metrics)
+                logger.log_metric(step=steps)
+                logger.reset()
             if (cfg.save_checkpoints and checkpoint_interval > 0
                     and done and steps >= next_checkpoint):
                 save_snapshot(agent, cfg, steps)
@@ -225,6 +315,7 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
                     next_checkpoint += checkpoint_interval
         status = "finished"
     finally:
+        logger.close()
         try:
             control_queue.put_nowait("stop")
         except queue.Full:

@@ -32,7 +32,7 @@ class Go2Config:
     kp: np.ndarray                    # Nm/rad, explicit 12-vector view
     kd: np.ndarray                    # Nms/rad, explicit 12-vector view
     reward_profile: str
-    reward_forward_weight: float
+    reward_forward_weight: float  # deprecated; unused by locomotion_straight
     reward_upright_exponent: float
     reward_roll_pitch_rate_weight: float
     reward_lateral_velocity_weight: float
@@ -42,9 +42,16 @@ class Go2Config:
     reward_angular_rate_scale: float
     reward_lateral_velocity_scale: float
     reward_vertical_velocity_scale: float
+    reward_vertical_velocity_penalty_max: float
     reward_action_rate_scale: float
+    reward_action_rate_penalty_max: float
+    reward_action_magnitude_weight: float
+    reward_action_magnitude_scale: float
+    reward_action_magnitude_penalty_max: float
     reward_leg_activity_epsilon: float
     reward_leg_balance_speed_gate: float
+    reward_leg_action_activity_scale: float
+    reward_leg_joint_velocity_scale: float
     leg_activity_ema_beta: float
     leg_activity_minimum_action_delta_rms: float
     leg_activity_minimum_joint_velocity_rms: float
@@ -63,6 +70,11 @@ class Go2Config:
     reward_joint_limit_margin: float
     reward_forward_tilt_weight: float
     reward_forward_pitch_rate_weight: float
+    reward_orientation_penalty_max: float
+    reward_pitch_free_rad: float
+    reward_pitch_danger_rad: float
+    reward_pitch_rate_scale: float
+    reward_pitch_rate_penalty_max: float
     ipc_socket: str
     state_socket: str
     runtime_action_shm: str
@@ -248,9 +260,16 @@ def _parse_robot(root: dict[str, Any]) -> Go2Config:
         reward_angular_rate_scale=scale('reward_angular_rate_scale', 2.0),
         reward_lateral_velocity_scale=scale('reward_lateral_velocity_scale', 0.5),
         reward_vertical_velocity_scale=scale('reward_vertical_velocity_scale', 0.5),
+        reward_vertical_velocity_penalty_max=scale('reward_vertical_velocity_penalty_max', 4.0),
         reward_action_rate_scale=scale('reward_action_rate_scale', 0.25),
+        reward_action_rate_penalty_max=scale('reward_action_rate_penalty_max', 4.0),
+        reward_action_magnitude_weight=positive('reward_action_magnitude_weight', 0.02),
+        reward_action_magnitude_scale=scale('reward_action_magnitude_scale', 0.60),
+        reward_action_magnitude_penalty_max=scale('reward_action_magnitude_penalty_max', 2.0),
         reward_leg_activity_epsilon=scale('reward_leg_activity_epsilon', 0.01),
         reward_leg_balance_speed_gate=positive('reward_leg_balance_speed_gate', 0.05),
+        reward_leg_action_activity_scale=scale('reward_leg_action_activity_scale', 0.05),
+        reward_leg_joint_velocity_scale=scale('reward_leg_joint_velocity_scale', 1.0),
         leg_activity_ema_beta=ema_beta,
         leg_activity_minimum_action_delta_rms=positive('leg_activity_minimum_action_delta_rms', 0.01),
         leg_activity_minimum_joint_velocity_rms=positive('leg_activity_minimum_joint_velocity_rms', 0.05),
@@ -269,6 +288,11 @@ def _parse_robot(root: dict[str, Any]) -> Go2Config:
         reward_joint_limit_margin=scale('reward_joint_limit_margin', 0.10),
         reward_forward_tilt_weight=positive('reward_forward_tilt_weight', 8.0),
         reward_forward_pitch_rate_weight=positive('reward_forward_pitch_rate_weight', 1.0),
+        reward_orientation_penalty_max=scale('reward_orientation_penalty_max', 4.0),
+        reward_pitch_free_rad=positive('reward_pitch_free_rad', 0.10),
+        reward_pitch_danger_rad=positive('reward_pitch_danger_rad', 0.40),
+        reward_pitch_rate_scale=scale('reward_pitch_rate_scale', 1.0),
+        reward_pitch_rate_penalty_max=scale('reward_pitch_rate_penalty_max', 2.0),
         ipc_socket=root.get('ipc_socket', '/tmp/go2_policy.sock'),
         state_socket=root.get('state_socket', '/tmp/go2_policy.sock.state'),
         runtime_action_shm=root.get(
@@ -387,7 +411,7 @@ _LIVESAC_DEFAULTS: dict[str, Any] = {
     'device_type': 'cuda', 'buffer_device_type': 'cpu', 'buffer_min_length': 1000,
     'actor_lr': 3.0e-4, 'critic_lr': 3.0e-4, 'temp_lr': 3.0e-4,
     'actor_hidden_dims': [256, 256], 'critic_hidden_dim': 256, 'critic_expansion': 2,
-    'critic_num_blocks': 1, 'critic_num_qs': 2, 'critic_num_bins': 101,
+    'critic_num_blocks': 1, 'critic_num_qs': 2, 'critic_num_bins': 101, 'critic_dropout_rate': 0.01,
     'critic_min_v': -5.0, 'critic_max_v': 5.0, 'critic_target_update_tau': 0.005,
     'normalize_reward': True, 'normalized_G_max': 5.0, 'gamma': 0.99, 'n_step': 1,
     'target_entropy': None, 'temp_initial_value': 0.1, 'asymmetric_observation': False,
