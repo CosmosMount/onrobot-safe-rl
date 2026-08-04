@@ -413,6 +413,9 @@ _LIVESAC_DEFAULTS: dict[str, Any] = {
     'actor_hidden_dims': [256, 256], 'critic_hidden_dim': 256, 'critic_expansion': 2,
     'critic_num_blocks': 1, 'critic_num_qs': 2, 'critic_num_bins': 101, 'critic_dropout_rate': 0.01,
     'critic_min_v': -5.0, 'critic_max_v': 5.0, 'critic_target_update_tau': 0.005,
+    # These are the non-distributional parts of the DroQ update contract.
+    'num_min_qs': 2, 'sampled_backup': True, 'target_q_min': -100.0,
+    'target_q_max': 1000.0, 'actor_q_reduction': 'min',
     'normalize_reward': True, 'normalized_G_max': 5.0, 'gamma': 0.99, 'n_step': 1,
     'target_entropy': None, 'temp_initial_value': 0.1, 'asymmetric_observation': False,
     'actor_update_interval': 1, 'actor_update_unit': 'policy_step', 'use_compile': False,

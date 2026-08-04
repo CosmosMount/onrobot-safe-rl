@@ -88,6 +88,7 @@ python -m runtime.inference.runtime --config-profile go2
 - `go2`：默认在线 Go2 训练配置。
 - `simulation`：仿真实验 overlay。
 - `real_robot`：真机 Go2 网络配置，目前为 `domain_id=0`、`interface=eth0`，并假设 sport velocity 已经是 body frame。
+- `go2_livesac`：LiveSAC 的异步采集 profile；除 distributional critic 与 reward normalization 外，更新配置沿用 DroQ。
 
 3. 启动训练：
 
@@ -100,6 +101,7 @@ python -m train
 ```bash
 python -m train --agent droq
 python -m train --agent flashsac
+python -m train --config-profile go2_livesac
 ```
 
 运行 checkpoint 做 deterministic play：

@@ -1,0 +1,18 @@
+# LiveSAC profile: ordered asynchronous collection with a distributional
+# critic and optional reward normalization.
+reward_profile: locomotion_straight
+move_speed: 0.3
+reward_command_vx: 0.3
+
+train:
+  experiment_name: livesac_async
+  agent: livesac
+  async_collection: true
+  control_frequency: 50.0
+  explore_action_scale: 0.5
+  max_steps: 1000000
+  start_training: 1000
+  utd_ratio: 5
+  save_dir: saved/experiments/livesac_async
+  livesac:
+    normalize_reward: true

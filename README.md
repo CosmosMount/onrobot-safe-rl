@@ -87,6 +87,8 @@ Profiles:
 - `go2`: default online Go2 training profile.
 - `simulation`: simulation experiment overlay.
 - `real_robot`: real Go2 network profile, currently `domain_id=0`, `interface=eth0`, body-frame sport velocity.
+- `go2_livesac`: LiveSAC asynchronous collection profile; non-distributional and
+  non-reward-normalization settings follow DroQ.
 
 3. Start training:
 
@@ -100,6 +102,7 @@ editing YAML:
 ```bash
 python -m train --agent droq
 python -m train --agent flashsac
+python -m train --config-profile go2_livesac
 ```
 
 Run a deterministic policy checkpoint:

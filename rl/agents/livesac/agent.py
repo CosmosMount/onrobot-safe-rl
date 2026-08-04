@@ -28,6 +28,8 @@ class LiveSACConfig:
     actor_lr: float; critic_lr: float; temp_lr: float; actor_hidden_dims: Sequence[int]
     critic_hidden_dim: int; critic_expansion: int; critic_num_blocks: int; critic_num_qs: int; critic_num_bins: int; critic_dropout_rate: float
     critic_min_v: float; critic_max_v: float; critic_target_update_tau: float
+    num_min_qs: Optional[int]; sampled_backup: bool; target_q_min: Optional[float]
+    target_q_max: Optional[float]; actor_q_reduction: str
     normalize_reward: bool; normalized_G_max: float; gamma: float; n_step: int
     target_entropy: Optional[float]; temp_initial_value: float; asymmetric_observation: bool
     actor_update_interval: int; actor_update_unit: str; use_compile: bool; compile_mode: str; use_amp: bool
@@ -62,7 +64,9 @@ class LiveSACAgent(BaseAgent[LiveSACConfig]):
         self._temperature = Network(temp_net, optim.Adam(temp_net.parameters(), lr=cfg.temp_lr, fused=fused))
         self._target_entropy = -0.5 * self._action_dim if cfg.target_entropy is None else float(cfg.target_entropy)
         self._support = critic_net.critics[0].bin_values
-        self._reward_normalizer = RewardNormalizer(cfg.gamma, cfg.normalized_G_max, cfg.load_reward_normalizer, self._device)
+        self._reward_normalizer = (RewardNormalizer(cfg.gamma, cfg.normalized_G_max,
+                                                     cfg.load_reward_normalizer, self._device)
+                                   if cfg.normalize_reward else None)
         self._grad_scaler = GradScaler(device=self._device.type, enabled=cfg.use_amp)
         self._replay_buffer = TorchUniformBuffer(observation_space, action_space, cfg.n_step, cfg.gamma, cfg.buffer_max_length,
                                                   cfg.buffer_min_length, cfg.sample_batch_size, cfg.buffer_device_type)
@@ -78,6 +82,13 @@ class LiveSACAgent(BaseAgent[LiveSACConfig]):
             raise ValueError("LiveSAC actor updates must use a positive policy-step interval")
         if not 0.0 <= cfg.critic_dropout_rate < 1.0:
             raise ValueError("LiveSAC critic_dropout_rate must be in [0, 1)")
+        if cfg.actor_q_reduction not in {"mean", "min"}:
+            raise ValueError("actor_q_reduction must be one of {'mean', 'min'}")
+        if cfg.num_min_qs is not None and not 1 <= cfg.num_min_qs <= cfg.critic_num_qs:
+            raise ValueError("num_min_qs must be in [1, critic_num_qs]")
+        if (cfg.target_q_min is not None and cfg.target_q_max is not None
+                and cfg.target_q_min > cfg.target_q_max):
+            raise ValueError("target_q_min must be <= target_q_max")
 
     def _actor_obs(self, value: Tensor) -> torch.Tensor:
         obs = torch.as_tensor(value, dtype=torch.float32, device=self._device)
@@ -93,11 +104,15 @@ class LiveSACAgent(BaseAgent[LiveSACConfig]):
         reward = torch.as_tensor(transition["reward"], device=self._device, dtype=torch.float32)
         terminated = torch.as_tensor(transition["terminated"], device=self._device).bool()
         truncated = torch.as_tensor(transition["truncated"], device=self._device).bool()
-        if repeat is None:
-            self._reward_normalizer.update_reward_stats(reward, terminated, truncated)
-        else:
-            first = torch.as_tensor(repeat, device=self._device).reshape(-1) == 0
-            if first.any(): self._reward_normalizer.update_reward_stats(reward.reshape(-1)[first], terminated.reshape(-1)[first], truncated.reshape(-1)[first])
+        if self._reward_normalizer is not None:
+            if repeat is None:
+                self._reward_normalizer.update_reward_stats(reward, terminated, truncated)
+            else:
+                first = torch.as_tensor(repeat, device=self._device).reshape(-1) == 0
+                if first.any():
+                    self._reward_normalizer.update_reward_stats(
+                        reward.reshape(-1)[first], terminated.reshape(-1)[first],
+                        truncated.reshape(-1)[first])
         self._replay_buffer.add_batch(transition)
 
     def can_start_training(self) -> bool: return self._replay_buffer.can_sample()
@@ -109,7 +124,8 @@ class LiveSACAgent(BaseAgent[LiveSACConfig]):
     def _batch(self) -> dict[str, torch.Tensor]:
         batch = cast(dict[str, torch.Tensor], self._replay_buffer.sample())
         batch = {k: v.to(self._device, non_blocking=True) for k, v in batch.items()}
-        batch["reward"] = self._reward_normalizer.normalize_rewards(batch["reward"])
+        if self._reward_normalizer is not None:
+            batch["reward"] = self._reward_normalizer.normalize_rewards(batch["reward"])
         batch["actor_observation"] = self._actor_obs(batch["observation"]); batch["actor_next_observation"] = self._actor_obs(batch["next_observation"])
         return batch
 
@@ -126,15 +142,36 @@ class LiveSACAgent(BaseAgent[LiveSACConfig]):
         metrics: dict[str, Any] = {}; last_batch = None
         for _ in range(LIVESAC_UTD_RATIO):
             last_batch = self._batch()
-            info = update_critic(self._actor, self._critic, self._target_critic, self._temperature, last_batch, self._support, self._device, self._cfg.critic_min_v, self._cfg.critic_max_v)
+            info = update_critic(
+                self._actor, self._critic, self._target_critic, self._temperature,
+                last_batch, self._support, self._device, self._cfg.critic_min_v,
+                self._cfg.critic_max_v, num_min_qs=self._cfg.num_min_qs,
+                sampled_backup=self._cfg.sampled_backup,
+                target_q_min=self._cfg.target_q_min,
+                target_q_max=self._cfg.target_q_max, use_amp=self._cfg.use_amp,
+                grad_scaler=self._grad_scaler)
             metrics.update({k: float(v.item()) for k, v in info.items()}); self._update_counters.critic_steps += 1; self._update_counters.target_steps += 1
         assert last_batch is not None
-        actor_info = update_actor(self._actor, self._critic, self._temperature, last_batch)
-        metrics.update({k: float(v.item()) for k, v in actor_info.items()}); self._update_counters.actor_steps += 1
-        temp_info = update_temperature(self._temperature, actor_info["actor/entropy"], self._target_entropy)
-        metrics.update({k: float(v.item()) for k, v in temp_info.items()}); self._update_counters.temperature_steps += 1
-        self._update_counters.policy_steps += 1; self._update_step = self._update_counters.critic_steps
-        metrics = self._attach(metrics, {"policy_steps": 1, "critic_steps": 5, "target_steps": 5, "actor_steps": 1, "temperature_steps": 1, "auxiliary_steps": 0})
+        self._update_counters.policy_steps += 1
+        actor_calls = 0
+        if self._update_counters.policy_steps % self._cfg.actor_update_interval == 0:
+            actor_info = update_actor(self._actor, self._critic, self._temperature,
+                                      last_batch, self._cfg.actor_q_reduction,
+                                      self._device, self._cfg.use_amp,
+                                      self._grad_scaler)
+            metrics.update({k: float(v.item()) for k, v in actor_info.items()})
+            self._update_counters.actor_steps += 1
+            temp_info = update_temperature(
+                self._temperature, actor_info["actor/entropy"], self._target_entropy,
+                use_amp=self._cfg.use_amp, grad_scaler=self._grad_scaler)
+            metrics.update({k: float(v.item()) for k, v in temp_info.items()})
+            self._update_counters.temperature_steps += 1
+            actor_calls = 1
+        self._update_step = self._update_counters.critic_steps
+        metrics = self._attach(metrics, {"policy_steps": 1, "critic_steps": 5,
+                                          "target_steps": 5, "actor_steps": actor_calls,
+                                          "temperature_steps": actor_calls,
+                                          "auxiliary_steps": 0})
         self._metrics = dict(metrics)
         return metrics
 
@@ -144,14 +181,17 @@ class LiveSACAgent(BaseAgent[LiveSACConfig]):
     def save(self, path: str) -> None:
         os.makedirs(path, exist_ok=True)
         self._actor.save(os.path.join(path, "actor.pt")); self._critic.save(os.path.join(path, "critic.pt")); self._target_critic.save(os.path.join(path, "target_critic.pt")); self._temperature.save(os.path.join(path, "temperature.pt"))
-        self._reward_normalizer.save(os.path.join(path, "reward_normalizer.pt"))
+        if self._reward_normalizer is not None:
+            self._reward_normalizer.save(os.path.join(path, "reward_normalizer.pt"))
         torch.save({"update_step": self._update_step, "update_counters": self._update_counters.state_dict(), "grad_scaler_state_dict": self._grad_scaler.state_dict()}, os.path.join(path, "agent_state.pt"))
 
     def save_replay_buffer(self, path: str) -> None: self._replay_buffer.save(os.path.join(path, "replay_buffer.pt"))
     def load(self, path: str) -> None:
         load = self._cfg.load_optimizer
         self._actor.load(os.path.join(path, "actor.pt"), load_optimizer=load); self._critic.load(os.path.join(path, "critic.pt"), load_optimizer=load); self._target_critic.load(os.path.join(path, "target_critic.pt"), load_optimizer=False); self._temperature.load(os.path.join(path, "temperature.pt"), load_optimizer=load)
-        if self._cfg.load_reward_normalizer and os.path.exists(os.path.join(path, "reward_normalizer.pt")): self._reward_normalizer.load(os.path.join(path, "reward_normalizer.pt"))
+        if (self._reward_normalizer is not None and self._cfg.load_reward_normalizer
+                and os.path.exists(os.path.join(path, "reward_normalizer.pt"))):
+            self._reward_normalizer.load(os.path.join(path, "reward_normalizer.pt"))
         if load:
             state = torch.load(os.path.join(path, "agent_state.pt"), map_location=self._device); self._update_step = int(state["update_step"]); self._update_counters.load_state_dict(state["update_counters"]); self._grad_scaler.load_state_dict(state.get("grad_scaler_state_dict", {}))
     def load_replay_buffer(self, path: str) -> None: self._replay_buffer.load(os.path.join(path, "replay_buffer.pt"))
