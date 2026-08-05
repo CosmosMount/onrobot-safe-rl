@@ -6,7 +6,11 @@ import torch.nn.functional as F
 from torch.amp.grad_scaler import GradScaler
 
 from rl.agents.base.network import Network
-from rl.agents.livesac.categorical import boundary_mass, project_distribution, select_min_distribution
+from rl.agents.livesac.categorical import (
+    boundary_mass,
+    project_distribution,
+    select_min_distribution,
+)
 
 
 def _step(loss: torch.Tensor, network: Network, *, use_amp: bool,
@@ -32,16 +36,23 @@ def update_critic(actor: Network, critic: Network, target_critic: Network, tempe
     with torch.no_grad():
         next_actions, next_info = actor(batch["actor_next_observation"], training=False, sample=True)
         next_qs, next_critic_info = target_critic(batch["next_observation"], next_actions, training=False)
+        next_log_probs = next_critic_info["log_prob"]
         if num_min_qs is not None and num_min_qs < next_qs.shape[0]:
+            # Keep the conservative clipped-Q contract used by DroQ.  A
+            # random subset is selected first, then the lowest expected-Q
+            # critic supplies the complete target distribution.
             indices = torch.randperm(next_qs.shape[0], device=next_qs.device)[:num_min_qs]
             next_qs = next_qs.index_select(0, indices)
-            next_log_probs = next_critic_info["log_prob"].index_select(0, indices)
-        else:
-            next_log_probs = next_critic_info["log_prob"]
+            next_log_probs = next_log_probs.index_select(0, indices)
         selected_log_probs, _ = select_min_distribution(next_qs, next_log_probs)
         entropy_cost = (temperature() * next_info["log_prob"]
                         if sampled_backup else torch.zeros_like(next_info["log_prob"]))
-        tz = batch["reward"].float().unsqueeze(-1) + batch["discount"].float().unsqueeze(-1) * (support.to(device) - entropy_cost.unsqueeze(-1))
+        discount = batch["discount"].float().unsqueeze(-1)
+        tz = (
+            batch["reward"].float().unsqueeze(-1)
+            + discount * support.to(device)
+            - discount * entropy_cost.unsqueeze(-1)
+        )
         if target_q_min is not None or target_q_max is not None:
             tz = tz.clamp(min=-torch.inf if target_q_min is None else target_q_min,
                           max=torch.inf if target_q_max is None else target_q_max)

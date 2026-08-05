@@ -255,12 +255,30 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
                 episode_length = 0
             if steps % max(1, int(cfg.log_interval)) == 0:
                 recent = intervals[-min(len(intervals), 500):]
+                # Temporary diagnostics only.  Keep these out of the metrics
+                # dict so the W&B schema remains unchanged.
+                diag_keys = (
+                    "critic/q_mean", "critic/target_q_mean",
+                    "critic/pred_boundary_mass_low",
+                    "critic/pred_boundary_mass_high",
+                    "critic/target_boundary_mass_low",
+                    "critic/target_boundary_mass_high",
+                    "temperature/value", "actor/entropy",
+                    "actor/action_saturation",
+                )
+                diagnostics = " ".join(
+                    f"{key.rsplit('/', 1)[-1]}={last_update_info[key]:.3g}"
+                    for key in diag_keys if key in last_update_info
+                )
                 print(
                     f"[async step {steps}] falls={falls} "
                     f"critic_updates={updates} "
                     f"actor_updates={int(agent.get_update_counters().get('actor_steps', 0))} "
                     f"collector_ms_p50={np.median(recent):.2f} "
-                    f"runtime_q={item.get('runtime_queue_depth', 0)}",
+                    f"runtime_q={item.get('runtime_queue_depth', 0)} "
+                    f"reward={float(transition['reward'][0]):.3g} "
+                    f"xvel={float(info.get('x_velocity', 0.0)):.3g} "
+                    f"{diagnostics}",
                     flush=True)
             if (cfg.metrics_interval <= 1
                     or steps % int(cfg.metrics_interval) == 0

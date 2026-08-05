@@ -3,7 +3,7 @@ from typing import Any
 import numpy as np
 import torch
 from rl.agents.base.inference import ActionDecision
-from rl.agents.droq.network import DroQActor
+from rl.agents.livesac.network import LiveSACActor
 
 class LiveSACInferencePolicy:
     def __init__(self, observation_dim: int, action_dim: int, cfg: Any):
@@ -11,7 +11,13 @@ class LiveSACInferencePolicy:
         self.actor_observation_dim = int(getattr(cfg, "actor_observation_dim", observation_dim))
         name = str(cfg.device_type)
         self.device = torch.device(name if ":" in name else ("cuda:0" if name.startswith("cuda") else "cpu"))
-        self.actor = DroQActor(self.actor_observation_dim, action_dim, cfg.actor_hidden_dims).to(self.device).eval()
+        hidden_dim = int(cfg.actor_hidden_dims[-1])
+        self.actor = LiveSACActor(
+            num_blocks=max(1, len(cfg.actor_hidden_dims)),
+            input_dim=self.actor_observation_dim,
+            hidden_dim=hidden_dim,
+            action_dim=action_dim,
+        ).to(self.device).eval()
         self.snapshot_version = -1; self.actor_steps = 0; self.auxiliary_steps = 0
     @torch.no_grad()
     def load_snapshot(self, snapshot: dict[str, Any]) -> None:

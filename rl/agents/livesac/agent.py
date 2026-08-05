@@ -13,10 +13,10 @@ from rl.agents.base.agent import BaseAgent
 from rl.agents.base.inference_snapshot import inference_snapshot
 from rl.agents.base.network import Network
 from rl.agents.base.update import PolicyUpdateRequest, UpdateCounters
-from rl.agents.droq.network import DroQActor, DroQTemperature
+from rl.agents.droq.network import DroQTemperature
 from rl.agents.flashsac.reward_normalization import RewardNormalizer
 from rl.agents.livesac.constants import LIVESAC_UTD_RATIO
-from rl.agents.livesac.network import LiveSACDoubleCritic
+from rl.agents.livesac.network import LiveSACActor, LiveSACDoubleCritic
 from rl.agents.livesac.update import update_actor, update_critic, update_temperature
 from rl.buffers.torch_buffer import TorchUniformBuffer
 from rl.utils.types import NDArray, Tensor
@@ -51,7 +51,13 @@ class LiveSACAgent(BaseAgent[LiveSACConfig]):
         self._actor_observation_dim = int(env_info["actor_observation_size"][-1]) if cfg.asymmetric_observation else self._critic_observation_dim
         fused = self._device.type == "cuda" and torch.cuda.is_available()
         torch.manual_seed(cfg.seed)
-        actor_net = DroQActor(self._actor_observation_dim, self._action_dim, cfg.actor_hidden_dims).to(self._device)
+        actor_hidden_dim = int(cfg.actor_hidden_dims[-1])
+        actor_net = LiveSACActor(
+            num_blocks=max(1, len(cfg.actor_hidden_dims)),
+            input_dim=self._actor_observation_dim,
+            hidden_dim=actor_hidden_dim,
+            action_dim=self._action_dim,
+        ).to(self._device)
         self._actor = Network(actor_net, optim.Adam(actor_net.parameters(), lr=cfg.actor_lr, fused=fused))
         critic_net = LiveSACDoubleCritic(self._critic_observation_dim, self._action_dim, cfg.critic_hidden_dim, cfg.critic_expansion,
                                          cfg.critic_num_blocks, cfg.critic_num_qs, cfg.critic_num_bins, cfg.critic_min_v, cfg.critic_max_v, cfg.critic_dropout_rate).to(self._device)
@@ -63,7 +69,7 @@ class LiveSACAgent(BaseAgent[LiveSACConfig]):
         temp_net = DroQTemperature(cfg.temp_initial_value).to(self._device)
         self._temperature = Network(temp_net, optim.Adam(temp_net.parameters(), lr=cfg.temp_lr, fused=fused))
         self._target_entropy = -0.5 * self._action_dim if cfg.target_entropy is None else float(cfg.target_entropy)
-        self._support = critic_net.critics[0].bin_values
+        self._support = critic_net.bin_values
         self._reward_normalizer = (RewardNormalizer(cfg.gamma, cfg.normalized_G_max,
                                                      cfg.load_reward_normalizer, self._device)
                                    if cfg.normalize_reward else None)

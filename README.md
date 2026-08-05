@@ -324,3 +324,5 @@ When behavior looks unstable, first inspect these W&B metrics:
 
 Restart the C++ controller and Python runtime after code or config changes. The
 training client alone cannot update logic already loaded in a running runtime.
+
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy
