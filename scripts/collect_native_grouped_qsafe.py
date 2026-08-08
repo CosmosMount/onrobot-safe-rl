@@ -291,6 +291,11 @@ def main() -> int:
             "episodes": result.episodes,
             "near_failure_groups": result.near_failure_groups,
             "randomly_accepted_groups": result.randomly_accepted_groups,
+            # This operational, pre-outcome skip count stays outside the
+            # dataset manifest so already-collected shard causal contracts
+            # remain merge-compatible.
+            "skipped_candidate_support_groups": (
+                result.skipped_candidate_support_groups),
             "elapsed_seconds": elapsed,
             "groups_per_second": result.dataset.group_count / max(
                 elapsed, np.finfo(float).tiny),

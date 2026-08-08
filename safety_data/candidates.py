@@ -48,6 +48,19 @@ class CandidateProtocolError(ValueError):
     """The fixed evidence-candidate contract cannot be satisfied."""
 
 
+class InsufficientCandidateSupportError(CandidateProtocolError):
+    """Projection left too few unique physical targets for one group."""
+
+    def __init__(self, valid_count: int, minimum_required: int):
+        self.valid_count = int(valid_count)
+        self.minimum_required = int(minimum_required)
+        super().__init__(
+            "candidate projection produced only "
+            f"{self.valid_count} unique q_target values; at least "
+            f"{self.minimum_required} are required"
+        )
+
+
 @dataclass(frozen=True)
 class EvidenceCandidateConfig:
     """Tunable radii within the otherwise locked K=16 protocol.
@@ -384,10 +397,8 @@ def build_evidence_candidates(
         projected_q_target, protocol_config.q_target_dedup_atol)
     valid_count = int(np.count_nonzero(mask))
     if valid_count < protocol_config.min_unique_candidates:
-        raise CandidateProtocolError(
-            "candidate projection produced only "
-            f"{valid_count} unique q_target values; at least "
-            f"{protocol_config.min_unique_candidates} are required")
+        raise InsufficientCandidateSupportError(
+            valid_count, protocol_config.min_unique_candidates)
 
     return CandidateSet(
         requested=projected_requested,
@@ -406,6 +417,7 @@ __all__ = [
     "CANDIDATE_KINDS",
     "CANDIDATE_PROTOCOL_VERSION",
     "CandidateProtocolError",
+    "InsufficientCandidateSupportError",
     "CandidateSet",
     "EvidenceCandidateConfig",
     "build_evidence_candidates",

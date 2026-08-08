@@ -2,17 +2,28 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
 
 import numpy as np
 
+from safety_data.candidates import (
+    CANDIDATE_KINDS,
+    CandidateProtocolError,
+    EvidenceCandidateConfig,
+    InsufficientCandidateSupportError,
+)
 from safety_data.collector import (
     CollectedGroup,
     GaussianImpulseSchedule,
     GroupIdentity,
     GroupRandomness,
     GroupedBranchAssembler,
+    NativeCollectionConfig,
+    collect_native_groups,
     group_randomness,
 )
 from safety_data.native import NativeGroupEvaluation
@@ -20,8 +31,233 @@ from safety_data.schema import GroupedBranchDataset, PrivilegedBranchView
 from scripts.collect_native_grouped_qsafe import (
     _prepare_staged_outputs,
     _publish_staged_outputs,
+    main as collect_main,
 )
 from tests.test_safety_data import synthetic_dataset
+
+
+class _FakePolicy:
+    def manifest(self):
+        return {"policy_fingerprint_sha256": "fake-policy"}
+
+    def fingerprint(self):
+        return "fake-policy"
+
+    def sample_action(self, observation, rng):
+        del observation, rng
+        return np.zeros(12, dtype=np.float32)
+
+    def deterministic_action(self, observation):
+        del observation
+        return np.zeros(12, dtype=np.float32)
+
+
+class _FakeNativeEnv:
+    def __init__(self, events):
+        self.events = events
+        self.step_calls = 0
+        self.capture_calls = 0
+        self.action_applier = SimpleNamespace(
+            init_qpos=np.zeros(12, dtype=np.float32),
+            action_offset=np.ones(12, dtype=np.float32),
+            joint_min=-np.ones(12, dtype=np.float32),
+            joint_max=np.ones(12, dtype=np.float32),
+        )
+        self.cfg = SimpleNamespace(
+            fallen_orientation_rad=1.0,
+            move_speed=0.3,
+        )
+        self.data = SimpleNamespace(qpos=np.zeros(12, dtype=np.float32))
+        self.qpos_addresses = np.arange(12)
+        self.previous_action_requested = np.zeros(12, dtype=np.float32)
+
+    def simulator_fingerprint(self):
+        return {"model": "fake"}
+
+    def reset_standing(self, *, settle_seconds, rng):
+        del settle_seconds, rng
+
+    def record_observation(self):
+        return np.zeros((5, 46), dtype=np.float32)
+
+    def measurement(self):
+        return SimpleNamespace(near_failure=False)
+
+    def capture(self):
+        self.capture_calls += 1
+        digest = f"{self.capture_calls:064x}"
+        return SimpleNamespace(compound_sha256=lambda: digest)
+
+    def step(self, action):
+        del action
+        self.events.append("source_step")
+        self.step_calls += 1
+        return SimpleNamespace(failure=False)
+
+
+class _RecordingAssembler:
+    def __init__(self, events):
+        self.events = events
+        self.group_count = 0
+        self.finalize_calls = 0
+
+    def add(self, group):
+        del group
+        self.events.append("add")
+        self.group_count += 1
+
+    def finalize(self):
+        self.finalize_calls += 1
+        return "dataset", "privileged"
+
+
+def _fake_candidates():
+    requested = np.zeros((16, 12), dtype=np.float32)
+    return SimpleNamespace(
+        requested=requested,
+        executed=requested.copy(),
+        q_target=requested.copy(),
+        kind=np.asarray(CANDIDATE_KINDS),
+        mask=np.ones(16, dtype=bool),
+        valid_count=16,
+    )
+
+
+def _fake_evaluation(candidates):
+    return SimpleNamespace(
+        candidate_requested=candidates.requested.copy(),
+        candidate_executed=candidates.executed.copy(),
+        candidate_q_target=candidates.q_target.copy(),
+        fall=np.zeros((16, 2), dtype=bool),
+    )
+
+
+def _native_config():
+    return NativeCollectionConfig(
+        split="development_candidate_support_unit",
+        target_groups=1,
+        source_seed=91,
+        policy_training_seed=42,
+        horizon_steps=2,
+        replicas=2,
+        natural_acceptance_probability=1.0,
+        max_episode_steps=3,
+        max_groups_per_trajectory=3,
+        max_source_steps=3,
+        settle_seconds=0.0,
+    )
+
+
+class NativeCollectionCandidateSupportTest(unittest.TestCase):
+    def test_insufficient_support_skips_before_outcome_and_advances_source(self):
+        events = []
+        env = _FakeNativeEnv(events)
+        assembler = _RecordingAssembler(events)
+        candidates = _fake_candidates()
+        candidate_seeds = []
+
+        def build(**kwargs):
+            candidate_seeds.append(kwargs["candidate_seed"])
+            if len(candidate_seeds) == 1:
+                events.append("candidate_support_skip")
+                raise InsufficientCandidateSupportError(7, 8)
+            events.append("candidate_ready")
+            return candidates
+
+        def evaluate(*args, **kwargs):
+            del args, kwargs
+            events.append("branch_outcome")
+            return _fake_evaluation(candidates)
+
+        progress = []
+        with patch(
+            "safety_data.collector.GroupedBranchAssembler",
+            return_value=assembler,
+        ) as assembler_mock, patch(
+            "safety_data.collector.privileged_features",
+            return_value=np.zeros(38, dtype=np.float32),
+        ), patch(
+            "safety_data.candidates.build_evidence_candidates",
+            side_effect=build,
+        ) as build_mock, patch(
+            "safety_data.native.evaluate_same_state_group",
+            side_effect=evaluate,
+        ) as evaluate_mock:
+            result = collect_native_groups(
+                env=env,
+                source_policy=_FakePolicy(),
+                continuation_policy=_FakePolicy(),
+                candidate_config=EvidenceCandidateConfig(),
+                branch_disturbance=GaussianImpulseSchedule(
+                    policy_steps=(1,), linear_std_mps=0.1,
+                    angular_std_radps=0.2),
+                config=_native_config(),
+                generator_commit="unit-test",
+                progress=progress.append,
+            )
+
+        self.assertEqual(build_mock.call_count, 2)
+        self.assertEqual(evaluate_mock.call_count, 1)
+        self.assertEqual(candidate_seeds[0], candidate_seeds[1])
+        self.assertEqual(result.source_steps, 2)
+        self.assertEqual(result.randomly_accepted_groups, 1)
+        self.assertEqual(result.skipped_candidate_support_groups, 1)
+        self.assertEqual(assembler.group_count, 1)
+        self.assertEqual(assembler.finalize_calls, 1)
+        self.assertEqual(
+            events,
+            [
+                "candidate_support_skip",
+                "source_step",
+                "candidate_ready",
+                "branch_outcome",
+                "add",
+                "source_step",
+            ],
+        )
+        self.assertEqual(
+            progress[0]["skipped_candidate_support_groups"], 1)
+        self.assertNotIn(
+            "skipped_candidate_support_groups",
+            assembler_mock.call_args.kwargs["collection_protocol"],
+        )
+
+    def test_unrelated_candidate_protocol_error_still_fails_closed(self):
+        events = []
+        env = _FakeNativeEnv(events)
+        assembler = _RecordingAssembler(events)
+        evaluate_mock = Mock()
+        with patch(
+            "safety_data.collector.GroupedBranchAssembler",
+            return_value=assembler,
+        ), patch(
+            "safety_data.collector.privileged_features",
+            return_value=np.zeros(38, dtype=np.float32),
+        ), patch(
+            "safety_data.candidates.build_evidence_candidates",
+            side_effect=CandidateProtocolError("preview contract invalid"),
+        ), patch(
+            "safety_data.native.evaluate_same_state_group",
+            evaluate_mock,
+        ), self.assertRaisesRegex(
+            CandidateProtocolError, "preview contract invalid"
+        ):
+            collect_native_groups(
+                env=env,
+                source_policy=_FakePolicy(),
+                continuation_policy=_FakePolicy(),
+                candidate_config=EvidenceCandidateConfig(),
+                branch_disturbance=GaussianImpulseSchedule(
+                    policy_steps=(1,), linear_std_mps=0.1,
+                    angular_std_radps=0.2),
+                config=_native_config(),
+                generator_commit="unit-test",
+            )
+
+        evaluate_mock.assert_not_called()
+        self.assertEqual(env.step_calls, 0)
+        self.assertEqual(assembler.group_count, 0)
+        self.assertEqual(assembler.finalize_calls, 0)
 
 
 class GroupedBranchAssemblerTest(unittest.TestCase):
@@ -228,6 +464,43 @@ class GroupedBranchAssemblerTest(unittest.TestCase):
                 destinations[1].read_text(encoding="utf-8"), "raced")
             self.assertFalse(destinations[2].exists())
             self.assertTrue(all(not staging.exists() for staging, _ in staged))
+
+
+class CollectionCommandNoClobberTest(unittest.TestCase):
+    def test_any_existing_bundle_target_refuses_before_collection(self):
+        for occupied in ("dataset", "privileged", "report"):
+            with self.subTest(occupied=occupied):
+                with tempfile.TemporaryDirectory() as directory:
+                    output = Path(directory) / "development_no_clobber.npz"
+                    targets = {
+                        "dataset": output,
+                        "privileged": output.with_name(
+                            f"{output.stem}.privileged.npz"),
+                        "report": output.with_name(
+                            f"{output.stem}.report.json"),
+                    }
+                    sentinel = f"existing-{occupied}".encode()
+                    targets[occupied].write_bytes(sentinel)
+                    argv = [
+                        "collect_native_grouped_qsafe.py",
+                        "--checkpoint", "development_checkpoint",
+                        "--split", "development_no_clobber",
+                        "--groups", "1",
+                        "--source-seed", "1",
+                        "--output", str(output),
+                    ]
+                    with patch.object(sys, "argv", argv), patch(
+                        "scripts.collect_native_grouped_qsafe.collect_native_groups"
+                    ) as collect_mock, self.assertRaisesRegex(
+                        FileExistsError, "refusing to overwrite outputs"
+                    ):
+                        collect_main()
+
+                    collect_mock.assert_not_called()
+                    self.assertEqual(targets[occupied].read_bytes(), sentinel)
+                    for label, path in targets.items():
+                        if label != occupied:
+                            self.assertFalse(path.exists())
 
 
 if __name__ == "__main__":

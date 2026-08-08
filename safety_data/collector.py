@@ -544,6 +544,7 @@ class NativeCollectionResult:
     episodes: int
     near_failure_groups: int
     randomly_accepted_groups: int
+    skipped_candidate_support_groups: int = 0
 
 
 def _rng_for(*parts: int) -> np.random.Generator:
@@ -615,6 +616,7 @@ def collect_native_groups(
     """Collect pre-outcome-selected native groups from a frozen SAC policy."""
     from safety_data.candidates import (
         ACTOR_SAMPLE_COUNT,
+        InsufficientCandidateSupportError,
         build_evidence_candidates,
     )
     from safety_data.native import evaluate_same_state_group
@@ -709,6 +711,7 @@ def collect_native_groups(
     episode_groups = 0
     near_failure_groups = 0
     random_groups = 0
+    skipped_candidate_support_groups = 0
 
     def reset() -> None:
         nonlocal episode_number, episode_step, episode_groups
@@ -781,83 +784,92 @@ def collect_native_groups(
                 )
                 for sample_index in range(ACTOR_SAMPLE_COUNT)
             ])
-            candidates = build_evidence_candidates(
-                nominal=nominal,
-                deterministic_mean=deterministic,
-                previous_requested=env.previous_action_requested,
-                actor_samples=actor_samples,
-                action_applier=env.action_applier,
-                current_qpos=np.asarray(
-                    env.data.qpos[env.qpos_addresses], dtype=np.float32),
-                candidate_seed=randomness.candidate_seed,
-                config=candidate_config,
-            )
-            evaluation = evaluate_same_state_group(
-                env,
-                snapshot,
-                candidates.requested,
-                seed_bundle,
-                horizon_steps=config.horizon_steps,
-                continuation_policy=continuation_policy,
-                disturbance_program=branch_disturbance,
-            )
-            for name in ("candidate_requested", "candidate_executed",
-                         "candidate_q_target"):
-                expected_name = {
-                    "candidate_requested": "requested",
-                    "candidate_executed": "executed",
-                    "candidate_q_target": "q_target",
-                }[name]
-                if not np.array_equal(
-                        np.asarray(getattr(evaluation, name)),
-                        np.asarray(getattr(candidates, expected_name))):
-                    raise RuntimeError(
-                        f"branch execution disagrees with previewed {name}")
-            trajectory_id = (
-                f"{config.split}:source-{config.source_seed}:"
-                f"episode-{episode_number}")
-            group_id = f"{trajectory_id}:step-{episode_step}"
-            assembler.add(CollectedGroup(
-                identity=GroupIdentity(
-                    group_id=group_id,
-                    state_hash=snapshot.compound_sha256(),
-                    trajectory_id=trajectory_id,
-                    episode_id=_derived_seed(
-                        config.source_seed, episode_number, 26),
-                    episode_step=episode_step,
-                    policy_training_seed=config.policy_training_seed,
-                    source_seed=config.source_seed,
-                    policy_source=source_fingerprint,
-                    command_vx=float(env.cfg.move_speed),
-                    acceptance_probability=(
-                        1.0 if accepted_near
-                        else config.natural_acceptance_probability),
-                    sampling_stratum=(
-                        "physical_near_failure"
-                        if accepted_near else "random_accept"),
-                ),
-                observation_history=history,
-                candidate_kind=candidates.kind,
-                candidate_mask=candidates.mask,
-                evaluation=evaluation,
-                randomness=randomness,
-                privileged_features=privileged_at_snapshot,
-            ))
-            near_failure_groups += int(accepted_near)
-            random_groups += int(accepted_random)
-            episode_groups += 1
-            if progress is not None:
-                progress({
-                    "groups": assembler.group_count,
-                    "target_groups": config.target_groups,
-                    "source_steps": source_steps + 1,
-                    "episode": episode_number,
-                    "near_failure_groups": near_failure_groups,
-                    "randomly_accepted_groups": random_groups,
-                    "valid_candidates": candidates.valid_count,
-                    "group_fall_fraction": float(np.mean(
-                        evaluation.fall[candidates.mask])),
-                })
+            try:
+                candidates = build_evidence_candidates(
+                    nominal=nominal,
+                    deterministic_mean=deterministic,
+                    previous_requested=env.previous_action_requested,
+                    actor_samples=actor_samples,
+                    action_applier=env.action_applier,
+                    current_qpos=np.asarray(
+                        env.data.qpos[env.qpos_addresses], dtype=np.float32),
+                    candidate_seed=randomness.candidate_seed,
+                    config=candidate_config,
+                )
+            except InsufficientCandidateSupportError:
+                # Candidate support is known before any branch rollout.  Keep
+                # advancing the source trajectory, but do not admit this state
+                # as a collected group or condition on any branch outcome.
+                skipped_candidate_support_groups += 1
+            else:
+                evaluation = evaluate_same_state_group(
+                    env,
+                    snapshot,
+                    candidates.requested,
+                    seed_bundle,
+                    horizon_steps=config.horizon_steps,
+                    continuation_policy=continuation_policy,
+                    disturbance_program=branch_disturbance,
+                )
+                for name in ("candidate_requested", "candidate_executed",
+                             "candidate_q_target"):
+                    expected_name = {
+                        "candidate_requested": "requested",
+                        "candidate_executed": "executed",
+                        "candidate_q_target": "q_target",
+                    }[name]
+                    if not np.array_equal(
+                            np.asarray(getattr(evaluation, name)),
+                            np.asarray(getattr(candidates, expected_name))):
+                        raise RuntimeError(
+                            f"branch execution disagrees with previewed {name}")
+                trajectory_id = (
+                    f"{config.split}:source-{config.source_seed}:"
+                    f"episode-{episode_number}")
+                group_id = f"{trajectory_id}:step-{episode_step}"
+                assembler.add(CollectedGroup(
+                    identity=GroupIdentity(
+                        group_id=group_id,
+                        state_hash=snapshot.compound_sha256(),
+                        trajectory_id=trajectory_id,
+                        episode_id=_derived_seed(
+                            config.source_seed, episode_number, 26),
+                        episode_step=episode_step,
+                        policy_training_seed=config.policy_training_seed,
+                        source_seed=config.source_seed,
+                        policy_source=source_fingerprint,
+                        command_vx=float(env.cfg.move_speed),
+                        acceptance_probability=(
+                            1.0 if accepted_near
+                            else config.natural_acceptance_probability),
+                        sampling_stratum=(
+                            "physical_near_failure"
+                            if accepted_near else "random_accept"),
+                    ),
+                    observation_history=history,
+                    candidate_kind=candidates.kind,
+                    candidate_mask=candidates.mask,
+                    evaluation=evaluation,
+                    randomness=randomness,
+                    privileged_features=privileged_at_snapshot,
+                ))
+                near_failure_groups += int(accepted_near)
+                random_groups += int(accepted_random)
+                episode_groups += 1
+                if progress is not None:
+                    progress({
+                        "groups": assembler.group_count,
+                        "target_groups": config.target_groups,
+                        "source_steps": source_steps + 1,
+                        "episode": episode_number,
+                        "near_failure_groups": near_failure_groups,
+                        "randomly_accepted_groups": random_groups,
+                        "skipped_candidate_support_groups": (
+                            skipped_candidate_support_groups),
+                        "valid_candidates": candidates.valid_count,
+                        "group_fall_fraction": float(np.mean(
+                            evaluation.fall[candidates.mask])),
+                    })
         step_result = env.step(source_action)
         source_steps += 1
         episode_step += 1
@@ -877,6 +889,7 @@ def collect_native_groups(
         episodes=episode_number + 1,
         near_failure_groups=near_failure_groups,
         randomly_accepted_groups=random_groups,
+        skipped_candidate_support_groups=skipped_candidate_support_groups,
     )
 
 

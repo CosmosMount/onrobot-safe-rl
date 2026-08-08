@@ -10,6 +10,7 @@ from safety_data.candidates import (
     CANDIDATE_KINDS,
     CandidateProtocolError,
     EvidenceCandidateConfig,
+    InsufficientCandidateSupportError,
     build_evidence_candidates,
 )
 
@@ -182,9 +183,12 @@ class EvidenceCandidateTest(unittest.TestCase):
     def test_fails_closed_when_projection_has_fewer_than_eight_unique_targets(self):
         applier = _applier(max_joint_delta=0.0)
         with self.assertRaisesRegex(
-            CandidateProtocolError, "only 1 unique q_target values; at least 8"
-        ):
+            InsufficientCandidateSupportError,
+            "only 1 unique q_target values; at least 8",
+        ) as caught:
             _build(action_applier=applier)
+        self.assertEqual(caught.exception.valid_count, 1)
+        self.assertEqual(caught.exception.minimum_required, 8)
 
     def test_actor_samples_are_radially_local_to_deterministic_mean(self):
         inputs = _inputs()
