@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from typing import Any, Sequence
 
@@ -54,6 +55,27 @@ def _verified_content_hash(
     return actual_hash
 
 
+def _merged_generator_commit(
+    manifests: Sequence[dict[str, Any]],
+) -> str:
+    """Summarize leaf collection commits without pretending they are causal.
+
+    Keeping the original value for a single-commit merge preserves the
+    historical manifest shape.  A mixed merge gets an order-sensitive digest;
+    the exact values remain available in each ``shards`` entry.
+    """
+    commits = [manifest.get("generator_commit") for manifest in manifests]
+    if any(not isinstance(commit, str) or not commit.strip()
+           for commit in commits):
+        raise ValueError("leaf generator_commit must be a nonempty string")
+    if len(set(commits)) == 1:
+        return commits[0]
+    payload = json.dumps(
+        commits, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return "mixed_leaf_generator_commits_sha256:" + hashlib.sha256(
+        payload).hexdigest()
+
+
 def _assert_disjoint(datasets: Sequence[GroupedBranchDataset]) -> None:
     vector_fields = (
         "group_id", "state_hash", "trajectory_id", "episode_id", "source_seed")
@@ -99,11 +121,15 @@ def merge_grouped_shards(
     ]
     reference = items[0]
     reference_keys = set(reference.arrays)
-    reference_contract = _contract_manifest(reference.manifest)
+    reference_contract = _contract_manifest(
+        reference.manifest, per_shard_fields=("generator_commit",))
     for shard_index, dataset in enumerate(items[1:], start=1):
         if set(dataset.arrays) != reference_keys:
             raise ValueError(f"shard {shard_index} array fields differ")
-        if _contract_manifest(dataset.manifest) != reference_contract:
+        if _contract_manifest(
+                dataset.manifest,
+                per_shard_fields=("generator_commit",),
+        ) != reference_contract:
             raise ValueError(
                 f"shard {shard_index} changes the causal manifest contract")
     for shard_index, dataset in enumerate(items):
@@ -131,10 +157,13 @@ def merge_grouped_shards(
     }
     manifest = copy.deepcopy(reference.manifest)
     manifest.pop("content_sha256", None)
+    manifest["generator_commit"] = _merged_generator_commit([
+        dataset.manifest for dataset in items])
     manifest["shards"] = [
         {
             "ordinal": index,
             "content_sha256": content_hashes[index],
+            "generator_commit": dataset.manifest["generator_commit"],
             "groups": dataset.group_count,
             "source_seeds": sorted(set(map(int, dataset["source_seed"]))),
         }
@@ -176,16 +205,25 @@ def merge_privileged_shards(
 
     combined_report = combined_deployable.validate(verify_hash=False)
     provenance = combined_deployable.manifest.get("shards")
+    expected_provenance = [
+        (content_hash, dataset.manifest["generator_commit"])
+        for content_hash, dataset in zip(
+            deployable_hashes, deployable, strict=True)
+    ]
     if not isinstance(provenance, list) or [
-            item.get("content_sha256") if isinstance(item, dict) else None
+            (
+                item.get("content_sha256"), item.get("generator_commit"),
+            ) if isinstance(item, dict) else (None, None)
             for item in provenance
-    ] != deployable_hashes:
+    ] != expected_provenance or combined_deployable.manifest.get(
+            "generator_commit") != _merged_generator_commit([
+                dataset.manifest for dataset in deployable]):
         raise ValueError(
             "combined deployable provenance does not match deployable shard order")
     reference_names = np.asarray(privileged[0].feature_names).astype(str)
     reference_contract = _contract_manifest(
         privileged[0].manifest,
-        per_shard_fields=("deployable_content_sha256",),
+        per_shard_fields=("deployable_content_sha256", "generator_commit"),
     )
     for index, view in enumerate(privileged[1:], start=1):
         if not np.array_equal(
@@ -193,7 +231,8 @@ def merge_privileged_shards(
             raise ValueError(f"privileged shard {index} changes feature names/order")
         if _contract_manifest(
                 view.manifest,
-                per_shard_fields=("deployable_content_sha256",),
+                per_shard_fields=(
+                    "deployable_content_sha256", "generator_commit"),
         ) != reference_contract:
             raise ValueError(
                 f"privileged shard {index} changes the causal feature contract")
@@ -213,6 +252,7 @@ def merge_privileged_shards(
             "deployable_content_sha256": deployable_hashes[index],
             "privileged_content_sha256": privileged_reports[index][
                 "content_sha256"],
+            "generator_commit": dataset.manifest["generator_commit"],
             "groups": dataset.group_count,
         }
         for index, dataset in enumerate(deployable)

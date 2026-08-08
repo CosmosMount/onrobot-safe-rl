@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 from typing import Sequence
 
@@ -19,12 +20,30 @@ from safety_data.paths import assert_development_path
 from safety_data.schema import GroupedBranchDataset, PrivilegedBranchView
 
 
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _clean_git_commit() -> str:
+    commit = subprocess.run(
+        ["git", "-C", str(_REPOSITORY_ROOT), "rev-parse", "HEAD"], check=True,
+        capture_output=True, text=True).stdout.strip()
+    status = subprocess.run(
+        ["git", "-C", str(_REPOSITORY_ROOT),
+         "status", "--porcelain=v1", "-z"], check=True,
+        capture_output=True)
+    if status.stdout:
+        raise RuntimeError(
+            "grouped merge requires a clean git worktree so the merge report "
+            "identifies the code that actually ran")
+    return commit
 
 
 def _staging_path(output: Path) -> Path:
@@ -139,6 +158,7 @@ def main() -> int:
 
     protocol_path = assert_development_path(args.protocol)
     protocol = yaml.safe_load(protocol_path.read_text(encoding="utf-8"))
+    merge_tool_commit = _clean_git_commit()
 
     datasets = [GroupedBranchDataset.load(path) for path in args.shards]
     combined = merge_grouped_shards(datasets)
@@ -173,6 +193,7 @@ def main() -> int:
                 "path": str(dataset.path),
                 "file_sha256": _sha256(dataset.path),
                 "content_sha256": dataset.manifest["content_sha256"],
+                "generator_commit": dataset.manifest["generator_commit"],
                 "groups": dataset.group_count,
                 "source_seeds": sorted(set(map(int, dataset["source_seed"]))),
             })
@@ -183,15 +204,22 @@ def main() -> int:
                     "path": str(view.path),
                     "file_sha256": _sha256(view.path),
                     "content_sha256": view.manifest["content_sha256"],
+                    "generator_commit": view.manifest["generator_commit"],
                     "deployable_content_sha256": view.manifest[
                         "deployable_content_sha256"],
                 }
                 for view in views
             ]
+        if _clean_git_commit() != merge_tool_commit:
+            raise RuntimeError(
+                "git commit changed while grouped merge was running")
         report = {
-            "schema_version": "qsafe.grouped_merge_report.v2",
+            "schema_version": "qsafe.grouped_merge_report.v3",
             "development_only": True,
             "publication_contract": "atomic_no_clobber_report_last_v1",
+            "merge_tool_commit": merge_tool_commit,
+            "merge_tool_worktree_clean": True,
+            "merge_tool_commit_stable": True,
             "output": str(output),
             "output_sha256": _sha256(staged_output),
             "output_content_sha256": combined.manifest["content_sha256"],

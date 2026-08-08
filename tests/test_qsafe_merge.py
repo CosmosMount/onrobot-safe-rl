@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import io
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -12,7 +14,11 @@ import numpy as np
 
 from safety_data.merge import merge_grouped_shards, merge_privileged_shards
 from safety_data.schema import PRIVILEGED_SCHEMA_VERSION, PrivilegedBranchView
-from scripts.merge_grouped_qsafe_shards import _publish_no_clobber, main
+from scripts.merge_grouped_qsafe_shards import (
+    _clean_git_commit,
+    _publish_no_clobber,
+    main,
+)
 from tests.test_safety_data import synthetic_dataset
 
 
@@ -52,6 +58,27 @@ class GroupedShardMergeTest(unittest.TestCase):
             views.append(type(view).load(view_path, deployable=loaded))
         return datasets, views
 
+    def test_clean_git_commit_is_anchored_when_cwd_changes(self):
+        repository_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory, mock.patch(
+                "scripts.merge_grouped_qsafe_shards.subprocess.run") as run:
+            run.side_effect = [
+                mock.Mock(stdout="merge-commit\n"),
+                mock.Mock(stdout=b""),
+            ]
+            previous = Path.cwd()
+            try:
+                os.chdir(directory)
+                self.assertEqual(_clean_git_commit(), "merge-commit")
+            finally:
+                os.chdir(previous)
+
+        self.assertEqual(len(run.call_args_list), 2)
+        for call in run.call_args_list:
+            command = call.args[0]
+            self.assertEqual(
+                command[:3], ["git", "-C", str(repository_root)])
+
     def test_merge_preserves_shard_order_and_privileged_alignment(self):
         with tempfile.TemporaryDirectory() as directory:
             datasets, views = self.shards(Path(directory))
@@ -78,6 +105,52 @@ class GroupedShardMergeTest(unittest.TestCase):
             datasets[1].manifest["content_sha256"],
         )
 
+    def test_mixed_generator_commits_are_operational_leaf_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            datasets, views = self.shards(root)
+            datasets[1].manifest["generator_commit"] = "new-collector-commit"
+            views[1].manifest["generator_commit"] = "new-collector-commit"
+            datasets[1] = type(datasets[1]).load(
+                datasets[1].save(root / "mixed-deployable.npz"))
+            views[1].manifest["deployable_content_sha256"] = (
+                datasets[1].manifest["content_sha256"])
+            views[1] = type(views[1]).load(
+                views[1].save(root / "mixed-privileged.npz"),
+                deployable=datasets[1],
+            )
+
+            combined = merge_grouped_shards(datasets)
+            combined_view = merge_privileged_shards(
+                views, datasets, combined)
+
+        leaf_commits = [
+            dataset.manifest["generator_commit"] for dataset in datasets]
+        self.assertEqual(
+            [item["generator_commit"]
+             for item in combined.manifest["shards"]],
+            leaf_commits,
+        )
+        self.assertEqual(
+            [item["generator_commit"]
+             for item in combined_view.manifest["shards"]],
+            leaf_commits,
+        )
+        expected_summary = (
+            "mixed_leaf_generator_commits_sha256:"
+            + hashlib.sha256(json.dumps(
+                leaf_commits, separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")).hexdigest()
+        )
+        self.assertEqual(
+            combined.manifest["generator_commit"], expected_summary)
+        self.assertEqual(
+            combined_view.manifest["generator_commit"],
+            combined.manifest["generator_commit"],
+        )
+        combined_view.validate(combined)
+
     def test_source_seed_overlap_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             datasets, _ = self.shards(Path(directory))
@@ -102,6 +175,18 @@ class GroupedShardMergeTest(unittest.TestCase):
                 Path(directory) / "changed-contract.npz")
             with self.assertRaisesRegex(ValueError, "causal manifest contract"):
                 merge_grouped_shards([datasets[0], changed])
+
+    def test_mixed_commits_do_not_relax_other_deployable_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            datasets, _ = self.shards(root)
+            datasets[1].manifest["generator_commit"] = "new-collector-commit"
+            datasets[1].manifest["new_labeling_contract"] = {
+                "failure_boundary": "different"}
+            datasets[1] = type(datasets[1]).load(
+                datasets[1].save(root / "mixed-drift-deployable.npz"))
+            with self.assertRaisesRegex(ValueError, "causal manifest contract"):
+                merge_grouped_shards(datasets)
 
     def test_merge_requires_verified_leaf_hashes_and_stable_numeric_dtype(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -152,6 +237,26 @@ class GroupedShardMergeTest(unittest.TestCase):
                 merge_privileged_shards(
                     [views[0], changed], datasets, combined)
 
+    def test_mixed_privileged_commits_do_not_relax_other_manifest_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            datasets, views = self.shards(root)
+            datasets[1].manifest["generator_commit"] = "new-collector-commit"
+            views[1].manifest["generator_commit"] = "new-collector-commit"
+            views[1].manifest["feature_extraction_contract"] = "different-v2"
+            datasets[1] = type(datasets[1]).load(
+                datasets[1].save(root / "drift-deployable.npz"))
+            views[1].manifest["deployable_content_sha256"] = (
+                datasets[1].manifest["content_sha256"])
+            views[1] = type(views[1]).load(
+                views[1].save(root / "drift-privileged.npz"),
+                deployable=datasets[1],
+            )
+            combined = merge_grouped_shards(datasets)
+            with self.assertRaisesRegex(
+                    ValueError, "causal feature contract"):
+                merge_privileged_shards(views, datasets, combined)
+
     def test_no_clobber_publication_rolls_back_its_earlier_links(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -187,7 +292,10 @@ class GroupedShardMergeTest(unittest.TestCase):
                 "--report", str(report),
                 "--protocol", str(protocol),
             ]
-            with mock.patch("sys.argv", argv):
+            with mock.patch("sys.argv", argv), mock.patch(
+                    "scripts.merge_grouped_qsafe_shards._clean_git_commit",
+                    return_value="merge-tool-test-commit",
+            ):
                 with self.assertRaises(KeyError):
                     main()
             self.assertFalse(output.exists())
@@ -222,7 +330,10 @@ class GroupedShardMergeTest(unittest.TestCase):
                 "--report", str(report_output),
                 "--protocol", str(protocol),
             ]
-            with mock.patch("sys.argv", argv), redirect_stdout(io.StringIO()):
+            with mock.patch("sys.argv", argv), mock.patch(
+                    "scripts.merge_grouped_qsafe_shards._clean_git_commit",
+                    return_value="merge-tool-test-commit",
+            ), redirect_stdout(io.StringIO()):
                 self.assertEqual(main(), 0)
             merged = type(datasets[0]).load(output)
             merged_view = type(views[0]).load(
@@ -231,6 +342,22 @@ class GroupedShardMergeTest(unittest.TestCase):
             self.assertEqual(
                 report["publication_contract"],
                 "atomic_no_clobber_report_last_v1",
+            )
+            self.assertEqual(report["schema_version"],
+                             "qsafe.grouped_merge_report.v3")
+            self.assertEqual(report["merge_tool_commit"],
+                             "merge-tool-test-commit")
+            self.assertTrue(report["merge_tool_worktree_clean"])
+            self.assertTrue(report["merge_tool_commit_stable"])
+            self.assertEqual(
+                [item["generator_commit"] for item in report["input_shards"]],
+                [dataset.manifest["generator_commit"]
+                 for dataset in datasets],
+            )
+            self.assertEqual(
+                [item["generator_commit"]
+                 for item in report["input_privileged_shards"]],
+                [view.manifest["generator_commit"] for view in views],
             )
             self.assertEqual(report["validation"]["groups"], 8)
             self.assertEqual(
@@ -242,7 +369,10 @@ class GroupedShardMergeTest(unittest.TestCase):
                 path: path.read_bytes()
                 for path in (output, privileged_output, report_output)
             }
-            with mock.patch("sys.argv", argv), redirect_stdout(io.StringIO()):
+            with mock.patch("sys.argv", argv), mock.patch(
+                    "scripts.merge_grouped_qsafe_shards._clean_git_commit",
+                    return_value="merge-tool-test-commit",
+            ), redirect_stdout(io.StringIO()):
                 with self.assertRaises(FileExistsError):
                     main()
             for path, content in before.items():
