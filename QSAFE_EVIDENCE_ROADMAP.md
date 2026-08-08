@@ -1,7 +1,10 @@
 # Q_safe fall-reduction execution roadmap
 
-Status: active, Phase 1C/1D (Objective 1 evidence execution; not yet passed)
-Protocol: `config/qsafe_evidence_protocol.yaml`  
+Status: active, Phase 1D Iteration 2 (Objective 1 evidence execution; not yet passed)
+Consumed Iteration-1 protocol: `config/qsafe_evidence_protocol.yaml`
+
+Active triage protocol: `config/qsafe_recovery_option_triage_v2.yaml`
+
 Branch: `codex/qsafe-evidence-pipeline`
 
 ## 1. Objective and ordering constraint
@@ -119,6 +122,34 @@ Consequences:
 - Native and accelerator backends must both pass duplicate-branch determinism plus corrected-observation parity before producing evidence data.
 
 Phase 1A resolution: native snapshots now include MuJoCo integration state, requested/executed/q-target action state, five observation frames, and Butterworth history. The Go2 SDK-bridge sensors are used, the Python config explicitly matches runtime `kp=60, kd=5`, torque/filter coefficients are fingerprinted, and real-MJCF duplicate branches are bit-exact in regression tests.
+
+## 4.2 Iteration-1 falsification and Iteration-2 pivot
+
+Iteration 1 has now been executed once under its locked protocol. The full
+result and immutable hashes are in `QSAFE_PHASE1_ITERATION1_RESULT.md`. The
+claim-eligible deployable model achieved held-out pair accuracy `0.5062` and
+top-1 reduction `-0.319 pp` with a confidence interval spanning zero. The
+pointwise and privileged diagnostics were also at chance. Selector
+calibration, paired closed-loop evaluation, and online evaluation were
+therefore not authorized.
+
+The decisive diagnostic was independent-replica evaluation. Although selecting
+and evaluating on all R=8 replicas reported a pooled empirical Oracle reduction
+of `6.896 pp`, fixed 4/4 replica cross-fit produced `-0.119 pp` with 95% CI
+`[-0.369, 0.124]`; candidate-effect half correlations were approximately zero
+and pair-order agreement was approximately `0.500`. The network's full-train
+pair score was `0.778`, but trajectory-out-of-bag inference fell to `0.520`.
+Thus the action head learned Monte Carlo ordering noise rather than a reusable
+safety effect.
+
+Iteration 2 consequently precedes all model training with a label-reliability
+gate. It uses fresh seeds, 32 discovery plus 32 audit replicas, raw audit falls,
+order-invariant uniform handling of discovery ties, and trajectory-cluster
+bootstrap. The default pivot is a 1--4 step linearly decayed residual recovery
+option. A one-step high-replica route remains available only if its independent
+audit effect passes; a short predictive model is allowed only if a multistep
+option has independently verified causal headroom but a direct scorer later
+fails. None of these development outcomes alone can unlock Phase 2.
 
 ## 5. Work breakdown and commit boundaries
 
@@ -252,6 +283,31 @@ No row-level random split is permitted. No group may share an episode, state has
 - at least 25% mixed-outcome groups;
 - zero duplicate state fingerprints across splits.
 
+### Independent-replica label gate (Iteration 2 and later)
+
+This gate runs before normalization, model fitting, or creation of any
+held-out-consumption marker. Replica roles are assigned before candidate
+outcomes and stored in the hashed collection manifest.
+
+- discovery and audit replica sets are nonempty, disjoint, exhaustive, and
+  fixed on the replica axis;
+- discovery outcomes select all tied empirical minima; audit risk is averaged
+  uniformly across those ties, so candidate column order cannot change the
+  result;
+- the primary effect is one-way discovery-to-audit nominal risk minus selected
+  risk; reverse/symmetric cross-fit and same-replica Oracle values are
+  diagnostics only;
+- confidence intervals resample complete `trajectory_id` clusters and never
+  candidates or replicas;
+- a future claim-bearing training protocol requires at least 3 pp raw audit
+  reduction with 95% CI low above zero, pair-order agreement at least 0.55,
+  and its CI low above 0.50;
+- the development recovery-option triage uses the stricter 5 pp causal-headroom
+  decision specified in its separate locked protocol.
+
+A failed label gate prohibits model training. More epochs, a different
+network, or a favorable full-replica empirical Oracle cannot override it.
+
 ### Model gate
 
 - pair accuracy ≥0.60 and group-bootstrap CI low ≥0.55;
@@ -261,6 +317,8 @@ No row-level random split is permitted. No group may share an episode, state has
 - ECE ≤0.08 on the naturally weighted target calibration set.
 
 AUROC and Brier are reported but cannot pass the action model by themselves.
+The model gate is not evaluated unless the independent-replica label gate has
+already passed on the applicable fresh protocol.
 
 ### Paired closed-loop gate
 
@@ -315,3 +373,7 @@ The primary outcome is falls per fixed policy-step budget, not falls per complet
 6. Add the factorized model trainer and privileged/deployable learning-curve CLI. **Implemented; the production action view is the ordered 36D requested/executed/q-target tuple, with requested-only retained only as an explicit ablation.**
 7. Implement the paired repeated-closed-loop evaluator and evidence compiler. **Online three-arm seed statistics and the development compiler are implemented; the exact-state repeated-shield runner remains next.**
 8. Create commit 3, then run the Objective 1 experiment ladder. **Done: `0cddc1d`; the reviewed native collector is the commit-4 boundary before the 1k PoC. Phase 2 remains blocked until every Objective 1 gate passes.**
+9. Execute the four locked Iteration-1 model runs exactly once. **Done; the primary and all action-ranking diagnostics failed. The consumed outcomes are preserved in `QSAFE_PHASE1_ITERATION1_RESULT.md`.**
+10. Audit candidate labels with independent replica halves and trajectory OOB prediction. **Done; the apparent 6.9 pp Oracle is winner's-curse bias and cross-fit action ordering is chance.**
+11. Preregister and implement `objective1_recovery_option_triage_v2`. **In progress: independent replica gate and 1--4 step residual-option collector.**
+12. Collect exactly 384 fresh groups on source seeds 7601--7603 with K29 and R64, then apply the locked triage once. **Pending; no new model is authorized before this gate.**

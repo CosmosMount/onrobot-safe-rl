@@ -1,0 +1,214 @@
+# Development-only preregistration for the second Objective-1 mechanism
+# iteration. This file does not amend the already-consumed v1 protocol.
+protocol_schema_version: 1
+protocol_name: objective1_recovery_option_triage_v2
+created_at: "2026-08-09T00:00:00+08:00"
+scope: development_mechanism_triage_only
+claim_eligible: false
+parent_iteration:
+  protocol_name: selective_advantage_qsafe_v1
+  protocol_file_sha256: f820c34a8964ca7ebe970ee48f2a684396f083d024d264db5555b12bf6071399
+  result: failed
+  result_report: QSAFE_PHASE1_ITERATION1_RESULT.md
+  consumed_test_policy: permanent_falsification_only_no_reuse
+  consumed_test_source_seeds: [7501, 7502, 7503]
+
+protection:
+  denied_path_prefixes: [sealed, formal]
+  require_development_paths: true
+  prohibit_parent_test_reuse: true
+  assignment_before_candidate_outcomes: true
+  optional_stopping: forbidden
+  failed_trials_remain_in_manifest: true
+
+target:
+  robot: unitree_go2
+  model_mjcf: /home/xyz/code/unitree_mujoco/unitree_robots/go2/scene_empty.xml
+  command_speed_mps: 0.30
+  observation: corrected_deployable_46d_last_5_frames
+  action: normalized_12d_with_absolute_q_send_recorded
+  policy_hz: 50
+  low_level_hz: 500
+  horizon_policy_steps: 32
+  failure:
+    max_abs_roll_pitch_rad: 1.047198
+    min_base_height_m: 0.18
+  statistical_unit: independent_simulator_state_group
+
+frozen_policy:
+  checkpoint: saved/experiments/sqrl_paper/seed42/pretrain_sac_async_v1/step_000000500000/agent
+  config: config/go2_50hz_sqrl_paper_sac_pretrain.yaml
+  training_step: 500000
+  actor_fingerprint_sha256: f01e7cc36b9020631171c3dfe502d7426877aee0c33debd0a5c197206efc0908
+  actor_state_dict_sha256: 2074a3f00152df8e96cddf380623a9eb4bb63f84538dafca59cdf509f9559409
+  config_sha256: ebf312ef27f64326a6ef478e0f86273af9f9cbaf61dd09b632fb10868524f726
+
+collection:
+  source_seeds: [7601, 7602, 7603]
+  groups_per_source_seed: 128
+  total_groups: 384
+  max_groups_per_trajectory: 5
+  max_episode_steps: 100
+  natural_acceptance_probability: 0.50
+  settle_seconds: 0.05
+  source_impulse:
+    interval_policy_steps: 10
+    linear_std_mps: 1.0
+    angular_std_radps: 4.0
+  branch_impulse:
+    # Calls remain in the fixed RNG schedule, but magnitudes are zero. This
+    # removes future exogenous impulses that obscured the one-step effect.
+    policy_steps: [8, 16]
+    linear_std_mps: 0.0
+    angular_std_radps: 0.0
+  candidates:
+    protocol_version: qsafe.recovery_option_candidates.v2
+    count: 29
+    nominal_index: 0
+    ordered_kinds:
+      - nominal
+      - deterministic_mean_L1
+      - deterministic_mean_L2
+      - deterministic_mean_L3
+      - deterministic_mean_L4
+      - previous_requested_L1
+      - previous_requested_L2
+      - previous_requested_L3
+      - previous_requested_L4
+      - contraction_0.50_L1
+      - contraction_0.50_L2
+      - contraction_0.50_L3
+      - contraction_0.50_L4
+      - local_actor_sample_0_L1
+      - local_actor_sample_0_L2
+      - local_actor_sample_0_L3
+      - local_actor_sample_0_L4
+      - local_actor_sample_1_L1
+      - local_actor_sample_1_L2
+      - local_actor_sample_1_L3
+      - local_actor_sample_1_L4
+      - symmetric_direction_0_plus_L1
+      - symmetric_direction_0_plus_L2
+      - symmetric_direction_0_plus_L3
+      - symmetric_direction_0_plus_L4
+      - symmetric_direction_0_minus_L1
+      - symmetric_direction_0_minus_L2
+      - symmetric_direction_0_minus_L3
+      - symmetric_direction_0_minus_L4
+    base_generator: qsafe.evidence_candidates.v1
+    base_generator_parameters:
+      actor_sample_max_delta_rms: 0.50
+      perturbation_radius_rms: 0.25
+      q_target_dedup_atol: 0.000001
+      min_unique_base_candidates: 8
+    # These indices are fixed before any v2 outcome. The subset deliberately
+    # spans the existing action families without searching all K16 extremes.
+    residual_templates:
+      - {template_id: deterministic_mean, base_candidate_index: 1}
+      - {template_id: previous_requested, base_candidate_index: 2}
+      - {template_id: contraction_0.50, base_candidate_index: 4}
+      - {template_id: local_actor_sample_0, base_candidate_index: 6}
+      - {template_id: local_actor_sample_1, base_candidate_index: 7}
+      - {template_id: symmetric_direction_0_plus, base_candidate_index: 10}
+      - {template_id: symmetric_direction_0_minus, base_candidate_index: 11}
+    option_steps: [1, 2, 3, 4]
+    option_steps_array: candidate_option_steps
+    option_semantics: linear_decay_actor_residual_v1
+    ordering: nominal_then_template_major_duration_minor
+    option_count_formula: 1_plus_7_templates_times_4_durations
+    duplicate_rule: duration_distinguishes_options_with_the_same_first_q_target
+  recovery_option:
+    version: linear_decay_actor_residual_v1
+    residual_definition: candidate_first_requested_minus_nominal_first_requested
+    step_zero: exact_candidate_first_requested
+    feedback_formula: "clip(actor_nominal(s_t) + ((L-t)/L) * residual, -1, 1)"
+    active_steps: "t=0,...,L-1"
+    after_option: stochastic_frozen_actor_continuation
+    reselection_during_option: forbidden
+    projection: runtime_action_applier
+    continuation_rng: common_across_candidates_within_replica
+  replica_partition:
+    schema_version: qsafe.independent_replica_partition.v2
+    assignment_timing: before_candidate_outcomes
+    axis: replica
+    ordering: discovery_then_audit
+    discovery_indices:
+      [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+       16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+    audit_indices:
+      [32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+       48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63]
+    discovery_replicas: 32
+    audit_replicas: 32
+    exhaustive: true
+  total_replicas: 64
+  total_h32_branches: 712704
+  collection_order: complete_all_three_source_seed_shards_before_analysis
+
+statistics:
+  group_weighting: inverse_acceptance_probability_group_macro
+  tie_rule: uniform_expectation_over_all_discovery_minima
+  pair_tie_score: 0.5
+  bootstrap:
+    cluster: trajectory_id
+    replicates: 20000
+    seed: 20260809
+    resample_candidates: false
+    resample_replicas: false
+  discovery_only_selection:
+    one_step:
+      candidates: nominal_plus_all_L1_templates
+      select: minimum_discovery_fall_risk_uniform_ties
+    multistep:
+      candidates: nominal_plus_all_templates_with_L_in_2_3_4
+      select: minimum_discovery_fall_risk_uniform_ties
+      duration_and_template_locked_together: true
+    audit_failure_policy: do_not_try_runner_up
+  reported_effect:
+    definition: audit_nominal_fall_risk_minus_audit_selected_fall_risk
+    audit_labels: raw_unshrunk_binary_falls
+    same_replica_empirical_oracle: biased_diagnostic_only
+    reverse_and_symmetric_crossfit: diagnostic_only
+
+triage_gates:
+  data:
+    min_independent_groups: 384
+    min_trajectory_clusters: 78
+    required_source_seeds: [7601, 7602, 7603]
+    candidates_per_group: 29
+    discovery_replicas: 32
+    audit_replicas: 32
+  confidence_level: 0.90
+  confidence_interval: central_two_sided_trajectory_cluster_bootstrap
+  one_step_A:
+    min_audit_absolute_reduction: 0.05
+    min_reduction_lcb: 0.0
+    min_discovery_to_audit_pair_order_agreement: 0.58
+    require_each_source_seed_same_positive_direction: true
+  multistep_B:
+    min_audit_absolute_reduction: 0.05
+    min_reduction_lcb: 0.0
+    min_improvement_over_locked_L1: 0.02
+    min_improvement_over_L1_lcb: 0.0
+    require_each_source_seed_same_positive_direction: true
+  no_headroom_stop:
+    max_effect_for_all_options: 0.03
+    decision: stop_model_scaling_and_redesign_recovery_action_library
+
+decision_tree:
+  - if: multistep_B_pass
+    then: preregister_fresh_multistep_residual_recovery_qsafe_v2
+  - if: not_multistep_B_pass_and_one_step_A_pass
+    then: preregister_fresh_high_replica_one_step_qsafe_v2
+  - if: causal_option_headroom_passes_but_future_direct_scorer_fails
+    then: permit_short_horizon_predictive_dynamics_fallback_C
+  - if: no_headroom_stop
+    then: redesign_candidate_or_recovery_policy_before_any_model_training
+
+authorization:
+  triage_pass_is_not_objective1_pass: true
+  triage_may_authorize_new_model_protocol_only: true
+  selector_calibration_authorized: false
+  paired_closed_loop_authorized: false
+  online_training_authorized: false
+  phase2_authorized: false
