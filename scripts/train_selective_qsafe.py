@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -29,6 +31,104 @@ from safety_data.schema import (
     PrivilegedBranchView,
     audit_split_disjointness,
 )
+
+
+_CAUSAL_MANIFEST_KEYS = (
+    "simulator_fingerprint",
+    "candidate_protocol",
+    "fall_definition",
+    "observation_contract",
+    "action_application_contract",
+    "state_hash_contract",
+    "collection_protocol",
+)
+_POLICY_BINDING_KEYS = (
+    "policy_fingerprint_sha256",
+    "actor_state_dict_sha256",
+    "config_sha256",
+    "training_step",
+    "observation_dim",
+    "actor_observation_dim",
+    "action_dim",
+)
+
+
+def _canonical_sha256(value: Any) -> str:
+    rendered = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+
+def _policy_binding_contract(
+    manifest: Any,
+    *,
+    role: str,
+) -> dict[str, Any]:
+    if not isinstance(manifest, dict) or not manifest:
+        raise ValueError(f"dataset {role} policy manifest must be nonempty")
+    verified = all(key in manifest for key in _POLICY_BINDING_KEYS)
+    if verified:
+        contract = {
+            key: copy.deepcopy(manifest[key]) for key in _POLICY_BINDING_KEYS
+        }
+        for key in (
+            "policy_fingerprint_sha256", "actor_state_dict_sha256",
+            "config_sha256",
+        ):
+            digest = contract[key]
+            if not isinstance(digest, str) or len(digest) != 64 or any(
+                    character not in "0123456789abcdef" for character in digest):
+                raise ValueError(
+                    f"dataset {role} policy {key} is invalid")
+        if isinstance(contract["training_step"], bool) or not isinstance(
+                contract["training_step"], int) or contract["training_step"] < 0:
+            raise ValueError(f"dataset {role} policy training_step is invalid")
+        if contract["observation_dim"] != 46 or contract["action_dim"] != 12:
+            raise ValueError(
+                f"dataset {role} policy has an incompatible observation/action contract")
+        if isinstance(contract["actor_observation_dim"], bool) or not isinstance(
+                contract["actor_observation_dim"], int) or not (
+                    1 <= contract["actor_observation_dim"] <= 46):
+            raise ValueError(
+                f"dataset {role} actor_observation_dim is invalid")
+        contract["verified"] = True
+        return contract
+    # Legacy/synthetic fixtures remain trainable only as explicitly unbound
+    # diagnostics.  They can never become a deployable claim artifact.
+    return {
+        "verified": False,
+        "legacy_manifest_sha256": _canonical_sha256(manifest),
+    }
+
+
+def _dataset_causal_contract(
+    dataset: GroupedBranchDataset,
+) -> dict[str, Any]:
+    manifest = dataset.manifest
+    contract = {
+        key: copy.deepcopy(manifest.get(key))
+        for key in _CAUSAL_MANIFEST_KEYS
+    }
+    contract["horizon_steps"] = int(manifest["horizon_steps"])
+    contract["source_policy"] = _policy_binding_contract(
+        manifest.get("source_policy"), role="source")
+    contract["continuation_policy"] = _policy_binding_contract(
+        manifest.get("continuation_policy"), role="continuation")
+    return contract
+
+
+def _require_causal_split_compatibility(
+    datasets: tuple[GroupedBranchDataset, ...],
+) -> tuple[dict[str, Any], list[str]]:
+    contracts = [_dataset_causal_contract(dataset) for dataset in datasets]
+    reference = contracts[0]
+    for index, contract in enumerate(contracts[1:], start=1):
+        if contract != reference:
+            raise ValueError(
+                "train/calibration/test causal dataset contracts differ; "
+                f"split index {index} cannot share one Q_safe artifact")
+    commits = [str(dataset.manifest["generator_commit"]) for dataset in datasets]
+    return reference, commits
 
 
 def _finite_json(value: Any) -> Any:
@@ -172,6 +272,9 @@ def main() -> int:
     test_data = GroupedBranchDataset.load(args.test)
     split_audit = audit_split_disjointness(
         [train_data, calibration_data, test_data])
+    causal_contract, dataset_generator_commits = (
+        _require_causal_split_compatibility(
+            (train_data, calibration_data, test_data)))
     train_privileged = _load_privileged(args.train_privileged, train_data)
     calibration_privileged = _load_privileged(
         args.calibration_privileged, calibration_data)
@@ -245,7 +348,14 @@ def main() -> int:
     data_gate = _data_gate(train_data, protocol["phase1"]["data_gate"])
     model_gate = _model_gate(test_metrics, protocol["phase1"]["model_gate"])
     deployable = train_privileged is None
-    claim_eligible = bool(deployable and data_gate["pass"] and model_gate["pass"])
+    runtime_binding_verified = bool(
+        causal_contract["source_policy"]["verified"]
+        and causal_contract["continuation_policy"]["verified"])
+    claim_eligible = bool(
+        deployable
+        and runtime_binding_verified
+        and data_gate["pass"]
+        and model_gate["pass"])
     provenance = {
         "generator_commit": _git_commit(),
         "protocol_path": str(protocol_path),
@@ -258,6 +368,13 @@ def main() -> int:
             "total_width": train_view.action_dim,
         },
         "split_audit": split_audit,
+        "dataset_generator_commits": dataset_generator_commits,
+        "dataset_causal_contract": causal_contract,
+        "dataset_causal_contract_sha256": _canonical_sha256(causal_contract),
+        "source_policy_contract": causal_contract["source_policy"],
+        "continuation_policy_contract": causal_contract[
+            "continuation_policy"],
+        "runtime_binding_verified": runtime_binding_verified,
         "dataset_content_sha256": {
             "train": train_data.manifest["content_sha256"],
             "calibration": calibration_data.manifest["content_sha256"],
@@ -272,6 +389,8 @@ def main() -> int:
             None if claim_eligible else
             "privileged diagnostics cannot support a deployment claim"
             if not deployable else
+            "source/continuation policy runtime binding is not verified"
+            if not runtime_binding_verified else
             "one or more preregistered data/model gates failed"),
     }
     save_qsafe_artifact(
