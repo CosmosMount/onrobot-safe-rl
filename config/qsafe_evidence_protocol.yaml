@@ -1,0 +1,139 @@
+# Machine-readable preregistration for Q_safe evidence work.
+# Phase 2 tooling must refuse to run until a Phase 1 evidence report satisfies
+# every required gate below. Paths containing protected components are never
+# valid inputs to development tooling.
+protocol_version: 1
+protocol_name: selective_advantage_qsafe_v1
+created_at: "2026-08-09T00:00:00+08:00"
+
+protection:
+  denied_path_components:
+    - sealed
+    - formal_test
+    - formal_data
+  allow_legacy_artifacts: false
+  require_content_fingerprints: true
+  require_group_disjoint_splits: true
+  require_source_seed_disjoint_test: true
+
+target:
+  robot: unitree_go2
+  observation: corrected_deployable_46d_last_5_frames
+  action: normalized_12d_with_absolute_q_send_recorded
+  policy_hz: 50
+  low_level_hz: 500
+  horizon_policy_steps: 32
+  failure:
+    max_abs_roll_pitch_rad: 1.047198
+    min_base_height_m: 0.18
+  primary_estimand: "P(H32 fall | history, candidate, repeated filtered-SAC continuation)"
+  statistical_unit: independent_simulator_state_group
+
+method:
+  name: selective_advantage_qsafe
+  state_encoder:
+    history_frames: 5
+    auxiliary_targets:
+      - nominal_h32_fall
+      - time_to_failure
+      - max_tilt
+      - min_height
+  action_head:
+    target: candidate_risk_minus_nominal_risk
+    inputs:
+      - state_embedding
+      - nominal_action
+      - candidate_action
+      - candidate_minus_nominal
+  ensemble_members: 5
+  selector:
+    repeated_closed_loop: true
+    require_positive_lower_confidence_benefit: true
+    reward_q_gate: true
+    action_support_gate: true
+    abstain_on_uncertainty: true
+
+data:
+  levels:
+    representation_pretrain:
+      sources: [ppo, early_ppo, frozen_sac, perturbed_sac]
+    state_risk:
+      sources: [ppo_boundary, frozen_sac_boundary, filtered_sac_boundary]
+    action_ranking:
+      same_state_candidates: 16
+      replicas: 8
+    final_continuation:
+      continuation: repeated_filtered_sac
+  training_group_sampling:
+    ppo_proposed_target_labeled: 0.30
+    frozen_sac: 0.35
+    filtered_or_repeated_sac: 0.25
+    calibration_extremes: 0.10
+  learning_curve_groups: [360, 1000, 3000, 10000, 30000, 100000]
+
+phase1:
+  name: fresh_or_small_shift_fall_reduction
+  development_speeds_mps: [0.27, 0.30, 0.33]
+  data_gate:
+    min_independent_groups: 1000
+    min_source_seeds: 3
+    min_candidates_per_group: 8
+    min_mixed_outcome_fraction: 0.25
+    max_duplicate_group_fraction: 0.0
+  model_gate:
+    min_pair_accuracy: 0.60
+    min_pair_accuracy_ci_low: 0.55
+    min_strong_pair_accuracy: 0.62
+    min_top1_absolute_reduction: 0.03
+    min_top1_reduction_ci_low: 0.0
+    min_oracle_gap_capture: 0.25
+    max_ece: 0.08
+  paired_closed_loop_gate:
+    min_independent_pairs: 1000
+    min_absolute_fall_reduction: 0.03
+    min_reduction_ci_low: 0.0
+    require_improved_gt_worsened: true
+  online_training_gate:
+    mechanics_pilot:
+      seeds: [101, 102, 103, 104]
+      policy_steps_per_seed: 100000
+      evidence_claim: false
+    confirmation:
+      seeds: [201, 202, 203, 204, 205, 206, 207, 208, 209, 210]
+      policy_steps_per_seed: 500000
+    baseline: pure_sac
+    treatment: sac_with_frozen_then_adaptive_selective_advantage_qsafe
+    placebo: sac_with_intervention_rate_and_action_distance_matched_random
+    min_relative_fall_reduction: 0.20
+    min_absolute_falls_per_1000_reduction: 0.01
+    min_reduction_ci_low: 0.0
+    min_return_ratio: 0.95
+    max_forward_velocity_error_increase_mps: 0.03
+    max_runtime_deadline_miss_rate: 0.001
+  pass_requires:
+    - data_gate
+    - model_gate
+    - paired_closed_loop_gate
+    - online_training_gate
+
+phase2:
+  name: speed_range_expansion
+  blocked_until: phase1.pass
+  speed_curriculum_mps:
+    - [0.25, 0.35]
+    - [0.20, 0.40]
+    - [0.10, 0.50]
+  retention_gate:
+    min_phase1_relative_reduction_retained: 0.80
+    min_relative_fall_reduction: 0.16
+    min_reduction_ci_low: 0.0
+    min_return_ratio: 0.93
+  continuation_conditioning: deployable_velocity_command_or_per_speed_critic
+  stop_at_first_failed_range: true
+
+commits:
+  minimum: 3
+  milestones:
+    - protocol_and_preregistration
+    - grouped_data_and_metrics
+    - training_selector_and_phase1_evaluator
