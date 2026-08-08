@@ -5,8 +5,9 @@ import unittest
 
 import numpy as np
 import torch
+from torch.nn import functional as F
 
-from rl.qsafe.loss import QSafeLossConfig, qsafe_group_loss
+from rl.qsafe.loss import QSafeLossConfig, _ranking_loss, qsafe_group_loss
 from rl.qsafe.network import (
     QSafeEnsemble,
     QSafeNetworkConfig,
@@ -225,6 +226,122 @@ class QSafeLossTest(unittest.TestCase):
             risk = model(observation, nominal, candidate).risk.mean(dim=0)
         self.assertLess(float(risk[1]), float(risk[0]))
         self.assertLess(float(risk[0]), float(risk[2]))
+
+
+def reference_ranking_loss(
+    risk_logits: torch.Tensor,
+    empirical_risk: torch.Tensor,
+    candidate_mask: torch.Tensor,
+    group_weight: torch.Tensor,
+    minimum_gap: float,
+):
+    """Loop implementation retained in tests as the equivalence oracle."""
+    group_losses = torch.zeros(
+        risk_logits.shape[0], device=risk_logits.device,
+        dtype=risk_logits.dtype)
+    valid_groups = torch.zeros(
+        risk_logits.shape[0], device=risk_logits.device, dtype=torch.bool)
+    pair_count = 0
+    ranked_groups = 0
+    for group in range(risk_logits.shape[0]):
+        indices = torch.nonzero(
+            candidate_mask[group], as_tuple=False).reshape(-1)
+        losses = []
+        for left_offset in range(len(indices)):
+            left = indices[left_offset]
+            for right in indices[left_offset + 1:]:
+                target_delta = (
+                    empirical_risk[group, left]
+                    - empirical_risk[group, right]
+                )
+                if float(torch.abs(target_delta).detach()) < minimum_gap:
+                    continue
+                predicted_delta = (
+                    risk_logits[group, left] - risk_logits[group, right]
+                )
+                losses.append(F.softplus(
+                    -torch.sign(target_delta) * predicted_delta))
+        if losses:
+            group_losses[group] = torch.stack(losses).mean()
+            valid_groups[group] = True
+            pair_count += len(losses)
+            ranked_groups += 1
+    if not bool(torch.any(valid_groups)):
+        return risk_logits.new_zeros(()), 0, 0
+    weights = group_weight[valid_groups]
+    loss = (
+        group_losses[valid_groups] * weights
+    ).sum() / weights.sum()
+    return loss, ranked_groups, pair_count
+
+
+class RankingLossVectorizationTest(unittest.TestCase):
+    def test_random_masks_labels_values_counts_and_gradients_match_loop(self):
+        replicas = 8
+        for seed in range(5):
+            generator = torch.Generator().manual_seed(1000 + seed)
+            logits = torch.randn(
+                9, 16, generator=generator, dtype=torch.float64,
+                requires_grad=True)
+            reference_logits = logits.detach().clone().requires_grad_(True)
+            labels = torch.randint(
+                0, 2, (9, 16, replicas), generator=generator,
+                dtype=torch.int64).to(torch.float64)
+            empirical_risk = labels.mean(dim=2)
+            mask = torch.rand(
+                9, 16, generator=generator, dtype=torch.float64) > 0.3
+            weight = (
+                torch.rand(9, generator=generator, dtype=torch.float64) + 0.1
+            )
+
+            actual, actual_groups, actual_pairs = _ranking_loss(
+                logits, empirical_risk, mask, weight, 1.0 / replicas)
+            expected, expected_groups, expected_pairs = reference_ranking_loss(
+                reference_logits, empirical_risk, mask, weight,
+                1.0 / replicas)
+
+            torch.testing.assert_close(
+                actual, expected, rtol=1e-13, atol=1e-14)
+            self.assertEqual(actual_groups, expected_groups)
+            self.assertEqual(actual_pairs, expected_pairs)
+            actual_gradient, = torch.autograd.grad(actual, logits)
+            expected_gradient, = torch.autograd.grad(
+                expected, reference_logits)
+            torch.testing.assert_close(
+                actual_gradient, expected_gradient,
+                rtol=1e-13, atol=1e-14)
+
+    def test_zero_valid_pairs_preserves_detached_zero_and_counts(self):
+        logits = torch.randn(4, 5, dtype=torch.float64, requires_grad=True)
+        empirical_risk = torch.full((4, 5), 0.5, dtype=torch.float64)
+        mask = torch.ones(4, 5, dtype=torch.bool)
+        loss, ranked_groups, ranked_pairs = _ranking_loss(
+            logits, empirical_risk, mask, torch.ones(4, dtype=torch.float64),
+            minimum_gap=0.125)
+        self.assertEqual(float(loss), 0.0)
+        self.assertFalse(loss.requires_grad)
+        self.assertEqual(ranked_groups, 0)
+        self.assertEqual(ranked_pairs, 0)
+
+    def test_minimum_gap_boundary_is_inclusive(self):
+        logits = torch.tensor(
+            [[0.8, -0.4, 1.2]], dtype=torch.float64,
+            requires_grad=True)
+        empirical_risk = torch.tensor(
+            [[0.5, 0.375, 0.25]], dtype=torch.float64)
+        mask = torch.ones(1, 3, dtype=torch.bool)
+        weight = torch.ones(1, dtype=torch.float64)
+
+        actual, actual_groups, actual_pairs = _ranking_loss(
+            logits, empirical_risk, mask, weight, minimum_gap=0.125)
+        expected, expected_groups, expected_pairs = reference_ranking_loss(
+            logits, empirical_risk, mask, weight, minimum_gap=0.125)
+
+        torch.testing.assert_close(
+            actual, expected, rtol=0.0, atol=0.0)
+        self.assertEqual((actual_groups, actual_pairs), (1, 3))
+        self.assertEqual(actual_groups, expected_groups)
+        self.assertEqual(actual_pairs, expected_pairs)
 
 
 if __name__ == "__main__":

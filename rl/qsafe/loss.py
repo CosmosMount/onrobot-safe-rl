@@ -83,34 +83,52 @@ def _ranking_loss(
     group_weight: torch.Tensor,
     minimum_gap: float,
 ) -> tuple[torch.Tensor, int, int]:
-    group_losses = torch.zeros(
-        (risk_logits.shape[0],),
-        device=risk_logits.device, dtype=risk_logits.dtype)
-    valid_groups = torch.zeros(
-        (risk_logits.shape[0],), device=risk_logits.device, dtype=torch.bool)
-    pair_count = 0
-    ranked_groups = 0
-    for group in range(risk_logits.shape[0]):
-        indices = torch.nonzero(candidate_mask[group], as_tuple=False).reshape(-1)
-        losses = []
-        for left_offset in range(len(indices)):
-            left = indices[left_offset]
-            for right in indices[left_offset + 1:]:
-                target_delta = empirical_risk[group, left] - empirical_risk[group, right]
-                if float(torch.abs(target_delta).detach()) < minimum_gap:
-                    continue
-                sign = torch.sign(target_delta)
-                predicted_delta = risk_logits[group, left] - risk_logits[group, right]
-                losses.append(F.softplus(-sign * predicted_delta))
-        if losses:
-            group_losses[group] = torch.stack(losses).mean()
-            valid_groups[group] = True
-            pair_count += len(losses)
-            ranked_groups += 1
+    candidates = risk_logits.shape[1]
+    pair_indices = torch.triu_indices(
+        candidates,
+        candidates,
+        offset=1,
+        device=risk_logits.device,
+    )
+    left, right = pair_indices.unbind(dim=0)
+    target_delta = empirical_risk[:, left] - empirical_risk[:, right]
+    pair_mask = (
+        candidate_mask[:, left].to(dtype=torch.bool)
+        & candidate_mask[:, right].to(dtype=torch.bool)
+        & (torch.abs(target_delta) >= minimum_gap)
+    )
+    predicted_delta = risk_logits[:, left] - risk_logits[:, right]
+    safe_target_delta = torch.where(
+        pair_mask, target_delta, torch.zeros_like(target_delta))
+    safe_predicted_delta = torch.where(
+        pair_mask, predicted_delta, torch.zeros_like(predicted_delta))
+    pair_losses = F.softplus(
+        -torch.sign(safe_target_delta) * safe_predicted_delta
+    )
+    pair_count_per_group = pair_mask.sum(dim=1)
+    valid_groups = pair_count_per_group > 0
+    group_losses = torch.where(
+        pair_mask,
+        pair_losses,
+        torch.zeros_like(pair_losses),
+    ).sum(dim=1) / pair_count_per_group.clamp_min(1)
+    ranked_groups, pair_count = torch.stack((
+        valid_groups.sum(), pair_count_per_group.sum(),
+    )).tolist()
+    if pair_count == 0:
+        # Match the loop implementation's detached scalar for an empty ranking
+        # objective and retain its weight validation behavior.
+        empty_group_losses = risk_logits.new_zeros(risk_logits.shape[0])
+        return (
+            _weighted_group_mean(
+                empty_group_losses, group_weight, valid_groups),
+            0,
+            0,
+        )
     return (
         _weighted_group_mean(group_losses, group_weight, valid_groups),
-        ranked_groups,
-        pair_count,
+        int(ranked_groups),
+        int(pair_count),
     )
 
 
