@@ -146,6 +146,10 @@ class GroupedBranchDatasetTest(unittest.TestCase):
             manifest={
                 "schema_version": PRIVILEGED_SCHEMA_VERSION,
                 "feature_view": "privileged_diagnostic_only",
+                "split": dataset.manifest["split"],
+                "generator_commit": dataset.manifest["generator_commit"],
+                "deployable_content_sha256": dataset.validate(
+                    verify_hash=False)["content_sha256"],
             },
             group_id=dataset["group_id"].copy(),
             state_hash=dataset["state_hash"].copy(),
@@ -175,6 +179,36 @@ class GroupedBranchDatasetTest(unittest.TestCase):
         validation.arrays["trajectory_id"][0] = train["trajectory_id"][0]
         with self.assertRaisesRegex(DatasetValidationError, "trajectory_id leaks"):
             audit_split_disjointness([train, validation])
+
+    def test_replica_seed_namespaces_are_globally_unique(self):
+        dataset, _ = synthetic_dataset()
+        dataset.arrays["rollout_seed"][1, 0] = dataset["rollout_seed"][0, 0]
+        with self.assertRaisesRegex(
+                DatasetValidationError, "globally unique"):
+            dataset.validate()
+
+    def test_all_rng_seed_namespaces_are_mutually_disjoint(self):
+        dataset, _ = synthetic_dataset()
+        dataset.arrays["candidate_seed"] = np.arange(
+            10_000, 10_000 + dataset.group_count, dtype=np.uint64)
+        dataset.validate()
+        dataset.arrays["candidate_seed"][0] = dataset["crn_id"][0, 0]
+        with self.assertRaisesRegex(
+                DatasetValidationError, "reused across RNG namespaces"):
+            dataset.validate()
+
+    def test_source_seed_and_trajectory_identities_are_functional(self):
+        dataset, _ = synthetic_dataset()
+        dataset.arrays["source_seed"][:] = 71
+        dataset.arrays["policy_training_seed"][:] = 42
+        dataset.arrays["policy_source"][:] = "same-policy"
+        dataset.arrays["command_vx"][:] = 0.30
+        dataset.validate()
+
+        dataset.arrays["command_vx"][1] = 0.31
+        with self.assertRaisesRegex(
+                DatasetValidationError, "source_seed is not identity-isolated"):
+            dataset.validate()
 
     def test_content_hash_detects_in_memory_tamper_after_load(self):
         dataset, _ = synthetic_dataset()

@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from runtime.inference.actions import action_to_qpos
-from safety_data.native import evaluate_same_state_group
+from safety_data.native import ReplicaSeedBundle, evaluate_same_state_group
 from train.config import load_app_config
 from train.mujoco_snapshot_env import MujocoSnapshotEnv
 
@@ -120,6 +120,10 @@ class MujocoSnapshotEnvTest(unittest.TestCase):
             continuation_policy=continuation,
         )
         self.assertEqual(continuation.counter, 0)
+        self.assertEqual(result.seed_contract, "legacy_equal_seeds_v1")
+        np.testing.assert_array_equal(result.crn_id, [1001, 1002])
+        np.testing.assert_array_equal(result.rollout_seed, result.crn_id)
+        np.testing.assert_array_equal(result.perturbation_seed, result.crn_id)
         np.testing.assert_array_equal(result.fall[0], result.fall[1])
         np.testing.assert_array_equal(
             result.first_failure_step[0], result.first_failure_step[1])
@@ -136,6 +140,163 @@ class MujocoSnapshotEnvTest(unittest.TestCase):
                 np.asarray([1001.0, 1002.0]),
                 horizon_steps=1,
                 continuation_policy=StatefulContinuation(),
+            )
+
+    def test_explicit_replica_seed_streams_are_isolated_and_paired(self):
+        env = self.env(filtered=True)
+        env.record_observation()
+        snapshot = env.capture()
+        action = np.linspace(-0.2, 0.2, 12, dtype=np.float32)
+        candidates = np.stack([action, action])
+
+        def run(bundle):
+            continuation_draws = []
+            disturbance_draws = []
+
+            def continuation(history, step, rng):
+                del history, step
+                draw = int(rng.integers(0, 2**31))
+                continuation_draws.append(draw)
+                value = ((draw % 1001) / 1000.0 - 0.5) * 0.02
+                return np.full(12, value, dtype=np.float32)
+
+            def disturbance(target_env, step, rng):
+                del target_env, step
+                disturbance_draws.append(int(rng.integers(0, 2**31)))
+
+            evaluation = evaluate_same_state_group(
+                env,
+                snapshot,
+                candidates,
+                bundle,
+                horizon_steps=3,
+                continuation_policy=continuation,
+                disturbance_program=disturbance,
+            )
+            self.assertEqual(len(continuation_draws), 2 * 2 * 2)
+            self.assertEqual(len(disturbance_draws), 2 * 2 * 3)
+            continuation_trace = np.asarray(continuation_draws).reshape(2, 2, 2)
+            disturbance_trace = np.asarray(disturbance_draws).reshape(2, 2, 3)
+            np.testing.assert_array_equal(
+                continuation_trace[0], continuation_trace[1])
+            np.testing.assert_array_equal(
+                disturbance_trace[0], disturbance_trace[1])
+            np.testing.assert_array_equal(evaluation.fall[0], evaluation.fall[1])
+            np.testing.assert_array_equal(
+                evaluation.first_failure_step[0],
+                evaluation.first_failure_step[1])
+            return evaluation, continuation_trace, disturbance_trace
+
+        base = ReplicaSeedBundle(
+            crn_id=np.asarray([11, 12], dtype=np.int64),
+            rollout_seed=np.asarray([101, 102], dtype=np.int64),
+            perturbation_seed=np.asarray([201, 202], dtype=np.int64),
+        )
+        base_result, base_continuation, base_disturbance = run(base)
+
+        rollout_changed = ReplicaSeedBundle(
+            crn_id=base.crn_id,
+            rollout_seed=np.asarray([301, 302], dtype=np.int64),
+            perturbation_seed=base.perturbation_seed,
+        )
+        _, changed_continuation, unchanged_disturbance = run(rollout_changed)
+        self.assertFalse(np.array_equal(base_continuation, changed_continuation))
+        np.testing.assert_array_equal(base_disturbance, unchanged_disturbance)
+
+        perturbation_changed = ReplicaSeedBundle(
+            crn_id=base.crn_id,
+            rollout_seed=base.rollout_seed,
+            perturbation_seed=np.asarray([401, 402], dtype=np.int64),
+        )
+        _, unchanged_continuation, changed_disturbance = run(
+            perturbation_changed)
+        np.testing.assert_array_equal(base_continuation, unchanged_continuation)
+        self.assertFalse(np.array_equal(base_disturbance, changed_disturbance))
+
+        identity_changed = ReplicaSeedBundle(
+            crn_id=np.asarray([71, 72], dtype=np.int64),
+            rollout_seed=base.rollout_seed,
+            perturbation_seed=base.perturbation_seed,
+        )
+        identity_result, same_continuation, same_disturbance = run(identity_changed)
+        np.testing.assert_array_equal(base_continuation, same_continuation)
+        np.testing.assert_array_equal(base_disturbance, same_disturbance)
+        np.testing.assert_array_equal(identity_result.crn_id, [71, 72])
+        np.testing.assert_array_equal(base_result.crn_id, [11, 12])
+        self.assertEqual(base_result.seed_contract, "explicit_three_stream_v1")
+
+    def test_replica_seed_bundle_rejects_invalid_group_arrays(self):
+        valid = np.asarray([1, 2], dtype=np.int64)
+        cases = (
+            ("one-dimensional integer", dict(
+                crn_id=np.asarray([1.0, 2.0]),
+                rollout_seed=valid,
+                perturbation_seed=valid)),
+            ("one-dimensional integer", dict(
+                crn_id=np.asarray([[1, 2]], dtype=np.int64),
+                rollout_seed=valid,
+                perturbation_seed=valid)),
+            ("nonnegative", dict(
+                crn_id=np.asarray([-1, 2], dtype=np.int64),
+                rollout_seed=valid,
+                perturbation_seed=valid)),
+            ("unique across replicas", dict(
+                crn_id=np.asarray([1, 1], dtype=np.int64),
+                rollout_seed=valid,
+                perturbation_seed=valid)),
+            ("identical one-dimensional shapes", dict(
+                crn_id=valid,
+                rollout_seed=np.asarray([3], dtype=np.int64),
+                perturbation_seed=valid)),
+        )
+        for expected, values in cases:
+            with self.subTest(expected=expected), self.assertRaisesRegex(
+                    ValueError, expected):
+                ReplicaSeedBundle(**values)
+
+    def test_native_group_rejects_invalid_horizon_and_candidate_values(self):
+        env = self.env(filtered=True)
+        env.record_observation()
+        snapshot = env.capture()
+        action = np.zeros(12, dtype=np.float32)
+        candidates = np.stack([action, action])
+
+        def continuation(history, step, rng):
+            del history, step, rng
+            return action
+
+        for horizon in (True, 1.5, 32767):
+            with self.subTest(horizon=horizon), self.assertRaisesRegex(
+                    ValueError, "horizon_steps"):
+                evaluate_same_state_group(
+                    env,
+                    snapshot,
+                    candidates,
+                    np.asarray([11], dtype=np.int64),
+                    horizon_steps=horizon,  # type: ignore[arg-type]
+                    continuation_policy=continuation,
+                )
+        invalid_nonfinite = candidates.copy()
+        invalid_nonfinite[1, 3] = np.nan
+        with self.assertRaisesRegex(ValueError, "finite actions"):
+            evaluate_same_state_group(
+                env,
+                snapshot,
+                invalid_nonfinite,
+                np.asarray([11], dtype=np.int64),
+                horizon_steps=2,
+                continuation_policy=continuation,
+            )
+        invalid_bounds = candidates.copy()
+        invalid_bounds[1, 3] = 1.1
+        with self.assertRaisesRegex(ValueError, r"normalized \[-1, 1\]"):
+            evaluate_same_state_group(
+                env,
+                snapshot,
+                invalid_bounds,
+                np.asarray([11], dtype=np.int64),
+                horizon_steps=2,
+                continuation_policy=continuation,
             )
 
     def test_fingerprint_locks_runtime_pd_gains(self):

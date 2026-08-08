@@ -258,6 +258,58 @@ class GroupedBranchDataset:
                 raise DatasetValidationError(
                     f"{name} must be a nonnegative integer vector")
 
+        trajectory_id = _as_text(self.arrays["trajectory_id"])
+        source_seed = np.asarray(self.arrays["source_seed"])
+        episode_id = np.asarray(self.arrays["episode_id"])
+        episode_step = np.asarray(self.arrays["episode_step"])
+        policy_training_seed = np.asarray(self.arrays["policy_training_seed"])
+        policy_source = _as_text(self.arrays["policy_source"])
+        command_vx = np.asarray(self.arrays["command_vx"])
+
+        def require_functional_identity(
+            label: str,
+            keys: Iterable[Any],
+            values: Iterable[Any],
+        ) -> None:
+            mapping: dict[Any, Any] = {}
+            for key, value in zip(keys, values, strict=True):
+                previous = mapping.setdefault(key, value)
+                if previous != value:
+                    raise DatasetValidationError(
+                        f"{label} is not identity-isolated: {key!r} maps to "
+                        f"both {previous!r} and {value!r}")
+
+        require_functional_identity(
+            "source_seed",
+            map(int, source_seed),
+            (
+                (int(training_seed), str(policy), float(speed))
+                for training_seed, policy, speed in zip(
+                    policy_training_seed, policy_source, command_vx, strict=True)
+            ),
+        )
+        require_functional_identity(
+            "trajectory_id",
+            map(str, trajectory_id),
+            (
+                (int(seed), int(episode))
+                for seed, episode in zip(source_seed, episode_id, strict=True)
+            ),
+        )
+        require_functional_identity(
+            "(source_seed, episode_id)",
+            (
+                (int(seed), int(episode))
+                for seed, episode in zip(source_seed, episode_id, strict=True)
+            ),
+            map(str, trajectory_id),
+        )
+        trajectory_steps = list(zip(
+            map(str, trajectory_id), map(int, episode_step), strict=True))
+        if len(set(trajectory_steps)) != group_count:
+            raise DatasetValidationError(
+                "(trajectory_id, episode_step) must uniquely identify a group")
+
         obs_history = np.asarray(self.arrays["obs_history"])
         q_send_history = np.asarray(self.arrays["q_send_history"])
         if obs_history.shape != (
@@ -400,6 +452,7 @@ class GroupedBranchDataset:
                 "fall labels disagree with manifest tilt/height predicate")
 
         crn_shape = (group_count, replica_count)
+        seed_namespaces: dict[str, np.ndarray] = {}
         for name in ("crn_id", "rollout_seed", "perturbation_seed"):
             if self.arrays[name].shape != crn_shape:
                 raise DatasetValidationError(
@@ -412,6 +465,42 @@ class GroupedBranchDataset:
                 if len(np.unique(row)) != replica_count:
                     raise DatasetValidationError(
                         f"{name} must be unique across replicas within each group")
+            flattened = np.asarray(self.arrays[name]).reshape(-1)
+            if len(np.unique(flattened)) != flattened.size:
+                raise DatasetValidationError(
+                    f"{name} must be globally unique across dataset groups")
+            seed_namespaces[name] = flattened
+        if "candidate_seed" in self.arrays:
+            candidate_seed = np.asarray(self.arrays["candidate_seed"])
+            if candidate_seed.shape != (group_count,):
+                raise DatasetValidationError(
+                    "candidate_seed must have shape [G]")
+            if candidate_seed.dtype.kind not in "iu" or np.any(candidate_seed < 0):
+                raise DatasetValidationError(
+                    "candidate_seed must contain nonnegative integers")
+            if len(np.unique(candidate_seed)) != group_count:
+                raise DatasetValidationError(
+                    "candidate_seed must be globally unique across dataset groups")
+            seed_namespaces["candidate_seed"] = candidate_seed.reshape(-1)
+        # Each namespace is already internally unique, so a duplicate after
+        # concatenation can only be a cross-namespace collision.  Keep this
+        # vectorized: Python integer dictionaries are prohibitively large at
+        # the preregistered 100k-group scale.
+        all_seeds = np.concatenate([
+            values.astype(np.uint64, copy=False)
+            for values in seed_namespaces.values()
+        ])
+        unique_seeds, seed_counts = np.unique(all_seeds, return_counts=True)
+        collisions = unique_seeds[seed_counts > 1]
+        if collisions.size:
+            collision = int(collisions[0])
+            owners = [
+                name for name, values in seed_namespaces.items()
+                if np.any(values.astype(np.uint64, copy=False) == collision)
+            ]
+            raise DatasetValidationError(
+                f"seed value {collision} is reused across RNG namespaces "
+                f"{owners}")
 
         acceptance = np.asarray(self.arrays["acceptance_probability"], dtype=float)
         _finite("acceptance_probability", acceptance)
@@ -514,6 +603,10 @@ class PrivilegedBranchView:
             raise DatasetValidationError("privileged features must have shape [G, P]")
         if feature_names.shape != (features.shape[1],):
             raise DatasetValidationError("feature_names must identify every privileged column")
+        if np.any(feature_names == "") or len(np.unique(feature_names)) != len(
+                feature_names):
+            raise DatasetValidationError(
+                "privileged feature_names must be unique and nonempty")
         if len(np.unique(group_id)) != len(group_id) or np.any(group_id == ""):
             raise DatasetValidationError("privileged group_id values must be unique/nonempty")
         if len(np.unique(state_hash)) != len(state_hash) or np.any(state_hash == ""):
@@ -530,7 +623,16 @@ class PrivilegedBranchView:
         if verify_hash and expected_hash is not None and expected_hash != actual_hash:
             raise DatasetValidationError("privileged content hash mismatch")
         if deployable is not None:
-            deployable.validate()
+            deployable_report = deployable.validate()
+            for name in ("split", "generator_commit"):
+                if self.manifest.get(name) != deployable.manifest.get(name):
+                    raise DatasetValidationError(
+                        f"privileged {name} does not match deployable view")
+            if self.manifest.get("deployable_content_sha256") != (
+                    deployable_report["content_sha256"]):
+                raise DatasetValidationError(
+                    "privileged deployable_content_sha256 does not match "
+                    "deployable view")
             if not np.array_equal(group_id, deployable["group_id"].astype(str)):
                 raise DatasetValidationError(
                     "privileged group_id order does not match deployable view")

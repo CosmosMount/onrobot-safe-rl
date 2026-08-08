@@ -1,6 +1,6 @@
 # Q_safe fall-reduction execution roadmap
 
-Status: active, Phase 1A
+Status: active, Phase 1C/1D (Objective 1 evidence execution; not yet passed)
 Protocol: `config/qsafe_evidence_protocol.yaml`  
 Branch: `codex/qsafe-evidence-pipeline`
 
@@ -311,7 +311,7 @@ The primary outcome is falls per fixed policy-step budget, not falls per complet
 2. Repair corrected-observation/q_send snapshot parity, application-state cloning and broken imports. **Done: `020a8af`; real-MJCF restore is bit-exact.**
 3. Implement protected-path validation, group schema and deterministic metrics. **Done: `020a8af`; legacy row-flat files are diagnostic-only.**
 4. Add synthetic tests and audit the available development NPZ formats without opening protected paths. **Done; train/calibration/test identity leakage fails closed.**
-5. Implement the native group exporter and collect a small smoke dataset. **Next; the native branch kernel and compound snapshot contract already pass real-MJCF tests.**
+5. Implement the native group exporter and collect a small smoke dataset. **Implemented; a real 500k-SAC/MJCF K16×R8×H32 smoke is bitwise reproducible, and 56 pre-outcome-selected development groups locked the `native_poc_v1` boundary profile (nominal risk 0.410, mixed 0.719, oracle reduction 0.082 on the selected 32-group profile). This is mechanism tuning, not fall-reduction evidence.**
 6. Add the factorized model trainer and privileged/deployable learning-curve CLI. **Implemented; the production action view is the ordered 36D requested/executed/q-target tuple, with requested-only retained only as an explicit ablation.**
 7. Implement the paired repeated-closed-loop evaluator and evidence compiler. **Online three-arm seed statistics and the development compiler are implemented; the exact-state repeated-shield runner remains next.**
-8. Create commit 3, then run the Objective 1 experiment ladder. **Commit 3 is ready for final regression; Phase 2 remains blocked.**
+8. Create commit 3, then run the Objective 1 experiment ladder. **Done: `0cddc1d`; the reviewed native collector is the commit-4 boundary before the 1k PoC. Phase 2 remains blocked until every Objective 1 gate passes.**

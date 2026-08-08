@@ -75,6 +75,31 @@ data:
     filtered_or_repeated_sac: 0.25
     calibration_extremes: 0.10
   learning_curve_groups: [360, 1000, 3000, 10000, 30000, 100000]
+  native_poc_v1:
+    scope: development_boundary_mechanism_only
+    candidates: 16
+    replicas: 8
+    horizon_policy_steps: 32
+    natural_acceptance_probability: 0.50
+    source_impulse:
+      interval_policy_steps: 10
+      linear_std_mps: 1.0
+      angular_std_radps: 4.0
+    branch_impulse:
+      policy_steps: [8, 16]
+      linear_std_mps: 1.0
+      angular_std_radps: 4.0
+    candidate_radius:
+      actor_sample_max_delta_rms: 0.50
+      symmetric_perturbation_rms: 0.25
+    selection_timing: before_candidate_outcomes
+    tuning_basis:
+      development_groups: 56
+      selected_profile_groups: 32
+      selected_profile_nominal_risk: 0.41015625
+      selected_profile_mixed_fraction: 0.71875
+      selected_profile_oracle_absolute_reduction: 0.08203125
+    evidence_limit: does_not_replace_natural_closed_loop_or_online_training_gates
 
 phase1:
   name: fresh_or_small_shift_fall_reduction
