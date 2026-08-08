@@ -7,6 +7,7 @@ import argparse
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 from typing import Any
@@ -51,6 +52,65 @@ _POLICY_BINDING_KEYS = (
     "actor_observation_dim",
     "action_dim",
 )
+_TRAINING_REGISTRY_SCHEMA_VERSION = "qsafe.model_training_registry.v1"
+_HELDOUT_CONSUMPTION_UNIT = "preregistered_run_id_and_test_file_sha256"
+_DIAGNOSTIC_CLAIM_POLICY = "no_multiple_comparison_claim"
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+_CANONICAL_LEDGER_ROOT_VALUE = (
+    "saved/qsafe_development/ledgers/qsafe_model_test_once_v1")
+_CANONICAL_PROTOCOL_PATH = (
+    _REPOSITORY_ROOT / "config" / "qsafe_evidence_protocol.yaml"
+).resolve()
+_LOCKED_HYPERPARAMETERS = (
+    "epochs",
+    "batch_size",
+    "ensemble_members",
+    "learning_rate",
+    "weight_decay",
+    "seed",
+    "frame_hidden_dim",
+    "state_hidden_dim",
+    "action_hidden_dim",
+    "calibration_steps",
+    "bootstrap_replicates",
+    "gradient_clip_norm",
+)
+_INTEGER_HYPERPARAMETERS = {
+    "epochs", "batch_size", "ensemble_members", "seed",
+    "frame_hidden_dim", "state_hidden_dim", "action_hidden_dim",
+    "calibration_steps", "bootstrap_replicates",
+}
+_NONNEGATIVE_HYPERPARAMETERS = {"seed", "weight_decay"}
+_EXPECTED_RUN_CONTRACTS = {
+    "primary_selective_deployable": {
+        "claim_role": "primary",
+        "claim_eligible": True,
+        "feature_view": "deployable",
+        "action_feature_view": "application_concat",
+        "action_mode": "selective_advantage",
+    },
+    "diagnostic_pointwise_deployable": {
+        "claim_role": "diagnostic",
+        "claim_eligible": False,
+        "feature_view": "deployable",
+        "action_feature_view": "application_concat",
+        "action_mode": "pointwise",
+    },
+    "diagnostic_state_only_deployable": {
+        "claim_role": "diagnostic",
+        "claim_eligible": False,
+        "feature_view": "deployable",
+        "action_feature_view": "application_concat",
+        "action_mode": "state_only",
+    },
+    "diagnostic_privileged_selective": {
+        "claim_role": "diagnostic",
+        "claim_eligible": False,
+        "feature_view": "privileged",
+        "action_feature_view": "application_concat",
+        "action_mode": "selective_advantage",
+    },
+}
 
 
 def _canonical_sha256(value: Any) -> str:
@@ -143,9 +203,99 @@ def _finite_json(value: Any) -> Any:
     return value
 
 
+def _locked_training_run(
+    protocol: dict[str, Any],
+    run_id: str,
+) -> tuple[dict[str, Any], dict[str, Any], Path]:
+    phase1 = protocol.get("phase1")
+    training = phase1.get("model_training") if isinstance(phase1, dict) else None
+    if not isinstance(training, dict) or training.get(
+            "registry_schema_version") != _TRAINING_REGISTRY_SCHEMA_VERSION:
+        raise ValueError("protocol has no supported Phase 1 model-training registry")
+    heldout = training.get("heldout_consumption")
+    if not isinstance(heldout, dict) or set(heldout) != {
+        "unit", "consumptions_per_key", "ledger_root",
+        "diagnostic_claim_policy",
+    }:
+        raise ValueError("held-out consumption policy is incomplete or has drifted")
+    if heldout.get("unit") != _HELDOUT_CONSUMPTION_UNIT or heldout.get(
+            "consumptions_per_key") != 1 or heldout.get(
+                "diagnostic_claim_policy") != _DIAGNOSTIC_CLAIM_POLICY:
+        raise ValueError("held-out once-only or diagnostic claim policy has drifted")
+    ledger_value = heldout.get("ledger_root")
+    if ledger_value != _CANONICAL_LEDGER_ROOT_VALUE:
+        raise ValueError("held-out ledger_root has drifted from its canonical path")
+    ledger_root = assert_development_path(_REPOSITORY_ROOT / ledger_value)
+
+    runs = training.get("runs")
+    if not isinstance(runs, dict) or set(runs) != set(_EXPECTED_RUN_CONTRACTS):
+        raise ValueError("model-training registry must contain exactly four locked runs")
+    for registered_id, expected_contract in _EXPECTED_RUN_CONTRACTS.items():
+        value = runs.get(registered_id)
+        if not isinstance(value, dict) or set(value) != {
+            *expected_contract, "hyperparameters",
+        }:
+            raise ValueError(f"training run {registered_id!r} has schema drift")
+        for name, expected in expected_contract.items():
+            if value.get(name) != expected:
+                raise ValueError(
+                    f"training run {registered_id!r} changes locked field {name!r}")
+        hyperparameters = value.get("hyperparameters")
+        if not isinstance(hyperparameters, dict) or set(hyperparameters) != set(
+                _LOCKED_HYPERPARAMETERS):
+            raise ValueError(
+                f"training run {registered_id!r} has hyperparameter schema drift")
+        for name, item in hyperparameters.items():
+            if isinstance(item, bool):
+                raise ValueError(
+                    f"training run {registered_id!r} hyperparameter {name!r} is invalid")
+            if name in _INTEGER_HYPERPARAMETERS:
+                valid_type = isinstance(item, int)
+            else:
+                valid_type = isinstance(item, (int, float)) and np.isfinite(item)
+            if not valid_type:
+                raise ValueError(
+                    f"training run {registered_id!r} hyperparameter {name!r} is invalid")
+            valid_range = item >= 0 if name in _NONNEGATIVE_HYPERPARAMETERS else item > 0
+            if not valid_range:
+                raise ValueError(
+                    f"training run {registered_id!r} hyperparameter {name!r} is invalid")
+    if run_id not in runs:
+        raise ValueError(f"run_id {run_id!r} is not preregistered")
+    return copy.deepcopy(runs[run_id]), copy.deepcopy(heldout), ledger_root
+
+
+def _validate_cli_for_run(
+    args: argparse.Namespace,
+    run: dict[str, Any],
+    privileged_paths: tuple[str | None, str | None, str | None],
+) -> None:
+    if any(privileged_paths) and not all(privileged_paths):
+        raise ValueError("privileged diagnostics require all three split views")
+    expected_privileged = run["feature_view"] == "privileged"
+    supplied_privileged = all(privileged_paths)
+    if supplied_privileged != expected_privileged:
+        raise ValueError(
+            f"run_id {args.run_id!r} feature-view drift: expected "
+            f"{run['feature_view']!r}")
+    if args.action_mode != run["action_mode"]:
+        raise ValueError(
+            f"run_id {args.run_id!r} action-mode drift: got "
+            f"{args.action_mode!r}, expected {run['action_mode']!r}")
+    if run["action_feature_view"] != "application_concat":
+        raise ValueError("trainer supports only the locked application_concat action view")
+    expected = run["hyperparameters"]
+    for name in _LOCKED_HYPERPARAMETERS:
+        actual = getattr(args, name)
+        if actual != expected[name]:
+            raise ValueError(
+                f"run_id {args.run_id!r} parameter drift for {name}: "
+                f"got {actual!r}, expected {expected[name]!r}")
+
+
 def _git_commit() -> str:
     result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
+        ["git", "-C", str(_REPOSITORY_ROOT), "rev-parse", "HEAD"],
         check=True,
         capture_output=True,
         text=True,
@@ -153,8 +303,143 @@ def _git_commit() -> str:
     return result.stdout.strip()
 
 
+def _git_status() -> bytes:
+    return subprocess.run(
+        [
+            "git", "-C", str(_REPOSITORY_ROOT),
+            "status", "--porcelain=v1", "-z",
+            "--untracked-files=all",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
+
+
+def _require_clean_git_state(
+    *,
+    phase: str,
+    expected_commit: str | None = None,
+) -> str:
+    commit = _git_commit()
+    if expected_commit is not None and commit != expected_commit:
+        raise RuntimeError(
+            f"git HEAD changed during Q_safe training at {phase}: "
+            f"{expected_commit} -> {commit}")
+    if _git_status():
+        raise RuntimeError(
+            f"Q_safe training requires a clean git worktree at {phase}")
+    return commit
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _consume_heldout_once(
+    *,
+    test_path: Path,
+    test_file_sha256: str,
+    ledger_root: Path,
+    run_id: str,
+    protocol_name: str,
+    git_commit: str,
+) -> dict[str, str]:
+    if len(test_file_sha256) != 64 or any(
+            character not in "0123456789abcdef"
+            for character in test_file_sha256):
+        raise ValueError("held-out test file SHA-256 is invalid")
+    root = assert_development_path(ledger_root)
+    root.mkdir(parents=True, exist_ok=True)
+    marker = assert_development_path(
+        root / f"{run_id}.{test_file_sha256}.json")
+    payload = {
+        "schema_version": "qsafe.heldout_consumption.v1",
+        "consumption_unit": _HELDOUT_CONSUMPTION_UNIT,
+        "consumptions_for_key": 1,
+        "protocol_name": protocol_name,
+        "run_id": run_id,
+        "test_file_sha256": test_file_sha256,
+        "test_path": str(test_path),
+        "git_commit": git_commit,
+    }
+    rendered = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    try:
+        descriptor = os.open(marker, flags, 0o600)
+    except FileExistsError as exc:
+        raise RuntimeError(
+            "held-out test file was already consumed for this preregistered "
+            f"run_id: {marker}") from exc
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(rendered)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        # A partial marker intentionally remains consumed: retrying after any
+        # ambiguity would violate the exactly-once policy.
+        raise
+    return {
+        "marker_path": str(marker),
+        "marker_sha256": _file_sha256(marker),
+        "test_file_sha256": test_file_sha256,
+        "run_id": run_id,
+    }
+
+
+def _load_heldout_once(
+    test_path: Path,
+    *,
+    ledger_root: Path,
+    run_id: str,
+    protocol_name: str,
+    git_commit: str,
+) -> tuple[GroupedBranchDataset, dict[str, str]]:
+    source = assert_development_path(test_path)
+    test_file_sha256 = _file_sha256(source)
+    consumption = _consume_heldout_once(
+        test_path=source,
+        test_file_sha256=test_file_sha256,
+        ledger_root=ledger_root,
+        run_id=run_id,
+        protocol_name=protocol_name,
+        git_commit=git_commit,
+    )
+    dataset = GroupedBranchDataset.load(source)
+    if _file_sha256(source) != test_file_sha256:
+        raise RuntimeError("held-out test file changed while it was being loaded")
+    return dataset, consumption
+
+
+def _claim_decision(
+    run: dict[str, Any],
+    *,
+    deployable: bool,
+    runtime_binding_verified: bool,
+    data_gate_pass: bool,
+    model_gate_pass: bool,
+) -> tuple[bool, str | None]:
+    if not bool(run["claim_eligible"]):
+        return (
+            False,
+            "preregistered diagnostic run is ineligible for a primary claim; "
+            "no multiple-comparison claim is permitted",
+        )
+    if not deployable:
+        return False, "privileged diagnostics cannot support a deployment claim"
+    if not runtime_binding_verified:
+        return False, "source/continuation policy runtime binding is not verified"
+    if not data_gate_pass or not model_gate_pass:
+        return False, "one or more preregistered data/model gates failed"
+    return True, None
+
+
 def _load_privileged(
-    path: str | None,
+    path: str | Path | None,
     dataset: GroupedBranchDataset,
 ) -> PrivilegedBranchView | None:
     return None if path is None else PrivilegedBranchView.load(
@@ -222,6 +507,7 @@ def _model_gate(metrics: dict[str, Any], thresholds: dict[str, Any]) -> dict[str
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run-id", required=True)
     parser.add_argument("--train", required=True)
     parser.add_argument("--calibration", required=True)
     parser.add_argument("--test", required=True)
@@ -230,12 +516,13 @@ def main() -> int:
     parser.add_argument("--test-privileged")
     parser.add_argument("--output", required=True)
     parser.add_argument(
-        "--protocol", default="config/qsafe_evidence_protocol.yaml")
+        "--protocol", default=str(_CANONICAL_PROTOCOL_PATH))
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--ensemble-members", type=int, default=5)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-5)
+    parser.add_argument("--gradient-clip-norm", type=float, default=5.0)
     parser.add_argument("--calibration-steps", type=int, default=100)
     parser.add_argument("--seed", type=int, default=20260809)
     parser.add_argument(
@@ -256,29 +543,52 @@ def main() -> int:
         args.calibration_privileged,
         args.test_privileged,
     )
-    if any(privileged_paths) and not all(privileged_paths):
-        parser.error("privileged diagnostics require all three split views")
 
     protocol_path = assert_development_path(args.protocol)
+    if protocol_path != _CANONICAL_PROTOCOL_PATH:
+        raise ValueError(
+            "Q_safe training requires the repository's canonical locked protocol")
     protocol = yaml.safe_load(protocol_path.read_text(encoding="utf-8"))
     if int(protocol.get("protocol_version", -1)) != 2:
         raise ValueError("this trainer requires evidence protocol version 2")
+    run, heldout_policy, ledger_root = _locked_training_run(
+        protocol, args.run_id)
+    _validate_cli_for_run(args, run, privileged_paths)
     output = assert_development_path(args.output)
     if output.exists():
         raise FileExistsError(f"refusing to overwrite output: {output}")
+    training_commit = _require_clean_git_state(phase="before training")
 
-    train_data = GroupedBranchDataset.load(args.train)
-    calibration_data = GroupedBranchDataset.load(args.calibration)
-    test_data = GroupedBranchDataset.load(args.test)
+    train_path = assert_development_path(args.train)
+    calibration_path = assert_development_path(args.calibration)
+    test_path = assert_development_path(args.test)
+    train_privileged_path = (
+        None if args.train_privileged is None
+        else assert_development_path(args.train_privileged))
+    calibration_privileged_path = (
+        None if args.calibration_privileged is None
+        else assert_development_path(args.calibration_privileged))
+    test_privileged_path = (
+        None if args.test_privileged is None
+        else assert_development_path(args.test_privileged))
+    train_data = GroupedBranchDataset.load(train_path)
+    calibration_data = GroupedBranchDataset.load(calibration_path)
+    train_privileged = _load_privileged(train_privileged_path, train_data)
+    calibration_privileged = _load_privileged(
+        calibration_privileged_path, calibration_data)
+    test_data, heldout_consumption = _load_heldout_once(
+        test_path,
+        ledger_root=ledger_root,
+        run_id=args.run_id,
+        protocol_name=str(protocol["protocol_name"]),
+        git_commit=training_commit,
+    )
+    test_privileged = _load_privileged(test_privileged_path, test_data)
     split_audit = audit_split_disjointness(
         [train_data, calibration_data, test_data])
     causal_contract, dataset_generator_commits = (
         _require_causal_split_compatibility(
             (train_data, calibration_data, test_data)))
-    train_privileged = _load_privileged(args.train_privileged, train_data)
-    calibration_privileged = _load_privileged(
-        args.calibration_privileged, calibration_data)
-    test_privileged = _load_privileged(args.test_privileged, test_data)
 
     speeds = [
         float(np.asarray(dataset["command_vx"], dtype=np.float64)[0])
@@ -296,6 +606,19 @@ def main() -> int:
         calibration_data, normalization, calibration_privileged)
     test_view = TorchGroupedView(
         test_data, normalization, test_privileged)
+    expected_feature_view = str(run["feature_view"])
+    for role, view in (
+        ("train", train_view),
+        ("calibration", calibration_view),
+        ("test", test_view),
+    ):
+        if view.feature_view != expected_feature_view:
+            raise ValueError(
+                f"run_id {args.run_id!r} {role} feature-view drift: "
+                f"got {view.feature_view!r}, expected {expected_feature_view!r}")
+        if view.action_view != run["action_feature_view"]:
+            raise ValueError(
+                f"run_id {args.run_id!r} {role} action-feature-view drift")
     device = (
         "cuda" if args.device == "auto" and torch.cuda.is_available()
         else "cpu" if args.device == "auto" else args.device)
@@ -312,6 +635,7 @@ def main() -> int:
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
+        gradient_clip_norm=args.gradient_clip_norm,
         ensemble_members=args.ensemble_members,
         seed=args.seed,
         device=device,
@@ -346,20 +670,42 @@ def main() -> int:
         bootstrap_seed=args.seed + 82,
     )
     data_gate = _data_gate(train_data, protocol["phase1"]["data_gate"])
-    model_gate = _model_gate(test_metrics, protocol["phase1"]["model_gate"])
+    observed_model_gate = _model_gate(
+        test_metrics, protocol["phase1"]["model_gate"])
+    model_gate_for_claim = bool(run["claim_eligible"])
+    model_gate = {
+        "pass": bool(observed_model_gate["pass"] and model_gate_for_claim),
+        "observed_pass": bool(observed_model_gate["pass"]),
+        "claim_evaluated": model_gate_for_claim,
+        "checks": observed_model_gate["checks"],
+    }
     deployable = train_privileged is None
     runtime_binding_verified = bool(
         causal_contract["source_policy"]["verified"]
         and causal_contract["continuation_policy"]["verified"])
-    claim_eligible = bool(
-        deployable
-        and runtime_binding_verified
-        and data_gate["pass"]
-        and model_gate["pass"])
+    claim_eligible, claim_ineligible_reason = _claim_decision(
+        run,
+        deployable=deployable,
+        runtime_binding_verified=runtime_binding_verified,
+        data_gate_pass=bool(data_gate["pass"]),
+        model_gate_pass=bool(model_gate["pass"]),
+    )
+    _require_clean_git_state(
+        phase="after training",
+        expected_commit=training_commit,
+    )
     provenance = {
-        "generator_commit": _git_commit(),
+        "generator_commit": training_commit,
+        "generator_worktree_clean": True,
+        "generator_commit_stable": True,
         "protocol_path": str(protocol_path),
+        "protocol_file_sha256": _file_sha256(protocol_path),
         "protocol_name": protocol["protocol_name"],
+        "training_run_id": args.run_id,
+        "training_run_contract": run,
+        "training_run_contract_sha256": _canonical_sha256(run),
+        "heldout_consumption_policy": heldout_policy,
+        "heldout_consumption": heldout_consumption,
         "command_vx": speeds[0],
         "action_feature_contract": {
             "view": train_view.action_view,
@@ -385,14 +731,17 @@ def main() -> int:
         "data_gate": data_gate,
         "model_gate": model_gate,
         "claim_eligible": claim_eligible,
-        "claim_ineligible_reason": (
-            None if claim_eligible else
-            "privileged diagnostics cannot support a deployment claim"
-            if not deployable else
-            "source/continuation policy runtime binding is not verified"
-            if not runtime_binding_verified else
-            "one or more preregistered data/model gates failed"),
+        "claim_ineligible_reason": claim_ineligible_reason,
+        "diagnostic_no_multiple_comparison_claim": bool(
+            run["claim_role"] == "diagnostic"),
     }
+
+    def final_git_check() -> None:
+        _require_clean_git_state(
+            phase="before artifact publication",
+            expected_commit=training_commit,
+        )
+
     save_qsafe_artifact(
         output,
         trained,
@@ -405,6 +754,7 @@ def main() -> int:
             "calibration_predictions.npy": calibration_prediction,
             "test_predictions.npy": test_prediction,
         },
+        pre_publish_check=final_git_check,
     )
     print(json.dumps(_finite_json({
         "artifact": str(output),

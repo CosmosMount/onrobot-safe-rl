@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 import torch
@@ -109,6 +110,28 @@ class QSafeArtifactTest(unittest.TestCase):
                 stream.write(b"tamper")
             with self.assertRaisesRegex(ValueError, "hash mismatch"):
                 load_qsafe_artifact(output)
+
+    def test_failed_pre_publish_check_leaves_no_artifact(self):
+        config, trained = self._trained()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "development-artifact"
+            guard = mock.Mock(side_effect=RuntimeError("git state changed"))
+            with self.assertRaisesRegex(RuntimeError, "git state changed"):
+                save_qsafe_artifact(
+                    output,
+                    trained,
+                    NormalizationStats(np.zeros(46), np.ones(46)),
+                    config,
+                    QSafeTrainingConfig(
+                        epochs=1, ensemble_members=2, calibration_steps=0),
+                    QSafeLossConfig(),
+                    provenance={},
+                    pre_publish_check=guard,
+                )
+            guard.assert_called_once_with()
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.glob(".development-artifact.tmp-*")), [])
 
     def test_action_feature_order_is_part_of_the_load_contract(self):
         config, trained = self._trained()

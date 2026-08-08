@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import numpy as np
 import torch
@@ -81,6 +81,7 @@ def save_qsafe_artifact(
     *,
     provenance: Mapping[str, Any],
     array_attachments: Mapping[str, np.ndarray] | None = None,
+    pre_publish_check: Callable[[], None] | None = None,
 ) -> Path:
     """Save an artifact without overwriting any prior experimental result."""
     output = assert_development_path(path)
@@ -161,6 +162,8 @@ def save_qsafe_artifact(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        if pre_publish_check is not None:
+            pre_publish_check()
         os.replace(temporary, output)
     except Exception:
         if temporary.exists():

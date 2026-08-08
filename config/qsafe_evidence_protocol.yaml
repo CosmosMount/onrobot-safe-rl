@@ -104,6 +104,90 @@ data:
 phase1:
   name: fresh_or_small_shift_fall_reduction
   development_speeds_mps: [0.27, 0.30, 0.33]
+  model_training:
+    registry_schema_version: qsafe.model_training_registry.v1
+    heldout_consumption:
+      unit: preregistered_run_id_and_test_file_sha256
+      consumptions_per_key: 1
+      ledger_root: saved/qsafe_development/ledgers/qsafe_model_test_once_v1
+      diagnostic_claim_policy: no_multiple_comparison_claim
+    runs:
+      primary_selective_deployable:
+        claim_role: primary
+        claim_eligible: true
+        feature_view: deployable
+        action_feature_view: application_concat
+        action_mode: selective_advantage
+        hyperparameters:
+          epochs: 100
+          batch_size: 64
+          ensemble_members: 5
+          learning_rate: 0.0003
+          weight_decay: 0.00001
+          seed: 20260809
+          frame_hidden_dim: 128
+          state_hidden_dim: 128
+          action_hidden_dim: 128
+          calibration_steps: 100
+          bootstrap_replicates: 2000
+          gradient_clip_norm: 5.0
+      diagnostic_pointwise_deployable:
+        claim_role: diagnostic
+        claim_eligible: false
+        feature_view: deployable
+        action_feature_view: application_concat
+        action_mode: pointwise
+        hyperparameters:
+          epochs: 100
+          batch_size: 64
+          ensemble_members: 5
+          learning_rate: 0.0003
+          weight_decay: 0.00001
+          seed: 20260809
+          frame_hidden_dim: 128
+          state_hidden_dim: 128
+          action_hidden_dim: 128
+          calibration_steps: 100
+          bootstrap_replicates: 2000
+          gradient_clip_norm: 5.0
+      diagnostic_state_only_deployable:
+        claim_role: diagnostic
+        claim_eligible: false
+        feature_view: deployable
+        action_feature_view: application_concat
+        action_mode: state_only
+        hyperparameters:
+          epochs: 100
+          batch_size: 64
+          ensemble_members: 5
+          learning_rate: 0.0003
+          weight_decay: 0.00001
+          seed: 20260809
+          frame_hidden_dim: 128
+          state_hidden_dim: 128
+          action_hidden_dim: 128
+          calibration_steps: 100
+          bootstrap_replicates: 2000
+          gradient_clip_norm: 5.0
+      diagnostic_privileged_selective:
+        claim_role: diagnostic
+        claim_eligible: false
+        feature_view: privileged
+        action_feature_view: application_concat
+        action_mode: selective_advantage
+        hyperparameters:
+          epochs: 100
+          batch_size: 64
+          ensemble_members: 5
+          learning_rate: 0.0003
+          weight_decay: 0.00001
+          seed: 20260809
+          frame_hidden_dim: 128
+          state_hidden_dim: 128
+          action_hidden_dim: 128
+          calibration_steps: 100
+          bootstrap_replicates: 2000
+          gradient_clip_norm: 5.0
   claim_routes:
     primary_small_shift:
       source_speed_mps: 0.30
