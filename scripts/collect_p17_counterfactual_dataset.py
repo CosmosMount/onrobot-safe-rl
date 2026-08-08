@@ -4,13 +4,13 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
 import torch
 
 from rl.agents import create_agent
+from safety_data.paths import assert_development_path
 from scripts.evaluate_p16_snapshot_replacements import (
     _actor_actions,
     _branch,
@@ -42,6 +42,10 @@ def main() -> int:
         default=("/home/xyz/code/unitree_mujoco/"
                  "unitree_robots/go2/scene_empty.xml"))
     args = parser.parse_args()
+    assert_development_path(args.config)
+    checkpoint_path = assert_development_path(args.checkpoint)
+    model_path = assert_development_path(args.model)
+    output_path = assert_development_path(args.output)
 
     robot_cfg, train_cfg, agent_cfg = load_app_config(
         args.config, agent="safe_droq")
@@ -53,17 +57,20 @@ def main() -> int:
         -1.0, 1.0, (robot_cfg.num_joints,), dtype=np.float32)
     agent = create_agent(
         observation_space, action_space, {}, agent_cfg)
-    agent.load(str(Path(args.checkpoint).resolve()))
+    agent.load(str(checkpoint_path))
 
     env = MujocoSnapshotEnv(
-        args.model, robot_cfg,
-        policy_frequency=train_cfg.control_frequency)
+        model_path, robot_cfg,
+        policy_frequency=train_cfg.control_frequency,
+        max_joint_delta=train_cfg.max_joint_delta,
+        use_action_filter=train_cfg.use_action_filter)
     rng = np.random.default_rng(args.seed)
     env.reset_standing(rng=rng)
-    previous = np.zeros(robot_cfg.num_joints, dtype=np.float32)
     episode_step = 0
     observations = []
     actions = []
+    actions_executed = []
+    action_q_targets = []
     failures = []
     failure_steps = []
     max_tilts = []
@@ -73,7 +80,6 @@ def main() -> int:
     nominal_risks = []
     safety_contexts = []
     observation_histories = []
-    recent_observations = []
 
     natural_step = 0
     while len(set(state_ids)) < args.states:
@@ -83,11 +89,9 @@ def main() -> int:
                     0.0, args.linear_impulse_std, size=3),
                 angular_velocity_delta=rng.normal(
                     0.0, args.angular_impulse_std, size=3))
-        observation = env.observation(previous)
-        past = recent_observations[-3:]
-        padded = [observation] * (4 - len(past) - 1)
-        observation_history = np.stack(
-            padded + past + [observation], axis=0).astype(np.float32)
+        observation_history = env.record_observation()
+        observation = observation_history[-1]
+        previous = env.previous_action_requested
         nominal = _actor_actions(
             agent, observation, 1, sample=True,
             seed=args.seed * 1_000_000 + natural_step)[0]
@@ -123,11 +127,12 @@ def main() -> int:
             state_rows = []
             for kind, candidate in candidates:
                 outcome = _branch(
-                    env, agent, snapshot, previous,
-                    candidate, args.horizon)
+                    env, agent, snapshot, candidate, args.horizon)
                 state_rows.append((
                     kind,
-                    np.asarray(candidate, dtype=np.float32),
+                    outcome["first_action_requested"],
+                    outcome["first_action_executed"],
+                    outcome["first_action_q_target"],
                     float(outcome["failure"]),
                     (
                         outcome["failure_step"]
@@ -136,12 +141,15 @@ def main() -> int:
                     float(outcome["max_tilt_rad"]),
                     float(outcome["min_height_m"]),
                 ))
-            state_labels = [row[2] for row in state_rows]
+            state_labels = [row[4] for row in state_rows]
             if not args.mixed_only or min(state_labels) != max(state_labels):
-                for (kind, candidate, failure, failure_step,
+                for (kind, candidate, candidate_executed, candidate_q_target,
+                     failure, failure_step,
                      max_tilt, min_height) in state_rows:
                     observations.append(observation.copy())
                     actions.append(candidate)
+                    actions_executed.append(candidate_executed)
+                    action_q_targets.append(candidate_q_target)
                     failures.append(failure)
                     failure_steps.append(failure_step)
                     max_tilts.append(max_tilt)
@@ -158,25 +166,20 @@ def main() -> int:
             env.restore(snapshot)
 
         measurement = env.step(nominal)
-        recent_observations.append(observation.copy())
-        if len(recent_observations) > 3:
-            recent_observations.pop(0)
-        previous = nominal
         episode_step += 1
         natural_step += 1
         if measurement.failure or episode_step >= 400:
             env.reset_standing(rng=rng)
-            previous = np.zeros(
-                robot_cfg.num_joints, dtype=np.float32)
             episode_step = 0
-            recent_observations = []
 
-    output = Path(args.output)
+    output = output_path
     output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         output,
         observations=np.asarray(observations, dtype=np.float32),
         actions=np.asarray(actions, dtype=np.float32),
+        actions_executed=np.asarray(actions_executed, dtype=np.float32),
+        action_q_targets=np.asarray(action_q_targets, dtype=np.float32),
         failures=np.asarray(failures, dtype=np.float32),
         failure_steps=np.asarray(failure_steps, dtype=np.int16),
         max_tilts=np.asarray(max_tilts, dtype=np.float32),

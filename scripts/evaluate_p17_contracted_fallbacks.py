@@ -5,13 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
 import torch
 
 from rl.agents import create_agent
+from safety_data.paths import assert_development_path
 from scripts.evaluate_p16_snapshot_replacements import (
     _actor_actions,
     _branch,
@@ -44,6 +44,10 @@ def main() -> int:
         "--output",
         default="saved/experiments/p17_contracted_fallbacks.json")
     args = parser.parse_args()
+    assert_development_path(args.config)
+    checkpoint_path = assert_development_path(args.checkpoint)
+    model_path = assert_development_path(args.model)
+    output_path = assert_development_path(args.output)
     alphas = [float(value) for value in args.alphas.split(",")]
 
     robot_cfg, train_cfg, agent_cfg = load_app_config(
@@ -56,14 +60,15 @@ def main() -> int:
         -1.0, 1.0, (robot_cfg.num_joints,), dtype=np.float32)
     agent = create_agent(
         observation_space, action_space, {}, agent_cfg)
-    agent.load(str(Path(args.checkpoint).resolve()))
+    agent.load(str(checkpoint_path))
 
     env = MujocoSnapshotEnv(
-        args.model, robot_cfg,
-        policy_frequency=train_cfg.control_frequency)
+        model_path, robot_cfg,
+        policy_frequency=train_cfg.control_frequency,
+        max_joint_delta=train_cfg.max_joint_delta,
+        use_action_filter=train_cfg.use_action_filter)
     rng = np.random.default_rng(args.seed)
     env.reset_standing(rng=rng)
-    previous = np.zeros(robot_cfg.num_joints, dtype=np.float32)
     episode_step = 0
     records = []
 
@@ -78,7 +83,8 @@ def main() -> int:
                     0.0, args.linear_impulse_std, size=3),
                 angular_velocity_delta=rng.normal(
                     0.0, args.angular_impulse_std, size=3))
-        observation = env.observation(previous)
+        observation = env.record_observation()[-1]
+        previous = env.previous_action_requested
         nominal = _actor_actions(
             agent, observation, 1, sample=True,
             seed=args.seed * 1_000_000 + natural_step)[0]
@@ -99,13 +105,12 @@ def main() -> int:
             }
             for horizon in (8, 16, 32):
                 nominal_result = _branch(
-                    env, agent, snapshot, previous, nominal, horizon)
+                    env, agent, snapshot, nominal, horizon)
                 record["horizons"][str(horizon)] = {
                     "nominal": nominal_result,
                     "contracted": {
                         alpha: _branch(
-                            env, agent, snapshot, previous,
-                            action, horizon)
+                            env, agent, snapshot, action, horizon)
                         for alpha, action in actions.items()
                     },
                 }
@@ -115,16 +120,13 @@ def main() -> int:
                 break
 
         measurement = env.step(nominal)
-        previous = nominal
         episode_step += 1
         if measurement.failure or episode_step >= args.episode_steps:
             env.reset_standing(rng=rng)
-            previous = np.zeros(
-                robot_cfg.num_joints, dtype=np.float32)
             episode_step = 0
 
     summary = {
-        "checkpoint": str(Path(args.checkpoint).resolve()),
+        "checkpoint": str(checkpoint_path),
         "pairs": len(records),
         "epsilon": float(agent.cfg.safety_epsilon),
         "alphas": {},
@@ -154,7 +156,7 @@ def main() -> int:
                     selected_failures - nominal_failures),
             }
 
-    output = Path(args.output)
+    output = output_path
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(
         {"summary": summary, "records": records}, indent=2))

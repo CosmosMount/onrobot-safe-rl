@@ -8,11 +8,8 @@ import numpy as np
 import torch
 
 from rl.agents import create_agent
-from rl.agents.paper_sqrl.inference import (
-    PaperSQRLInferencePolicy,
-    SACInferencePolicy,
-    export_inference_weights,
-)
+from rl.agents.inference import build_inference_policy
+from rl.agents.paper_sqrl.inference import PaperSQRLInferencePolicy
 from rl.agents.paper_sqrl.replay import RecentTrajectoryReplay
 from runtime.inference.__main__ import PolicyInferenceRuntime
 from train.config import load_app_config
@@ -147,8 +144,9 @@ class PaperSQRLAgentTest(unittest.TestCase):
     def test_inference_copy_has_independent_weights_and_exact_schedule(self):
         agent = self._agent()
         policy = PaperSQRLInferencePolicy(2, 1, agent.cfg)
-        policy.load_weights(export_inference_weights(agent, version=3))
-        self.assertEqual(policy.weight_version, 3)
+        policy.load_snapshot(
+            agent.export_inference_snapshot(snapshot_version=3))
+        self.assertEqual(policy.snapshot_version, 3)
         for source, copied in zip(
                 agent._actor.network.parameters(), policy.actor.parameters()):
             self.assertTrue(torch.equal(source.cpu(), copied.cpu()))
@@ -156,8 +154,8 @@ class PaperSQRLAgentTest(unittest.TestCase):
 
         first = policy.decide(
             np.zeros(2, dtype=np.float32), training=False)
-        self.assertEqual(first.phase, "task")
-        self.assertFalse(first.active)
+        self.assertEqual(first.metadata["phase"], "task")
+        self.assertFalse(first.metadata["active"])
         policy.observe_transition(
             policy_step=True, terminated=False, truncated=False)
         policy.observe_transition(
@@ -165,7 +163,7 @@ class PaperSQRLAgentTest(unittest.TestCase):
         self.assertEqual(policy.phase, "safety")
         constrained = policy.decide(
             np.zeros(2, dtype=np.float32), training=False)
-        self.assertTrue(constrained.active)
+        self.assertTrue(constrained.metadata["active"])
         event = policy.observe_transition(
             policy_step=True, terminated=True, truncated=False)
         self.assertTrue(event["safety_trajectory_complete"])
@@ -174,9 +172,11 @@ class PaperSQRLAgentTest(unittest.TestCase):
     def test_inference_rejects_stale_weight_snapshot(self):
         agent = self._agent()
         policy = PaperSQRLInferencePolicy(2, 1, agent.cfg)
-        policy.load_weights(export_inference_weights(agent, version=2))
+        policy.load_snapshot(
+            agent.export_inference_snapshot(snapshot_version=2))
         with self.assertRaisesRegex(ValueError, "backwards"):
-            policy.load_weights(export_inference_weights(agent, version=1))
+            policy.load_snapshot(
+                agent.export_inference_snapshot(snapshot_version=1))
 
     def test_sac_inference_copy_needs_no_safety_critic(self):
         _, _, cfg = load_app_config(
@@ -192,14 +192,16 @@ class PaperSQRLAgentTest(unittest.TestCase):
             gym.spaces.Box(-np.inf, np.inf, shape=(2,), dtype=np.float32),
             gym.spaces.Box(-1.0, 1.0, shape=(1,), dtype=np.float32),
             {}, cfg)
-        payload = export_inference_weights(agent, version=7)
-        self.assertNotIn("safety_critic", payload)
-        policy = SACInferencePolicy(2, 1, cfg)
-        policy.load_weights(payload)
+        payload = agent.export_inference_snapshot(snapshot_version=7)
+        self.assertNotIn("safety_critic_state_dict", payload)
+        policy = build_inference_policy(2, 1, cfg)
+        policy.load_snapshot(payload)
         decision = policy.decide(
             np.zeros(2, dtype=np.float32), training=False)
-        self.assertFalse(decision.active)
-        self.assertEqual(decision.action.shape, (1,))
+        self.assertFalse(decision.metadata.get("active", False))
+        self.assertEqual(decision.action_requested.shape, (1,))
+        np.testing.assert_array_equal(
+            decision.action_nominal, decision.action_requested)
 
     def test_checkpoint_restores_sqrl_collection_schedule(self):
         agent = self._agent()
@@ -216,7 +218,8 @@ class PaperSQRLAgentTest(unittest.TestCase):
         self.assertEqual(restored._safety_episodes_in_cycle, 2)
         self.assertEqual(restored._pending_safety_updates, 1)
         policy = PaperSQRLInferencePolicy(2, 1, restored.cfg)
-        policy.load_weights(export_inference_weights(restored, version=9))
+        policy.load_snapshot(
+            restored.export_inference_snapshot(snapshot_version=9))
         self.assertEqual(policy.phase, "safety")
         self.assertEqual(policy.task_steps, 123)
 

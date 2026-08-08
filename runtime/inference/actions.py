@@ -15,6 +15,26 @@ from robots.go2.joint_layout import (
 )
 
 
+@dataclass(frozen=True)
+class ActionFilterState:
+    """Serializable filter history required for exact counterfactual branches."""
+
+    x_history: np.ndarray
+    y_history: np.ndarray
+
+    def __post_init__(self) -> None:
+        x_history = np.asarray(self.x_history, dtype=np.float32).copy()
+        y_history = np.asarray(self.y_history, dtype=np.float32).copy()
+        if x_history.ndim != 2 or y_history.shape != x_history.shape:
+            raise ValueError("action-filter histories must have equal [H, A] shapes")
+        if not np.all(np.isfinite(x_history)) or not np.all(np.isfinite(y_history)):
+            raise ValueError("action-filter histories must be finite")
+        x_history.setflags(write=False)
+        y_history.setflags(write=False)
+        object.__setattr__(self, "x_history", x_history)
+        object.__setattr__(self, "y_history", y_history)
+
+
 class ActionFilterButter:
     """Low-pass Butterworth filter on absolute joint position commands."""
 
@@ -50,6 +70,34 @@ class ActionFilterButter:
         for i in range(self._hist_len):
             self._xhist[i] = q.copy()
             self._yhist[i] = q.copy()
+
+    def capture_state(self) -> ActionFilterState:
+        """Return a lossless copy of the causal filter application state."""
+        return ActionFilterState(
+            x_history=np.stack(tuple(self._xhist), axis=0),
+            y_history=np.stack(tuple(self._yhist), axis=0),
+        )
+
+    def fingerprint(self) -> dict[str, object]:
+        """Return the coefficients that define runtime filter semantics."""
+        return {
+            "kind": "butterworth_lowpass",
+            "history_length": self._hist_len,
+            "b": self._b.astype(float).tolist(),
+            "a": self._a.astype(float).tolist(),
+        }
+
+    def restore_state(self, state: ActionFilterState) -> None:
+        """Restore a previously captured history without sharing array storage."""
+        if state.x_history.shape != (self._hist_len, self.num_joints):
+            raise ValueError(
+                "action-filter state shape "
+                f"{state.x_history.shape}, expected {(self._hist_len, self.num_joints)}")
+        self._xhist.clear()
+        self._yhist.clear()
+        for x_value, y_value in zip(state.x_history, state.y_history):
+            self._xhist.append(np.asarray(x_value, dtype=np.float32).copy())
+            self._yhist.append(np.asarray(y_value, dtype=np.float32).copy())
 
     def filter(self, x: np.ndarray) -> np.ndarray:
         x = np.asarray(x, dtype=np.float32).reshape(-1)
@@ -108,7 +156,7 @@ class ActionApplier:
     action_offset: np.ndarray
     joint_min: np.ndarray
     joint_max: np.ndarray
-    max_joint_delta: float | None = None
+    max_joint_delta: float | np.ndarray | None = None
     action_filter: ActionFilterButter | None = None
 
     def reset_filter(self) -> None:

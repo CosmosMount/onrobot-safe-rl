@@ -12,6 +12,10 @@ sport_velocity_world_frame: true
 sport_state_max_age_ms: 250
 
 # Joint order: FR, FL, RR, RL x hip, thigh, calf.
+# Keep the Python/native branch controller explicit and aligned with
+# runtime/control/go2/go2.yaml. These values are fingerprinted in evidence.
+kp: 60.0
+kd: 5.0
 joint_min: [-1.05, -1.57, -2.72, -1.05, -1.57, -2.72, -1.05, -0.52, -2.72, -1.05, -0.52, -2.72]
 joint_max: [1.05, 3.49, -0.84, 1.05, 3.49, -0.84, 1.05, 4.54, -0.84, 1.05, 4.54, -0.84]
 init_qpos: [0.05, 0.7, -1.4, 0.05, 0.7, -1.4, 0.05, 0.7, -1.4, 0.05, 0.7, -1.4]

@@ -10,10 +10,9 @@ import gymnasium as gym
 import numpy as np
 
 from rl.agents import create_agent
-from rl.agents.paper_sqrl.inference import SQRLActionDecision
-from rl.agents.paper_sqrl.inference import export_inference_weights
+from rl.agents.base.inference import ActionDecision
 from runtime.inference.transport import SharedMemoryReceiver, SharedMemoryRingQueue
-from train.async_collector import PaperSQRLCollectorCore, run_async_collector
+from train.async_collector import OrderedAsyncCollectorCore, run_async_collector
 from train.config import load_app_config
 from train.ordered_runtime import RuntimeEnvelope
 
@@ -22,17 +21,24 @@ class FakePolicy:
     def __init__(self):
         self.phase = "task"
         self.observed = []
+        self.snapshot_version = 3
+        self.actor_steps = 5
+        self.auxiliary_steps = 7
 
-    def decide(self, observation, *, training, nominal=None):
-        action = (np.asarray(nominal, dtype=np.float32) if nominal is not None
+    def decide(self, observation, *, training, action_nominal=None):
+        action = (np.asarray(action_nominal, dtype=np.float32)
+                  if action_nominal is not None
                   else np.asarray([0.25], dtype=np.float32))
-        return SQRLActionDecision(
-            action, self.phase, self.phase == "safety", False, False,
-            1.0, None, None)
+        return ActionDecision(
+            action, action,
+            {"phase": self.phase, "active": self.phase == "safety"})
 
     def observe_transition(self, **kwargs):
         self.observed.append(kwargs)
         return {"safety_trajectory_complete": False}
+
+    def transition_fields(self, decision):
+        return {}
 
 
 def envelope(step, action_id, *, policy_step=True, terminated=False):
@@ -56,7 +62,7 @@ def envelope(step, action_id, *, policy_step=True, terminated=False):
 class AsyncCollectorCoreTest(unittest.TestCase):
     def setUp(self):
         self.policy = FakePolicy()
-        self.core = PaperSQRLCollectorCore(
+        self.core = OrderedAsyncCollectorCore(
             self.policy,
             gym.spaces.Box(-1.0, 1.0, shape=(1,), dtype=np.float32),
             start_training=1, explore_action_scale=0.5, seed=42)
@@ -71,7 +77,7 @@ class AsyncCollectorCoreTest(unittest.TestCase):
         np.testing.assert_array_equal(
             transition["observation"], observation[None, ...])
         np.testing.assert_array_equal(
-            transition["action"], decision.action[None, ...])
+            transition["action"], decision.action_requested[None, ...])
         np.testing.assert_array_equal(
             transition["next_observation"], [[9.0, 0.0]])
         self.assertEqual(int(transition["applied_action_id"][0]), 7)
@@ -142,7 +148,7 @@ class AsyncCollectorTransportIntegrationTest(unittest.TestCase):
         transitions = queue.Queue()
         weights = queue.Queue()
         controls = queue.Queue()
-        weights.put(export_inference_weights(agent, version=0))
+        weights.put(agent.export_inference_snapshot(snapshot_version=0))
         thread = threading.Thread(
             target=run_async_collector,
             kwargs={

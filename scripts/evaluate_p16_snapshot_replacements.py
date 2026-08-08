@@ -5,13 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
 import torch
 
 from rl.agents import create_agent
+from safety_data.paths import assert_development_path
 from train.config import load_app_config
 from train.mujoco_snapshot_env import MujocoSnapshotEnv
 
@@ -75,33 +75,39 @@ def _select(agent, observation, nominal, *, seed: int):
     }
 
 
-def _branch(env, agent, snapshot, previous_action, first_action, horizon):
+def _branch(env, agent, snapshot, first_action, horizon):
     env.restore(snapshot)
-    previous = np.asarray(previous_action, dtype=np.float32).copy()
     action = np.asarray(first_action, dtype=np.float32)
+    first_application = None
     failure_step = None
     near_failure = False
     max_tilt = 0.0
     min_height = np.inf
     for step in range(1, horizon + 1):
-        measurement = env.step(action)
-        previous = action
+        step_result = env.step(action)
+        measurement = step_result.measurement
+        if first_application is None:
+            first_application = step_result.application
         near_failure |= measurement.near_failure
         max_tilt = max(max_tilt, measurement.tilt_rad)
         min_height = min(min_height, measurement.height_m)
         if measurement.failure:
             failure_step = step
             break
-        observation = env.observation(previous)
+        observation = env.record_observation()[-1]
         action = _actor_actions(
             agent, observation, 1, sample=False,
             seed=0)[0]
+    assert first_application is not None
     return {
         "failure": failure_step is not None,
         "failure_step": failure_step,
         "near_failure": bool(near_failure),
         "max_tilt_rad": float(max_tilt),
         "min_height_m": float(min_height),
+        "first_action_requested": first_application.action_requested.tolist(),
+        "first_action_executed": first_application.action_executed.tolist(),
+        "first_action_q_target": first_application.action_q_target.tolist(),
     }
 
 
@@ -128,6 +134,10 @@ def main() -> int:
     parser.add_argument("--output",
                         default="saved/experiments/p16_snapshot_pairs.json")
     args = parser.parse_args()
+    assert_development_path(args.config)
+    checkpoint_path = assert_development_path(args.checkpoint)
+    model_path = assert_development_path(args.model)
+    output_path = assert_development_path(args.output)
 
     robot_cfg, train_cfg, agent_cfg = load_app_config(
         args.config, agent="safe_droq")
@@ -137,18 +147,19 @@ def main() -> int:
     observation_space, action_space = _spaces(robot_cfg)
     agent = create_agent(
         observation_space, action_space, {}, agent_cfg)
-    agent.load(str(Path(args.checkpoint).resolve()))
+    agent.load(str(checkpoint_path))
     # A full agent checkpoint contains a trained safety critic even when the
     # YAML does not specify safety_pretrained_path. Mark it ready so the exact
     # online filtering path is exercised without loading replay data.
     agent._cfg.safety_pretrained_path = str(
-        Path(args.checkpoint).resolve() / "safety_critic.pt")
+        checkpoint_path / "safety_critic.pt")
     env = MujocoSnapshotEnv(
-        args.model, robot_cfg,
-        policy_frequency=train_cfg.control_frequency)
+        model_path, robot_cfg,
+        policy_frequency=train_cfg.control_frequency,
+        max_joint_delta=train_cfg.max_joint_delta,
+        use_action_filter=train_cfg.use_action_filter)
     rng = np.random.default_rng(args.seed)
     env.reset_standing(rng=rng)
-    previous = np.zeros(robot_cfg.num_joints, dtype=np.float32)
     episode_step = 0
     pairs = []
     selector_counts = {
@@ -162,15 +173,12 @@ def main() -> int:
 
     # Exact restore must reproduce derived state before collecting evidence.
     verification = env.capture()
-    before = env.observation(previous)
+    before = env.observation()
     env.step(np.zeros(robot_cfg.num_joints, dtype=np.float32))
     env.restore(verification)
     restore_error = float(np.max(np.abs(
-        before - env.observation(previous))))
-    # mj_forward recomputes derived body velocities after mj_setState; the
-    # integration state itself is exact while float32 observations can differ
-    # by a few ulps.
-    if restore_error > 1e-5:
+        before - env.observation())))
+    if restore_error != 0.0:
         raise RuntimeError(f"snapshot restore error {restore_error}")
 
     for natural_step in range(args.natural_steps):
@@ -184,7 +192,7 @@ def main() -> int:
                     0.0, args.linear_impulse_std, size=3),
                 angular_velocity_delta=rng.normal(
                     0.0, args.angular_impulse_std, size=3))
-        observation = env.observation(previous)
+        observation = env.record_observation()[-1]
         nominal = _actor_actions(
             agent, observation, 1, sample=True,
             seed=args.seed * 1_000_000 + natural_step)[0]
@@ -216,9 +224,9 @@ def main() -> int:
             }
             for horizon in (8, 16, 32):
                 nominal_result = _branch(
-                    env, agent, snapshot, previous, nominal, horizon)
+                    env, agent, snapshot, nominal, horizon)
                 selected_result = _branch(
-                    env, agent, snapshot, previous, selected, horizon)
+                    env, agent, snapshot, selected, horizon)
                 record["horizons"][str(horizon)] = {
                     "nominal": nominal_result,
                     "selected": selected_result,
@@ -229,18 +237,15 @@ def main() -> int:
                 break
 
         measurement = env.step(nominal)
-        previous = nominal
         episode_step += 1
         if measurement.failure or episode_step >= args.episode_steps:
             env.reset_standing(rng=rng)
-            previous = np.zeros(
-                robot_cfg.num_joints, dtype=np.float32)
             episode_step = 0
 
     summary = {
         "seed": args.seed,
-        "checkpoint": str(Path(args.checkpoint).resolve()),
-        "model": str(Path(args.model).resolve()),
+        "checkpoint": str(checkpoint_path),
+        "model": str(model_path),
         "natural_steps_requested": args.natural_steps,
         "pairs": len(pairs),
         "selector_counts": selector_counts,
@@ -285,7 +290,7 @@ def main() -> int:
                 if results else None),
         }
     payload = {"summary": summary, "records": pairs}
-    output = Path(args.output)
+    output = output_path
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2) + "\n")
     print(json.dumps(summary, indent=2))

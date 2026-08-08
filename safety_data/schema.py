@@ -1,0 +1,634 @@
+"""Versioned group-centric schema for same-state Q_safe branches."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import hashlib
+import json
+from pathlib import Path
+from typing import Any, Iterable, Mapping
+
+import numpy as np
+
+from safety_data.paths import assert_development_path
+
+
+SCHEMA_VERSION = "qsafe.grouped.v1"
+PRIVILEGED_SCHEMA_VERSION = "qsafe.privileged.v1"
+OBSERVATION_FRAMES = 5
+OBSERVATION_DIM = 46
+ACTION_DIM = 12
+
+REQUIRED_ARRAYS = (
+    "group_id",
+    "state_hash",
+    "trajectory_id",
+    "episode_id",
+    "episode_step",
+    "policy_training_seed",
+    "source_seed",
+    "policy_source",
+    "command_vx",
+    "acceptance_probability",
+    "obs_history",
+    "q_send_history",
+    "nominal_action_requested",
+    "candidate_requested",
+    "candidate_executed",
+    "candidate_q_target",
+    "candidate_kind",
+    "candidate_mask",
+    "fall",
+    "first_failure_step",
+    "max_tilt_rad",
+    "min_height_m",
+    "crn_id",
+    "rollout_seed",
+    "perturbation_seed",
+)
+
+REQUIRED_MANIFEST_KEYS = (
+    "schema_version",
+    "split",
+    "feature_view",
+    "horizon_steps",
+    "generator_commit",
+    "simulator_fingerprint",
+    "source_policy",
+    "continuation_policy",
+    "candidate_protocol",
+    "fall_definition",
+    "observation_contract",
+    "action_application_contract",
+    "state_hash_contract",
+)
+
+
+class DatasetValidationError(ValueError):
+    """The grouped dataset cannot be used without violating its contract."""
+
+
+def _as_text(values: np.ndarray) -> np.ndarray:
+    array = np.asarray(values)
+    if array.dtype.kind not in "US":
+        raise DatasetValidationError("identifier arrays must use non-object text dtype")
+    return array.astype(str, copy=False)
+
+
+def _finite(name: str, value: np.ndarray, mask: np.ndarray | None = None) -> None:
+    selected = np.asarray(value) if mask is None else np.asarray(value)[mask]
+    if not np.all(np.isfinite(selected)):
+        raise DatasetValidationError(f"{name} contains non-finite values")
+
+
+def _canonical_manifest(manifest: Mapping[str, Any]) -> bytes:
+    content = dict(manifest)
+    content.pop("content_sha256", None)
+    return json.dumps(
+        content, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=True).encode("utf-8")
+
+
+def _content_hash(manifest: Mapping[str, Any], arrays: Mapping[str, np.ndarray]) -> str:
+    digest = hashlib.sha256(_canonical_manifest(manifest))
+    for name in sorted(arrays):
+        value = np.ascontiguousarray(arrays[name])
+        if value.dtype.hasobject:
+            raise DatasetValidationError(f"{name} uses forbidden object dtype")
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(value.dtype.str.encode("ascii"))
+        digest.update(np.asarray(value.shape, dtype=np.int64).tobytes())
+        digest.update(value.tobytes())
+    return digest.hexdigest()
+
+
+def _require_content_hash(manifest: Mapping[str, Any]) -> str:
+    value = manifest.get("content_sha256")
+    if not isinstance(value, str) or len(value) != 64 or any(
+            character not in "0123456789abcdef" for character in value):
+        raise DatasetValidationError(
+            "on-disk dataset manifest requires a lowercase SHA-256 content hash")
+    return value
+
+
+@dataclass
+class GroupedBranchDataset:
+    """A deployable-view dataset whose independent unit is one state group."""
+
+    manifest: dict[str, Any]
+    arrays: dict[str, np.ndarray]
+    path: Path | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        self.manifest = dict(self.manifest)
+        self.arrays = {
+            str(name): np.asarray(value)
+            for name, value in self.arrays.items()
+        }
+
+    @property
+    def group_count(self) -> int:
+        return int(np.asarray(self.arrays["group_id"]).shape[0])
+
+    @property
+    def candidate_count(self) -> int:
+        return int(np.asarray(self.arrays["candidate_mask"]).shape[1])
+
+    @property
+    def replica_count(self) -> int:
+        return int(np.asarray(self.arrays["fall"]).shape[2])
+
+    @property
+    def horizon_steps(self) -> int:
+        return int(self.manifest["horizon_steps"])
+
+    def __getitem__(self, name: str) -> np.ndarray:
+        return self.arrays[name]
+
+    def validate(self, *, verify_hash: bool = True) -> dict[str, Any]:
+        missing_manifest = sorted(set(REQUIRED_MANIFEST_KEYS) - self.manifest.keys())
+        if missing_manifest:
+            raise DatasetValidationError(
+                f"manifest missing required keys: {missing_manifest}")
+        if self.manifest["schema_version"] != SCHEMA_VERSION:
+            raise DatasetValidationError(
+                f"schema version {self.manifest['schema_version']!r}, "
+                f"expected {SCHEMA_VERSION!r}")
+        if self.manifest["feature_view"] != "deployable":
+            raise DatasetValidationError(
+                "grouped branch loader accepts only the physically separate deployable view")
+        raw_horizon = self.manifest["horizon_steps"]
+        if isinstance(raw_horizon, bool) or not isinstance(raw_horizon, int):
+            raise DatasetValidationError("horizon_steps must be an integer")
+        horizon = raw_horizon
+        if horizon <= 0:
+            raise DatasetValidationError("horizon_steps must be positive")
+        for name in (
+            "split", "generator_commit", "source_policy",
+            "continuation_policy", "candidate_protocol", "fall_definition",
+            "simulator_fingerprint", "observation_contract",
+            "action_application_contract",
+            "state_hash_contract",
+        ):
+            value = self.manifest[name]
+            if value is None or value == "" or value == {}:
+                raise DatasetValidationError(f"manifest field {name} is empty")
+        contract = self.manifest["observation_contract"]
+        expected_contract = {
+            "frames": OBSERVATION_FRAMES,
+            "dimension": OBSERVATION_DIM,
+            "tail_semantic": "previous_absolute_action_q_target",
+        }
+        for name, expected in expected_contract.items():
+            if contract.get(name) != expected:
+                raise DatasetValidationError(
+                    f"observation_contract.{name}={contract.get(name)!r}, "
+                    f"expected {expected!r}")
+        if self.manifest["state_hash_contract"] != "sha256_compound_snapshot_v1":
+            raise DatasetValidationError(
+                "state_hash_contract must be 'sha256_compound_snapshot_v1'")
+        action_contract = self.manifest["action_application_contract"]
+        if action_contract.get("q_target_semantic") != "absolute_joint_position_sent":
+            raise DatasetValidationError(
+                "action_application_contract.q_target_semantic must be "
+                "'absolute_joint_position_sent'")
+        action_vectors: dict[str, np.ndarray] = {}
+        for name in ("init_qpos", "action_offset", "joint_min", "joint_max"):
+            value = np.asarray(action_contract.get(name), dtype=np.float64)
+            if value.shape != (ACTION_DIM,) or not np.all(np.isfinite(value)):
+                raise DatasetValidationError(
+                    f"action_application_contract.{name} must be a finite 12-vector")
+            action_vectors[name] = value
+        if np.any(action_vectors["action_offset"] <= 0.0):
+            raise DatasetValidationError("action offsets must be positive")
+        if np.any(action_vectors["joint_min"] >= action_vectors["joint_max"]):
+            raise DatasetValidationError("joint_min must be below joint_max")
+        if np.any(action_vectors["init_qpos"] < action_vectors["joint_min"]) or np.any(
+                action_vectors["init_qpos"] > action_vectors["joint_max"]):
+            raise DatasetValidationError("init_qpos must lie inside physical joint bounds")
+
+        missing_arrays = sorted(set(REQUIRED_ARRAYS) - self.arrays.keys())
+        if missing_arrays:
+            raise DatasetValidationError(
+                f"dataset missing required arrays: {missing_arrays}")
+        forbidden = sorted(name for name in self.arrays if name.startswith("privileged"))
+        if forbidden:
+            raise DatasetValidationError(
+                "privileged features must be stored in a physically separate view: "
+                f"{forbidden}")
+        for name, value in self.arrays.items():
+            if value.dtype.hasobject:
+                raise DatasetValidationError(f"{name} uses forbidden object dtype")
+
+        group_id = _as_text(self.arrays["group_id"])
+        if group_id.ndim != 1 or group_id.size == 0:
+            raise DatasetValidationError("group_id must be a nonempty vector")
+        group_count = len(group_id)
+        if np.any(group_id == "") or len(np.unique(group_id)) != group_count:
+            raise DatasetValidationError("group_id values must be nonempty and unique")
+
+        vector_fields = (
+            "state_hash", "trajectory_id", "episode_id", "episode_step",
+            "policy_training_seed", "source_seed", "policy_source", "command_vx",
+            "acceptance_probability",
+        )
+        for name in vector_fields:
+            if self.arrays[name].shape != (group_count,):
+                raise DatasetValidationError(
+                    f"{name} shape {self.arrays[name].shape}, expected {(group_count,)}")
+        for name in ("state_hash", "trajectory_id", "policy_source"):
+            text = _as_text(self.arrays[name])
+            if np.any(text == ""):
+                raise DatasetValidationError(f"{name} values must be nonempty")
+        state_hash = _as_text(self.arrays["state_hash"])
+        if any(
+            len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)
+            for value in state_hash
+        ):
+            raise DatasetValidationError(
+                "state_hash must contain lowercase compound-snapshot SHA-256 values")
+        if len(np.unique(state_hash)) != group_count:
+            raise DatasetValidationError("duplicate state_hash values violate independence")
+        for name in (
+            "episode_id", "episode_step", "policy_training_seed", "source_seed"):
+            value = np.asarray(self.arrays[name])
+            if value.dtype.kind not in "iu" or np.any(value < 0):
+                raise DatasetValidationError(
+                    f"{name} must be a nonnegative integer vector")
+
+        obs_history = np.asarray(self.arrays["obs_history"])
+        q_send_history = np.asarray(self.arrays["q_send_history"])
+        if obs_history.shape != (
+                group_count, OBSERVATION_FRAMES, OBSERVATION_DIM):
+            raise DatasetValidationError(
+                f"obs_history shape {obs_history.shape}, expected "
+                f"{(group_count, OBSERVATION_FRAMES, OBSERVATION_DIM)}")
+        if q_send_history.shape != (
+                group_count, OBSERVATION_FRAMES, ACTION_DIM):
+            raise DatasetValidationError(
+                f"q_send_history shape {q_send_history.shape}, expected "
+                f"{(group_count, OBSERVATION_FRAMES, ACTION_DIM)}")
+        _finite("obs_history", obs_history)
+        _finite("q_send_history", q_send_history)
+        if not np.allclose(
+                obs_history[..., -ACTION_DIM:], q_send_history,
+                rtol=0.0, atol=1e-6):
+            error = float(np.max(np.abs(
+                obs_history[..., -ACTION_DIM:] - q_send_history)))
+            raise DatasetValidationError(
+                "corrected observation tail is not absolute q_send history; "
+                f"max error={error}")
+        if np.any(q_send_history < action_vectors["joint_min"] - 1e-6) or np.any(
+                q_send_history > action_vectors["joint_max"] + 1e-6):
+            raise DatasetValidationError(
+                "q_send_history is outside physical joint bounds; normalized "
+                "previous actions were likely stored as absolute targets")
+
+        raw_candidate_mask = np.asarray(self.arrays["candidate_mask"])
+        if raw_candidate_mask.dtype.kind not in "biu" or not np.all(
+                np.isin(raw_candidate_mask, (0, 1, False, True))):
+            raise DatasetValidationError("candidate_mask must be binary")
+        candidate_mask = raw_candidate_mask.astype(bool)
+        if candidate_mask.ndim != 2 or candidate_mask.shape[0] != group_count:
+            raise DatasetValidationError("candidate_mask must have shape [G, K]")
+        candidate_count = candidate_mask.shape[1]
+        if candidate_count < 2 or np.any(~candidate_mask[:, 0]):
+            raise DatasetValidationError("candidate 0 must be valid and K must be at least 2")
+        if np.any(candidate_mask.sum(axis=1) < 2):
+            raise DatasetValidationError("every group must contain at least two candidates")
+        candidate_kind = _as_text(self.arrays["candidate_kind"])
+        if candidate_kind.shape != (group_count, candidate_count):
+            raise DatasetValidationError("candidate_kind must have shape [G, K]")
+        if np.any(candidate_kind[:, 0] != "nominal"):
+            raise DatasetValidationError("candidate 0 must be named 'nominal'")
+
+        nominal = np.asarray(self.arrays["nominal_action_requested"])
+        if nominal.shape != (group_count, ACTION_DIM):
+            raise DatasetValidationError("nominal_action_requested must have shape [G, 12]")
+        for name in (
+            "candidate_requested", "candidate_executed", "candidate_q_target"):
+            value = np.asarray(self.arrays[name])
+            expected = (group_count, candidate_count, ACTION_DIM)
+            if value.shape != expected:
+                raise DatasetValidationError(
+                    f"{name} shape {value.shape}, expected {expected}")
+            _finite(name, value, np.repeat(candidate_mask[..., None], ACTION_DIM, axis=2))
+        for name in ("candidate_requested", "candidate_executed"):
+            value = np.asarray(self.arrays[name])
+            selected = value[np.repeat(candidate_mask[..., None], ACTION_DIM, axis=2)]
+            if np.any(selected < -1.0 - 1e-6) or np.any(selected > 1.0 + 1e-6):
+                raise DatasetValidationError(f"{name} must lie in normalized [-1, 1]")
+        q_target_values = np.asarray(self.arrays["candidate_q_target"])
+        q_target_valid = np.repeat(candidate_mask[..., None], ACTION_DIM, axis=2)
+        lower = np.broadcast_to(
+            action_vectors["joint_min"], q_target_values.shape)[q_target_valid]
+        upper = np.broadcast_to(
+            action_vectors["joint_max"], q_target_values.shape)[q_target_valid]
+        selected_q_target = q_target_values[q_target_valid]
+        if np.any(selected_q_target < lower - 1e-6) or np.any(
+                selected_q_target > upper + 1e-6):
+            raise DatasetValidationError(
+                "candidate_q_target is outside physical joint bounds")
+        expected_executed = np.clip(
+            (q_target_values - action_vectors["init_qpos"])
+            / action_vectors["action_offset"],
+            -1.0,
+            1.0,
+        )
+        if not np.allclose(
+                np.asarray(self.arrays["candidate_executed"])[q_target_valid],
+                expected_executed[q_target_valid], rtol=0.0, atol=1e-6):
+            raise DatasetValidationError(
+                "candidate_executed does not round-trip from candidate_q_target")
+        if not np.allclose(
+                self.arrays["candidate_requested"][:, 0], nominal,
+                rtol=0.0, atol=1e-7):
+            raise DatasetValidationError(
+                "candidate_requested[:, 0] must equal nominal_action_requested")
+
+        fall = np.asarray(self.arrays["fall"])
+        if fall.ndim != 3 or fall.shape[:2] != candidate_mask.shape:
+            raise DatasetValidationError("fall must have shape [G, K, R]")
+        replica_count = fall.shape[2]
+        if replica_count < 1:
+            raise DatasetValidationError("at least one CRN replica is required")
+        outcome_shape = (group_count, candidate_count, replica_count)
+        for name in ("first_failure_step", "max_tilt_rad", "min_height_m"):
+            if self.arrays[name].shape != outcome_shape:
+                raise DatasetValidationError(
+                    f"{name} shape {self.arrays[name].shape}, expected {outcome_shape}")
+        valid_outcomes = np.repeat(candidate_mask[..., None], replica_count, axis=2)
+        if not np.all(np.isin(fall[valid_outcomes], (0, 1, False, True))):
+            raise DatasetValidationError("fall labels must be binary")
+        fall_bool = fall.astype(bool)
+        failure_step = np.asarray(self.arrays["first_failure_step"])
+        if failure_step.dtype.kind not in "iu":
+            raise DatasetValidationError("first_failure_step must use integer dtype")
+        if horizon + 1 > np.iinfo(failure_step.dtype).max:
+            raise DatasetValidationError(
+                "first_failure_step dtype cannot represent horizon+1")
+        if np.any(failure_step[valid_outcomes & fall_bool] < 1) or np.any(
+                failure_step[valid_outcomes & fall_bool] > horizon):
+            raise DatasetValidationError("falling branches need first_failure_step in [1, H]")
+        if np.any(failure_step[valid_outcomes & ~fall_bool] != horizon + 1):
+            raise DatasetValidationError("non-falls must use first_failure_step=H+1")
+        _finite("max_tilt_rad", self.arrays["max_tilt_rad"], valid_outcomes)
+        _finite("min_height_m", self.arrays["min_height_m"], valid_outcomes)
+        fall_definition = self.manifest["fall_definition"]
+        try:
+            tilt_threshold = float(fall_definition["max_abs_roll_pitch_rad"])
+            height_threshold = float(fall_definition["min_base_height_m"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DatasetValidationError(
+                "fall_definition requires numeric max_abs_roll_pitch_rad and "
+                "min_base_height_m") from exc
+        if not np.isfinite(tilt_threshold) or tilt_threshold <= 0.0:
+            raise DatasetValidationError(
+                "fall tilt threshold must be finite and positive")
+        if not np.isfinite(height_threshold) or height_threshold <= 0.0:
+            raise DatasetValidationError(
+                "fall height threshold must be finite and positive")
+        max_tilt = np.asarray(self.arrays["max_tilt_rad"])
+        min_height = np.asarray(self.arrays["min_height_m"])
+        predicate = (
+            (max_tilt >= tilt_threshold)
+            | (min_height < height_threshold))
+        if np.any(predicate[valid_outcomes] != fall_bool[valid_outcomes]):
+            raise DatasetValidationError(
+                "fall labels disagree with manifest tilt/height predicate")
+
+        crn_shape = (group_count, replica_count)
+        for name in ("crn_id", "rollout_seed", "perturbation_seed"):
+            if self.arrays[name].shape != crn_shape:
+                raise DatasetValidationError(
+                    f"{name} shape {self.arrays[name].shape}, expected {crn_shape}")
+            if self.arrays[name].dtype.kind not in "iu" or np.any(
+                    self.arrays[name] < 0):
+                raise DatasetValidationError(
+                    f"{name} must contain nonnegative integers")
+            for row in np.asarray(self.arrays[name]):
+                if len(np.unique(row)) != replica_count:
+                    raise DatasetValidationError(
+                        f"{name} must be unique across replicas within each group")
+
+        acceptance = np.asarray(self.arrays["acceptance_probability"], dtype=float)
+        _finite("acceptance_probability", acceptance)
+        if np.any(acceptance <= 0.0) or np.any(acceptance > 1.0):
+            raise DatasetValidationError("acceptance_probability must lie in (0, 1]")
+        _finite("command_vx", self.arrays["command_vx"])
+        if np.any(np.asarray(self.arrays["episode_step"]) < 0):
+            raise DatasetValidationError("episode_step must be nonnegative")
+
+        expected_hash = self.manifest.get("content_sha256")
+        actual_hash = _content_hash(self.manifest, self.arrays)
+        if verify_hash and expected_hash is not None and expected_hash != actual_hash:
+            raise DatasetValidationError(
+                f"content hash mismatch: manifest={expected_hash}, actual={actual_hash}")
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "groups": group_count,
+            "max_candidates": candidate_count,
+            "replicas": replica_count,
+            "valid_candidates": int(candidate_mask.sum()),
+            "min_valid_candidates_per_group": int(
+                candidate_mask.sum(axis=1).min()),
+            "replicas_per_candidate": replica_count,
+            "unique_trajectory_clusters": int(len(np.unique(
+                _as_text(self.arrays["trajectory_id"])))),
+            "unique_source_seeds": int(len(np.unique(
+                self.arrays["source_seed"]))),
+            "duplicate_state_fraction": 0.0,
+            "mixed_outcome_fraction": float(np.mean([
+                len(np.unique(np.mean(fall_bool[g, candidate_mask[g]], axis=1))) > 1
+                for g in range(group_count)
+            ])),
+            "content_sha256": actual_hash,
+        }
+
+    def save(self, path: str | Path) -> Path:
+        output = assert_development_path(path)
+        if output.suffix != ".npz":
+            raise DatasetValidationError("grouped datasets must use a .npz path")
+        report = self.validate(verify_hash=False)
+        manifest = dict(self.manifest)
+        manifest["content_sha256"] = report["content_sha256"]
+        output.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            output,
+            manifest_json=np.asarray(json.dumps(
+                manifest, sort_keys=True, separators=(",", ":"))),
+            **self.arrays,
+        )
+        self.manifest = manifest
+        self.path = output
+        return output
+
+    @classmethod
+    def load(cls, path: str | Path) -> "GroupedBranchDataset":
+        source = assert_development_path(path)
+        with np.load(source, allow_pickle=False) as payload:
+            if "manifest_json" not in payload.files:
+                raise DatasetValidationError("dataset has no manifest_json")
+            try:
+                manifest = json.loads(str(payload["manifest_json"].item()))
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                raise DatasetValidationError("invalid manifest_json") from exc
+            arrays = {
+                name: payload[name].copy()
+                for name in payload.files if name != "manifest_json"
+            }
+        _require_content_hash(manifest)
+        dataset = cls(manifest=manifest, arrays=arrays, path=source)
+        dataset.validate(verify_hash=True)
+        return dataset
+
+
+@dataclass
+class PrivilegedBranchView:
+    """Simulator-only diagnostic features stored outside deployable datasets."""
+
+    manifest: dict[str, Any]
+    group_id: np.ndarray
+    state_hash: np.ndarray
+    features: np.ndarray
+    feature_names: np.ndarray
+    path: Path | None = field(default=None, repr=False)
+
+    def validate(
+        self, deployable: GroupedBranchDataset | None = None,
+        *, verify_hash: bool = True,
+    ) -> dict[str, Any]:
+        if self.manifest.get("schema_version") != PRIVILEGED_SCHEMA_VERSION:
+            raise DatasetValidationError("invalid privileged schema version")
+        if self.manifest.get("feature_view") != "privileged_diagnostic_only":
+            raise DatasetValidationError("privileged view is not marked diagnostic-only")
+        group_id = _as_text(self.group_id)
+        state_hash = _as_text(self.state_hash)
+        features = np.asarray(self.features)
+        feature_names = _as_text(self.feature_names)
+        if group_id.ndim != 1 or state_hash.shape != group_id.shape:
+            raise DatasetValidationError("privileged identities must have shape [G]")
+        if features.ndim != 2 or features.shape[0] != len(group_id):
+            raise DatasetValidationError("privileged features must have shape [G, P]")
+        if feature_names.shape != (features.shape[1],):
+            raise DatasetValidationError("feature_names must identify every privileged column")
+        if len(np.unique(group_id)) != len(group_id) or np.any(group_id == ""):
+            raise DatasetValidationError("privileged group_id values must be unique/nonempty")
+        if len(np.unique(state_hash)) != len(state_hash) or np.any(state_hash == ""):
+            raise DatasetValidationError("privileged state_hash values must be unique/nonempty")
+        _finite("privileged features", features)
+        arrays = {
+            "group_id": group_id,
+            "state_hash": state_hash,
+            "features": features,
+            "feature_names": feature_names,
+        }
+        expected_hash = self.manifest.get("content_sha256")
+        actual_hash = _content_hash(self.manifest, arrays)
+        if verify_hash and expected_hash is not None and expected_hash != actual_hash:
+            raise DatasetValidationError("privileged content hash mismatch")
+        if deployable is not None:
+            deployable.validate()
+            if not np.array_equal(group_id, deployable["group_id"].astype(str)):
+                raise DatasetValidationError(
+                    "privileged group_id order does not match deployable view")
+            if not np.array_equal(state_hash, deployable["state_hash"].astype(str)):
+                raise DatasetValidationError(
+                    "privileged state_hash does not match deployable view")
+        return {
+            "schema_version": PRIVILEGED_SCHEMA_VERSION,
+            "groups": len(group_id),
+            "features": features.shape[1],
+            "content_sha256": actual_hash,
+        }
+
+    def save(self, path: str | Path) -> Path:
+        output = assert_development_path(path)
+        if output.suffix != ".npz":
+            raise DatasetValidationError("privileged views must use a .npz path")
+        report = self.validate(verify_hash=False)
+        manifest = dict(self.manifest)
+        manifest["content_sha256"] = report["content_sha256"]
+        output.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            output,
+            manifest_json=np.asarray(json.dumps(
+                manifest, sort_keys=True, separators=(",", ":"))),
+            group_id=np.asarray(self.group_id),
+            state_hash=np.asarray(self.state_hash),
+            features=np.asarray(self.features),
+            feature_names=np.asarray(self.feature_names),
+        )
+        self.manifest = manifest
+        self.path = output
+        return output
+
+    @classmethod
+    def load(
+        cls, path: str | Path, *,
+        deployable: GroupedBranchDataset | None = None,
+    ) -> "PrivilegedBranchView":
+        source = assert_development_path(path)
+        with np.load(source, allow_pickle=False) as payload:
+            required = {
+                "manifest_json", "group_id", "state_hash", "features", "feature_names"}
+            missing = required - set(payload.files)
+            if missing:
+                raise DatasetValidationError(
+                    f"privileged view missing fields: {sorted(missing)}")
+            manifest = json.loads(str(payload["manifest_json"].item()))
+            view = cls(
+                manifest=manifest,
+                group_id=payload["group_id"].copy(),
+                state_hash=payload["state_hash"].copy(),
+                features=payload["features"].copy(),
+                feature_names=payload["feature_names"].copy(),
+                path=source,
+            )
+        _require_content_hash(manifest)
+        view.validate(deployable)
+        return view
+
+
+def audit_split_disjointness(
+    datasets: Iterable[GroupedBranchDataset],
+) -> dict[str, Any]:
+    """Fail if any identity/seed namespace leaks across named splits."""
+    items = list(datasets)
+    if len(items) < 2:
+        return {"splits": len(items), "pairs_checked": 0}
+    for dataset in items:
+        dataset.validate()
+    checks = {
+        "group_id": lambda data: set(_as_text(data["group_id"])),
+        "state_hash": lambda data: set(_as_text(data["state_hash"])),
+        "trajectory_id": lambda data: set(_as_text(data["trajectory_id"])),
+        "source_seed": lambda data: set(map(int, data["source_seed"])),
+        "crn_id": lambda data: set(map(int, np.asarray(data["crn_id"]).reshape(-1))),
+        "rollout_seed": lambda data: set(map(
+            int, np.asarray(data["rollout_seed"]).reshape(-1))),
+        "perturbation_seed": lambda data: set(map(
+            int, np.asarray(data["perturbation_seed"]).reshape(-1))),
+    }
+    pairs_checked = 0
+    for left_index, left in enumerate(items):
+        for right in items[left_index + 1:]:
+            left_split = str(left.manifest["split"])
+            right_split = str(right.manifest["split"])
+            if left_split == right_split:
+                raise DatasetValidationError(
+                    f"split audit received duplicate split name {left_split!r}")
+            for name, getter in checks.items():
+                overlap = getter(left) & getter(right)
+                if overlap:
+                    examples = sorted(map(str, overlap))[:3]
+                    raise DatasetValidationError(
+                        f"{name} leaks across {left_split!r}/{right_split!r}: {examples}")
+            pairs_checked += 1
+    return {
+        "splits": len(items),
+        "pairs_checked": pairs_checked,
+        "split_names": [str(item.manifest["split"]) for item in items],
+    }

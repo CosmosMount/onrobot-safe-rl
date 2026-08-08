@@ -1,6 +1,6 @@
 # Q_safe fall-reduction execution roadmap
 
-Status: active, Phase 0  
+Status: active, Phase 1A
 Protocol: `config/qsafe_evidence_protocol.yaml`  
 Branch: `codex/qsafe-evidence-pipeline`
 
@@ -107,7 +107,7 @@ If privileged and deployable action ranking both remain flat, the target or cand
 The first audit found correctness defects that block all claim-bearing data collection:
 
 1. The P17 collector/evaluator carries the previous normalized action into `build_observation`, although the corrected 46D contract requires the previous absolute q target actually sent (`q_send`).
-2. `mjSTATE_INTEGRATION` restores integration state, but the current `robot_state()` reconstructs body velocity with `mj_objectVelocity`. Under the `oss` environment's MuJoCo 3.11.0, a capture→step→restore check produced a maximum observation mismatch of about 0.0196, concentrated in body velocity. A lossless integration-state byte vector therefore does not imply corrected-observation parity.
+2. The initial capture→step→restore check measured about 0.0196 observation mismatch. Follow-up proved the integration state and duplicate step were exact: the mismatch compared stale post-`mj_step` derived sensor fields with post-`mj_forward` fields. Explicit forward synchronization gives zero raw-observation error; sensor/frame-correct reads are still required for runtime parity.
 3. The snapshot evaluator defaults to `kd=5`, while another project configuration exposes `kd=10`; actual runtime gains and torque clipping must be fingerprinted rather than inferred.
 4. Two test modules currently fail at import because they refer to removed `SACInferencePolicy` and `SQRLActionDecision` names. A green partial test run is not a green safety stack.
 5. Action-filter histories are outside MuJoCo's integration state and are not cloned by the legacy evaluator.
@@ -118,6 +118,8 @@ Consequences:
 - Commit 2 begins with observation/action/filter parity and test repair, then adds the grouped schema.
 - Native and accelerator backends must both pass duplicate-branch determinism plus corrected-observation parity before producing evidence data.
 
+Phase 1A resolution: native snapshots now include MuJoCo integration state, requested/executed/q-target action state, five observation frames, and Butterworth history. The Go2 SDK-bridge sensors are used, the Python config explicitly matches runtime `kp=60, kd=5`, torque/filter coefficients are fingerprinted, and real-MJCF duplicate branches are bit-exact in regression tests.
+
 ## 5. Work breakdown and commit boundaries
 
 ### Phase 0 — preregistration and leakage barrier (commit 1)
@@ -127,7 +129,7 @@ Deliverables:
 - technical feasibility report;
 - this roadmap;
 - machine-readable protocol;
-- protected-path rules that reject `sealed`, `formal_test`, and `formal_data` inputs;
+- protected-path rules that reject every path component beginning with `sealed` or `formal`;
 - exact definitions of group, fall, H32, top-1 reduction and online fall count.
 
 Exit criterion: another researcher can determine whether a result passes without choosing thresholds after seeing it.
@@ -200,11 +202,11 @@ Run in increasing cost order:
 2. 1k group native PoC;
 3. 360→1k deployable/privileged learning slope;
 4. 1k paired repeated-closed-loop development evaluation;
-5. four-seed 100k-step online mechanics screen, not evidence, preserving shield-selected requested-action replay and logging runtime projection separately;
-6. ten new paired seeds at 500k steps for the Phase 1 confirmation at 0.30 m/s, with a matched-random placebo;
-7. if needed, small-shift replication at 0.27 and 0.33 m/s.
+5. independently fine-tune target actors at 0.27 and 0.33 m/s from the locked 0.30 m/s source, then run four-seed 100k-step mechanics screens; these are not evidence;
+6. run ten new paired seeds at 500k steps at **both** 0.27 and 0.33 m/s, with matched-random placebos; this small-shift route is the primary confirmatory route because the Q_safe continuation is less nonstationary than fresh-from-zero SAC;
+7. run fresh 0.30 m/s training as the secondary route when mechanics support it. Its actor/Q_safe continuation changes throughout training and therefore requires checkpoint-age-conditioned data or a frozen recovery continuation.
 
-Objective 1 passes only if data, model, paired closed-loop, and online training gates all pass. A fresh-training pass at 0.30 m/s is sufficient; otherwise both small-shift endpoints must support the claim without selecting only the favorable speed.
+Objective 1 passes only if data, model, paired closed-loop, and online training gates all pass. The exact route expression is `common_mechanism_gates AND (fresh_030_online OR (shift_027_online AND shift_033_online))`; neither a favorable single endpoint nor a mechanics pilot can unlock Phase 2.
 
 ### Phase 2 — speed expansion (blocked)
 
@@ -287,6 +289,8 @@ The primary outcome is falls per fixed policy-step budget, not falls per complet
 - Exact-state comparisons use paired differences and group bootstrap.
 - Online experiments use the seed as the clustering unit; episode rows are not treated as independent replicates.
 - Ten confirmation seed pairs are the minimum; a mechanics pilot cannot be promoted to evidence and optional stopping is forbidden.
+- Pair accuracy is group-macro; a strong pair has empirical risk gap at least 0.25; ECE uses ten equal-mass bins with natural weights or recorded-acceptance IPW.
+- The online primary rate ratio pools fall counts at fixed exposure but inference remains at the paired training-seed level: seed-cluster bootstrap CI plus an exact paired label-swap test (1,024 assignments for ten pairs).
 - Report raw counts, absolute pp change, relative change, 95% CI and the number needed to shield where meaningful.
 - Hyperparameters are chosen on development/calibration data. Confirmation data are evaluated once.
 - Failed experiments remain in the manifest; no favorable-seed filtering.
@@ -303,9 +307,9 @@ The primary outcome is falls per fixed policy-step budget, not falls per complet
 
 ## 10. Immediate execution queue
 
-1. Commit the report, roadmap and protocol.
-2. Repair corrected-observation/q_send snapshot parity, application-state cloning and broken imports.
-3. Implement protected-path validation, group schema and deterministic metrics.
+1. Commit the report, roadmap and protocol. **Done: `981acf3`.**
+2. Repair corrected-observation/q_send snapshot parity, application-state cloning and broken imports. **Implemented; regression tests pass.**
+3. Implement protected-path validation, group schema and deterministic metrics. **Implemented; commit 2 pending final audit.**
 4. Add synthetic tests and audit the available development NPZ formats without opening protected paths.
 5. Implement the native group exporter and collect a small smoke dataset.
 6. Add the factorized model trainer and privileged/deployable learning-curve CLI.

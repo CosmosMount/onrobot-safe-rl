@@ -5,13 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
 import torch
 
 from rl.agents import create_agent
+from safety_data.paths import assert_development_path
 from scripts.evaluate_p16_snapshot_replacements import (
     _actor_actions,
     _risks,
@@ -22,16 +22,18 @@ from train.mujoco_snapshot_env import MujocoSnapshotEnv
 
 
 def _rollout(
-    env, agent, snapshot, previous_action, horizon, *,
+    env, agent, snapshot, horizon, *,
     shield: bool, seed: int,
 ):
     env.restore(snapshot)
-    previous = np.asarray(previous_action, dtype=np.float32).copy()
     replacements = 0
     no_safe = 0
     failure_step = None
     for step in range(horizon):
-        observation = env.observation(previous)
+        observation = (
+            env.observation_history()[-1]
+            if step == 0
+            else env.record_observation()[-1])
         nominal = _actor_actions(
             agent, observation, 1, sample=False, seed=0)[0]
         action = nominal
@@ -43,7 +45,6 @@ def _rollout(
             replacements += int(selection["replaced"])
             no_safe += int(selection["no_safe"])
         measurement = env.step(action)
-        previous = action
         if measurement.failure:
             failure_step = step + 1
             break
@@ -72,6 +73,10 @@ def main() -> int:
         default=("/home/xyz/code/unitree_mujoco/"
                  "unitree_robots/go2/scene_empty.xml"))
     args = parser.parse_args()
+    assert_development_path(args.config)
+    checkpoint = assert_development_path(args.checkpoint)
+    model_path = assert_development_path(args.model)
+    output_path = assert_development_path(args.output)
 
     robot_cfg, train_cfg, agent_cfg = load_app_config(
         args.config, agent="safe_droq")
@@ -83,16 +88,16 @@ def main() -> int:
         gym.spaces.Box(
             -1.0, 1.0, (robot_cfg.num_joints,), dtype=np.float32),
         {}, agent_cfg)
-    checkpoint = Path(args.checkpoint).resolve()
     agent.load(str(checkpoint))
     agent._cfg.safety_pretrained_path = str(
         checkpoint / "safety_critic.pt")
     env = MujocoSnapshotEnv(
-        args.model, robot_cfg,
-        policy_frequency=train_cfg.control_frequency)
+        model_path, robot_cfg,
+        policy_frequency=train_cfg.control_frequency,
+        max_joint_delta=train_cfg.max_joint_delta,
+        use_action_filter=train_cfg.use_action_filter)
     rng = np.random.default_rng(args.seed)
     env.reset_standing(rng=rng)
-    previous = np.zeros(robot_cfg.num_joints, dtype=np.float32)
     episode_step = 0
     records = []
     natural_step = 0
@@ -103,17 +108,17 @@ def main() -> int:
                     0.0, args.linear_impulse_std, size=3),
                 angular_velocity_delta=rng.normal(
                     0.0, args.angular_impulse_std, size=3))
-        observation = env.observation(previous)
+        observation = env.record_observation()[-1]
         nominal = _actor_actions(
             agent, observation, 1, sample=False, seed=0)[0]
         risk = float(_risks(agent, observation, nominal[None, :])[0])
         snapshot = env.capture()
         if risk > float(agent.cfg.safety_epsilon):
             nominal_result = _rollout(
-                env, agent, snapshot, previous, args.horizon,
+                env, agent, snapshot, args.horizon,
                 shield=False, seed=args.seed + len(records))
             shield_result = _rollout(
-                env, agent, snapshot, previous, args.horizon,
+                env, agent, snapshot, args.horizon,
                 shield=True, seed=args.seed + len(records))
             records.append({
                 "natural_step": natural_step,
@@ -123,13 +128,10 @@ def main() -> int:
             })
             env.restore(snapshot)
         measurement = env.step(nominal)
-        previous = nominal
         episode_step += 1
         natural_step += 1
         if measurement.failure or episode_step >= 400:
             env.reset_standing(rng=rng)
-            previous = np.zeros(
-                robot_cfg.num_joints, dtype=np.float32)
             episode_step = 0
 
     nominal_failures = sum(r["nominal"]["failure"] for r in records)
@@ -153,7 +155,7 @@ def main() -> int:
         "total_no_safe": sum(
             r["shield"]["no_safe"] for r in records),
     }
-    output = Path(args.output)
+    output = output_path
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(
         {"summary": summary, "records": records}, indent=2))
