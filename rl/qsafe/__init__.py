@@ -21,6 +21,7 @@ from rl.qsafe.network import (
     QSafeOutput,
     SelectiveAdvantageQSafe,
 )
+from rl.qsafe.runtime import QSafeRuntimeResult, run_qsafe_step
 
 from rl.qsafe.selector import (
     CandidateBatch,
@@ -51,6 +52,7 @@ __all__ = [
     "QSafeLossResult",
     "QSafeNetworkConfig",
     "QSafeOutput",
+    "QSafeRuntimeResult",
     "QSafeTrainingConfig",
     "SelectionResult",
     "SelectiveAdvantageQSafe",
@@ -62,6 +64,7 @@ __all__ = [
     "load_qsafe_artifact",
     "predict_qsafe_ensemble",
     "qsafe_group_loss",
+    "run_qsafe_step",
     "select_candidate",
     "save_qsafe_artifact",
     "train_qsafe_ensemble",
