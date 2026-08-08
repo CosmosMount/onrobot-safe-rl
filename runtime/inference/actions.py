@@ -191,6 +191,42 @@ class ActionApplier:
             action_q_target=action_q_target.copy(),
         )
 
+    def preview_many(
+        self,
+        actions: np.ndarray,
+        current_qpos: np.ndarray,
+    ) -> tuple[ActionProjection, ...]:
+        """Project candidates independently without advancing filter state.
+
+        Every candidate is evaluated from the same captured causal filter
+        history.  The history visible to the caller is restored even if one
+        candidate is invalid and projection raises.  This is the runtime
+        counterpart of same-state branching: candidate order cannot leak into
+        the executed action or absolute joint target used by a selector.
+        """
+        candidate_actions = np.asarray(actions, dtype=np.float32)
+        if candidate_actions.ndim != 2 or candidate_actions.shape[0] == 0:
+            raise ValueError(
+                "actions must have non-empty shape "
+                "[candidates, action_dimensions]; "
+                f"got {candidate_actions.shape}")
+
+        if self.action_filter is None:
+            return tuple(
+                self.project(action, current_qpos)
+                for action in candidate_actions
+            )
+
+        baseline = self.action_filter.capture_state()
+        projections: list[ActionProjection] = []
+        try:
+            for action in candidate_actions:
+                self.action_filter.restore_state(baseline)
+                projections.append(self.project(action, current_qpos))
+            return tuple(projections)
+        finally:
+            self.action_filter.restore_state(baseline)
+
     def executed_action(self, q_target: np.ndarray) -> np.ndarray:
         return qpos_to_action(
             q_target,

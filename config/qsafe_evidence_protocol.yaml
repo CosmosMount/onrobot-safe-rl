@@ -41,6 +41,10 @@ method:
       - min_height
   action_head:
     target: candidate_risk_minus_nominal_risk
+    feature_view: application_concat
+    components_in_order: [requested, executed, q_target]
+    total_dimension: 36
+    requested_only_12d: ablation_only
     inputs:
       - state_embedding
       - nominal_action

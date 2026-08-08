@@ -308,10 +308,10 @@ The primary outcome is falls per fixed policy-step budget, not falls per complet
 ## 10. Immediate execution queue
 
 1. Commit the report, roadmap and protocol. **Done: `981acf3`.**
-2. Repair corrected-observation/q_send snapshot parity, application-state cloning and broken imports. **Implemented; regression tests pass.**
-3. Implement protected-path validation, group schema and deterministic metrics. **Implemented; commit 2 pending final audit.**
-4. Add synthetic tests and audit the available development NPZ formats without opening protected paths.
-5. Implement the native group exporter and collect a small smoke dataset.
-6. Add the factorized model trainer and privileged/deployable learning-curve CLI.
-7. Implement the paired repeated-closed-loop evaluator and evidence compiler.
-8. Create commit 3, then run the Objective 1 experiment ladder.
+2. Repair corrected-observation/q_send snapshot parity, application-state cloning and broken imports. **Done: `020a8af`; real-MJCF restore is bit-exact.**
+3. Implement protected-path validation, group schema and deterministic metrics. **Done: `020a8af`; legacy row-flat files are diagnostic-only.**
+4. Add synthetic tests and audit the available development NPZ formats without opening protected paths. **Done; train/calibration/test identity leakage fails closed.**
+5. Implement the native group exporter and collect a small smoke dataset. **Next; the native branch kernel and compound snapshot contract already pass real-MJCF tests.**
+6. Add the factorized model trainer and privileged/deployable learning-curve CLI. **Implemented; the production action view is the ordered 36D requested/executed/q-target tuple, with requested-only retained only as an explicit ablation.**
+7. Implement the paired repeated-closed-loop evaluator and evidence compiler. **Online three-arm seed statistics and the development compiler are implemented; the exact-state repeated-shield runner remains next.**
+8. Create commit 3, then run the Objective 1 experiment ladder. **Commit 3 is ready for final regression; Phase 2 remains blocked.**
