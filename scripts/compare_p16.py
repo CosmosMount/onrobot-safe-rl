@@ -9,10 +9,21 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
+from safety_data.paths import (
+    assert_development_path,
+    assert_safe_evidence_output,
+    require_v3_audit_consumed_or_safe_input,
+)
+
 
 def load_group(path: Path) -> dict[str, Any]:
-    manifest = json.loads((path / "manifest.json").read_text())
-    episodes_path = path / "episodes.json"
+    root = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(path))
+    manifest_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(root / "manifest.json"))
+    manifest = json.loads(manifest_path.read_text())
+    episodes_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(root / "episodes.json"))
     episodes = (
         json.loads(episodes_path.read_text())
         if episodes_path.exists() else [])
@@ -47,11 +58,26 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
+    source_summary = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.source_summary))
+    sac_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.sac))
+    sqrl_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.sqrl))
+    output = assert_development_path(assert_safe_evidence_output(args.output))
+    json_output = assert_development_path(assert_safe_evidence_output(
+        output.with_suffix(".json")))
+    if output == json_output:
+        raise ValueError("markdown and JSON comparison outputs must be distinct")
+    existing = [path for path in (output, json_output) if path.exists()]
+    if existing:
+        raise FileExistsError(f"refusing to overwrite comparison outputs: {existing}")
+
     groups = {
         "Q_safe logging source": json.loads(
-            args.source_summary.read_text()),
-        "Pure SAC": load_group(args.sac),
-        "SAC + frozen Q_safe": load_group(args.sqrl),
+            source_summary.read_text()),
+        "Pure SAC": load_group(sac_path),
+        "SAC + frozen Q_safe": load_group(sqrl_path),
     }
     sac = groups["Pure SAC"]
     sqrl = groups["SAC + frozen Q_safe"]
@@ -108,11 +134,12 @@ def main() -> int:
         "SAC + frozen Q_safe, both with exactly 15,000 policy transitions.",
         "",
     ])
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text("\n".join(lines))
-    args.output.with_suffix(".json").write_text(
-        json.dumps(groups, indent=2, sort_keys=True) + "\n")
-    print(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("x", encoding="utf-8") as stream:
+        stream.write("\n".join(lines))
+    with json_output.open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(groups, indent=2, sort_keys=True) + "\n")
+    print(output)
     return 0
 
 

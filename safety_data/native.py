@@ -25,6 +25,27 @@ class DisturbanceProgram(Protocol):
     ) -> None: ...
 
 
+class RecoveryProgram(Protocol):
+    """Closed-loop recovery behavior selected by candidate index.
+
+    Candidate zero is the nominal continuation and has duration zero.  The
+    evaluator calls the program only for an active nonnominal candidate.  At
+    continuation steps, ``nominal_action`` has already been sampled so common
+    rollout RNG streams advance identically before recovery overrides it.
+    """
+
+    @property
+    def behavior_steps(self) -> np.ndarray: ...
+
+    def __call__(
+        self,
+        candidate_index: int,
+        observation_history: np.ndarray,
+        step: int,
+        nominal_action: np.ndarray,
+    ) -> np.ndarray: ...
+
+
 def _capture_branch_state(component: Any, name: str) -> Any:
     capture = getattr(component, "capture_branch_state", None)
     restore = getattr(component, "restore_branch_state", None)
@@ -173,6 +194,60 @@ def _checked_option_steps(
     return np.array(raw, dtype=np.int64, copy=True)
 
 
+def _checked_behavior_steps(
+    recovery_program: RecoveryProgram,
+    *,
+    candidate_count: int,
+    horizon_steps: int,
+) -> np.ndarray:
+    """Validate the closed-loop durations declared by a recovery program."""
+    if not callable(recovery_program):
+        raise TypeError("recovery_program must be callable")
+    raw = np.asarray(recovery_program.behavior_steps)
+    if raw.dtype.kind not in "iu" or raw.ndim != 1 or raw.shape != (
+            candidate_count,):
+        raise ValueError(
+            "recovery_program.behavior_steps must be a one-dimensional "
+            "integer [K] array")
+    if raw[0] != 0:
+        raise ValueError(
+            "nominal candidate recovery_program.behavior_steps[0] must equal 0")
+    if np.any(raw[1:] < 1) or np.any(raw[1:] > horizon_steps):
+        raise ValueError(
+            "nonnominal recovery_program behavior steps must lie in [1, H]")
+    return np.array(raw, dtype=np.int64, copy=True)
+
+
+def _checked_recovery_action(
+    value: np.ndarray,
+    *,
+    action_dim: int,
+    candidate_index: int,
+    step: int,
+) -> np.ndarray:
+    """Return one finite, normalized action from a recovery program."""
+    raw = np.asarray(value)
+    if raw.shape != (action_dim,):
+        raise ValueError(
+            "recovery_program output must have shape [action_dim]; "
+            f"candidate={candidate_index}, step={step}")
+    try:
+        action = np.asarray(raw, dtype=np.float32)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "recovery_program output must contain numeric actions; "
+            f"candidate={candidate_index}, step={step}") from exc
+    if not np.all(np.isfinite(action)):
+        raise ValueError(
+            "recovery_program output must contain only finite actions; "
+            f"candidate={candidate_index}, step={step}")
+    if np.any(action < -1.0) or np.any(action > 1.0):
+        raise ValueError(
+            "recovery_program output must lie in normalized [-1, 1]; "
+            f"candidate={candidate_index}, step={step}")
+    return np.array(action, dtype=np.float32, copy=True)
+
+
 def evaluate_same_state_group(
     env: MujocoSnapshotEnv,
     snapshot: BranchSnapshot,
@@ -183,6 +258,7 @@ def evaluate_same_state_group(
     continuation_policy: ContinuationPolicy,
     disturbance_program: DisturbanceProgram | None = None,
     option_steps: np.ndarray | None = None,
+    recovery_program: RecoveryProgram | None = None,
 ) -> NativeGroupEvaluation:
     """Evaluate K actions/options with paired common-random continuations.
 
@@ -198,6 +274,14 @@ def evaluate_same_state_group(
     ``((L-step)/L) * (candidate[k] - candidate[0])``, clipping the combined
     normalized action to ``[-1, 1]``.  Steps at or after ``L`` use the nominal
     continuation unchanged.  Candidate zero must always have length one.
+
+    ``recovery_program`` enables an independent closed-loop behavior and is
+    mutually exclusive with ``option_steps``.  Candidate zero then has
+    behavior duration zero and remains nominal.  At step zero the program gets
+    the non-recording environment history view; its action must exactly match
+    the corresponding ``candidates`` preview before the environment advances.
+    At subsequent active steps, the paired nominal continuation is evaluated
+    first and then overridden by the recovery program.
     """
     candidate_values = np.asarray(candidates, dtype=np.float32)
     seeds = (
@@ -218,8 +302,19 @@ def evaluate_same_state_group(
     horizon_steps = _checked_horizon_steps(horizon_steps)
 
     candidate_count = len(candidate_values)
-    option_lengths = _checked_option_steps(
-        option_steps, candidate_count=candidate_count)
+    if recovery_program is not None and option_steps is not None:
+        raise ValueError("recovery_program and option_steps are mutually exclusive")
+    if recovery_program is None:
+        option_lengths = _checked_option_steps(
+            option_steps, candidate_count=candidate_count)
+        behavior_lengths = None
+    else:
+        option_lengths = None
+        behavior_lengths = _checked_behavior_steps(
+            recovery_program,
+            candidate_count=candidate_count,
+            horizon_steps=horizon_steps,
+        )
     replica_count = seeds.replica_count
     requested = np.empty((candidate_count, env.cfg.num_joints), np.float32)
     executed = np.empty_like(requested)
@@ -235,12 +330,23 @@ def evaluate_same_state_group(
     disturbance_state = (
         None if disturbance_program is None
         else _capture_branch_state(disturbance_program, "disturbance_program"))
+    recovery_state = (
+        None if recovery_program is None
+        else _capture_branch_state(recovery_program, "recovery_program"))
 
     try:
         nominal_action = candidate_values[0]
         for candidate_index, first_action in enumerate(candidate_values):
-            option_length = int(option_lengths[candidate_index])
-            option_residual = first_action - nominal_action
+            if recovery_program is None:
+                assert option_lengths is not None
+                option_length = int(option_lengths[candidate_index])
+                option_residual = first_action - nominal_action
+                behavior_length = 0
+            else:
+                assert behavior_lengths is not None
+                option_length = 0
+                option_residual = None
+                behavior_length = int(behavior_lengths[candidate_index])
             for replica_index, (
                     crn_id, rollout_seed, perturbation_seed) in enumerate(zip(
                         seeds.crn_id,
@@ -251,17 +357,57 @@ def evaluate_same_state_group(
                 _restore_branch_state(continuation_policy, continuation_state)
                 if disturbance_program is not None:
                     _restore_branch_state(disturbance_program, disturbance_state)
+                if recovery_program is not None:
+                    _restore_branch_state(recovery_program, recovery_state)
                 for step in range(horizon_steps):
                     if disturbance_program is not None:
                         disturbance_program(
                             env, step, _rng(int(perturbation_seed), 1, step))
                     if step == 0:
-                        action = first_action
+                        if recovery_program is not None and candidate_index > 0:
+                            action = _checked_recovery_action(
+                                recovery_program(
+                                    candidate_index,
+                                    env.observation_history(),
+                                    step,
+                                    nominal_action.copy(),
+                                ),
+                                action_dim=env.cfg.num_joints,
+                                candidate_index=candidate_index,
+                                step=step,
+                            )
+                            if not np.array_equal(action, first_action):
+                                raise RuntimeError(
+                                    "recovery_program step-zero action differs "
+                                    "from candidates preview; "
+                                    f"candidate={candidate_index}")
+                        else:
+                            action = first_action
                     else:
-                        action = continuation_policy(
-                            env.record_observation(), step,
+                        observation_history = env.record_observation()
+                        nominal_continuation = continuation_policy(
+                            observation_history, step,
                             _rng(int(rollout_seed), 0, step))
-                        if step < option_length:
+                        action = nominal_continuation
+                        if (recovery_program is not None
+                                and candidate_index > 0
+                                and step < behavior_length):
+                            action = _checked_recovery_action(
+                                recovery_program(
+                                    candidate_index,
+                                    observation_history,
+                                    step,
+                                    np.asarray(
+                                        nominal_continuation,
+                                        dtype=np.float32,
+                                    ).copy(),
+                                ),
+                                action_dim=env.cfg.num_joints,
+                                candidate_index=candidate_index,
+                                step=step,
+                            )
+                        elif recovery_program is None and step < option_length:
+                            assert option_residual is not None
                             decay = (option_length - step) / option_length
                             action = np.clip(
                                 action + decay * option_residual, -1.0, 1.0)
@@ -307,6 +453,8 @@ def evaluate_same_state_group(
         _restore_branch_state(continuation_policy, continuation_state)
         if disturbance_program is not None:
             _restore_branch_state(disturbance_program, disturbance_state)
+        if recovery_program is not None:
+            _restore_branch_state(recovery_program, recovery_state)
     return NativeGroupEvaluation(
         candidate_requested=requested,
         candidate_executed=executed,

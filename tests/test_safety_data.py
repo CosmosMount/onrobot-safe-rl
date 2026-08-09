@@ -10,7 +10,11 @@ import numpy as np
 
 from safety_data.legacy import audit_legacy_p17
 from safety_data.metrics import _equal_mass_ece, evaluate_predictions
-from safety_data.paths import ProtectedEvidencePathError, assert_development_path
+from safety_data.paths import (
+    ProtectedEvidencePathError,
+    assert_development_path,
+    assert_safe_evidence_output,
+)
 from safety_data.schema import (
     DatasetValidationError,
     GroupedBranchDataset,
@@ -334,6 +338,18 @@ class LeakageAndLegacyTest(unittest.TestCase):
         ):
             with self.assertRaises(ProtectedEvidencePathError):
                 assert_development_path(path)
+
+    def test_generic_writers_cannot_claim_v3_reserved_outputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for filename in (
+                    "selection-lock.json",
+                    "audit-consumed.json",
+                    "source-7801.discovery.npz",
+                    "closed-loop-recovery-triage-report.json"):
+                with self.subTest(filename=filename), self.assertRaisesRegex(
+                        ProtectedEvidencePathError, "reserved v3"):
+                    assert_safe_evidence_output(root / filename)
 
     def test_legacy_adapter_is_opt_in_and_never_evidence_eligible(self):
         with tempfile.TemporaryDirectory() as directory:

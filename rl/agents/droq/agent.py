@@ -15,6 +15,10 @@ from rl.agents.droq.network import DroQActor, DroQEnsembleCritic, DroQTemperatur
 from rl.agents.droq.update import update_actor, update_critic, update_temperature
 from rl.buffers.torch_buffer import TorchUniformBuffer
 from rl.utils.types import NDArray, Tensor
+from safety_data.paths import (
+    assert_development_path,
+    require_v3_audit_consumed_or_safe_input,
+)
 
 
 @dataclass
@@ -431,6 +435,8 @@ class DroQAgent(BaseAgent[DroQConfig]):
         print(f"\033[32m[DroQ]\033[0m Successfully saved replay buffer at {path}.")
 
     def load(self, path: str) -> None:
+        path = str(assert_development_path(
+            require_v3_audit_consumed_or_safe_input(path)))
         load_optimizer = self._cfg.load_optimizer
         self._actor.load(os.path.join(path, "actor.pt"), load_optimizer=load_optimizer)
         self._critic.load(os.path.join(path, "critic.pt"), load_optimizer=load_optimizer)
@@ -438,7 +444,10 @@ class DroQAgent(BaseAgent[DroQConfig]):
         self._temperature.load(os.path.join(path, "temperature.pt"), load_optimizer=load_optimizer)
 
         if load_optimizer:
-            agent_state = torch.load(os.path.join(path, "agent_state.pt"), map_location=self._device)
+            agent_state_path = assert_development_path(
+                require_v3_audit_consumed_or_safe_input(
+                    os.path.join(path, "agent_state.pt")))
+            agent_state = torch.load(agent_state_path, map_location=self._device)
             self._update_step = int(agent_state["update_step"])
             if "update_counters" in agent_state:
                 self._update_counters.load_state_dict(agent_state["update_counters"])

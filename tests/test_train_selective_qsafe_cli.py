@@ -309,6 +309,27 @@ class TrainSelectiveQSafeCliTest(unittest.TestCase):
                 self.assertNotEqual(
                     consumption["marker_path"], second_run["marker_path"])
 
+    def test_heldout_symlink_alias_is_rejected_before_hash_or_consumption(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit = root / "source-7801.audit.npz"
+            audit.write_bytes(b"must-not-read")
+            alias = root / "evaluation.npz"
+            alias.symlink_to(audit)
+            with mock.patch.object(
+                    train_selective_qsafe, "_file_sha256",
+                    side_effect=AssertionError("alias must not be hashed")):
+                with self.assertRaisesRegex(
+                        PermissionError, "refuse symlink inputs"):
+                    train_selective_qsafe._load_heldout_once(
+                        alias,
+                        ledger_root=root / "ledger",
+                        run_id="primary_selective_deployable",
+                        protocol_name="synthetic_protocol",
+                        git_commit="a" * 40,
+                    )
+            self.assertFalse((root / "ledger").exists())
+
     def test_causal_contract_drift_between_splits_fails_closed(self):
         datasets = [
             synthetic_dataset(

@@ -5,6 +5,103 @@ protocol_name: objective1_closed_loop_recovery_triage_v3
 created_at: "2026-08-09T00:00:00+08:00"
 scope: conditional_development_mechanism_triage_only
 claim_eligible: false
+implementation_amendments:
+  - field: collection.candidates.ordered_names[0]
+    preregistered_value: nominal_early_L1
+    implementation_value: nominal
+    reason: preserve_existing_grouped_schema_nominal_identity
+    scientific_semantics_changed: false
+    simulator_outcome_seen_before_amendment: false
+  - field: collection.candidates.manifest_serialization
+    preregistered_value: semantically_complete_human_readable_fields
+    implementation_value: exact_runtime_manifest_fields
+    reason: bind_observation_slices_mature_semantics_and_expanded_tie_priority
+    scientific_semantics_changed: false
+    simulator_outcome_seen_before_amendment: false
+  - field: collection.audit_physical_inputs
+    preregistered_value: physically_separate_audit_file
+    implementation_value: six_unopened_source_shards_then_post_marker_in_memory_merge
+    reason: prevent_pre_selection_audit_merge_from_opening_outcomes
+    scientific_semantics_changed: false
+    firewall_strengthened: true
+    simulator_outcome_seen_before_amendment: false
+  - field: collection.attempt_journal
+    preregistered_value: failed_trials_remain_in_manifest
+    implementation_value: atomic_no_clobber_started_marker_before_first_simulator_step
+    reason: make_interrupted_or_failed_one_shot_collection_attempts_persistent
+    scientific_semantics_changed: false
+    firewall_strengthened: true
+    simulator_outcome_seen_before_amendment: false
+  - field: target.failure.semantics
+    preregistered_value: deployment_aligned_absorbing_first_crossing
+    implementation_value: simulator_fall_label_with_recorded_runtime_differences
+    reason: runtime_supervisor_uses_strict_tilt_and_has_no_height_predicate
+    scientific_semantics_changed: false
+    reporting_precision_strengthened: true
+    simulator_outcome_seen_before_amendment: false
+  - field: target.failure.height_reference
+    preregistered_value: base_link_body_origin_world_z
+    pre_fix_implementation_value: imu_site_world_z_with_0.04232m_body_offset
+    implementation_value: base_link_body_origin_world_z
+    reason: correct_mislabeled_frame_pos_sensor_before_any_v3_outcome
+    scientific_semantics_changed: false
+    implementation_corrected_to_preregistered_semantics: true
+    simulator_outcome_seen_before_amendment: false
+  - field: target.failure.sampling_cadence
+    preregistered_value: absorbing_first_crossing
+    implementation_value: first_failing_50Hz_post_action_boundary_after_10_low_level_substeps
+    reason: disambiguate_policy_transition_fall_count_from_unobserved_within_hold_crossings
+    scientific_semantics_changed: false
+    reporting_precision_strengthened: true
+    simulator_outcome_seen_before_amendment: false
+  - field: collection.source_shard_filenames
+    preregistered_value: physically_separate_role_files
+    implementation_value: exact_canonical_templates_with_report_last_completion_marker
+    reason: make_partial_or_interrupted_bundle_publication_unusable
+    scientific_semantics_changed: false
+    firewall_strengthened: true
+    simulator_outcome_seen_before_amendment: false
+  - field: protection.protocol_semantic_binding
+    preregistered_value: protocol_file_sha256
+    implementation_value: protocol_file_sha256_plus_canonical_mapping_sha256
+    reason: prevent_post_discovery_gate_or_statistic_changes_via_new_protocol_mapping
+    scientific_semantics_changed: false
+    firewall_strengthened: true
+    simulator_outcome_seen_before_amendment: false
+  - field: target.model_mjcf_dependency_sha256
+    preregistered_value: model_path_only
+    implementation_value: recursive_MJCF_include_mesh_texture_content_sha256
+    reason: bind_external_simulator_assets_before_any_one_shot_collection
+    scientific_semantics_changed: false
+    reproducibility_strengthened: true
+    simulator_outcome_seen_before_amendment: false
+  - field: target.action_application_contract
+    preregistered_value: config_path_and_runtime_projection_description
+    implementation_value: exact_float32_init_offset_joint_bounds_and_projection
+    reason: bind_resolved_robot_config_dependencies_not_covered_by_overlay_hash
+    scientific_semantics_changed: false
+    reproducibility_strengthened: true
+    simulator_outcome_seen_before_amendment: false
+  - field: statistics.bootstrap.operational_reproducibility
+    preregistered_value: replicates_seed_and_resampling_hierarchy
+    implementation_value: plus_PCG64_chunk512_exact_vectorized_draw_order_and_linear_quantiles
+    reason: make_bootstrap_draws_and_boundary_decisions_bit_reproducible
+    scientific_semantics_changed: false
+    reproducibility_strengthened: true
+    simulator_outcome_seen_before_amendment: false
+  - field: collection.settle_seconds
+    preregistered_value: 0.05
+    implementation_value: 0.04_with_exactly_2_policy_steps
+    reason: eliminate_Python_bankers_rounding_ambiguity_at_50Hz
+    scientific_semantics_changed: true
+    simulator_outcome_seen_before_amendment: false
+  - field: statistics.pair_agreement_definition
+    preregistered_value: threshold_and_tie_score
+    implementation_value: exact_36_pair_tie_condition_and_group_aggregation
+    reason: remove_ambiguity_from_conditional_gate_metric
+    scientific_semantics_changed: false
+    reproducibility_strengthened: true
+    simulator_outcome_seen_before_amendment: false
 
 parent_iteration:
   protocol_name: objective1_recovery_option_triage_v2
@@ -28,22 +125,38 @@ protection:
 target:
   robot: unitree_go2
   model_mjcf: /home/xyz/code/unitree_mujoco/unitree_robots/go2/scene_empty.xml
+  model_mjcf_dependency_sha256: f914b2658761d49e19f17c89d14c1af0989e5e1012a7cdbeab9fb5885fc7a021
   route: sac_from_scratch_policy_age_mechanism
   command_speed_mps: 0.30
   observation: corrected_deployable_46d_last_5_frames
   observation_joint_q_slice: [0, 12]
   observation_previous_q_target_slice: [34, 46]
   action: normalized_12d_with_requested_executed_and_absolute_q_send_recorded
+  action_application_contract:
+    q_target_semantic: absolute_joint_position_sent
+    init_qpos: [0.05000000074505806, 0.699999988079071, -1.399999976158142, 0.05000000074505806, 0.699999988079071, -1.399999976158142, 0.05000000074505806, 0.699999988079071, -1.399999976158142, 0.05000000074505806, 0.699999988079071, -1.399999976158142]
+    action_offset: [0.20000000298023224, 0.4000000059604645, 0.4000000059604645, 0.20000000298023224, 0.4000000059604645, 0.4000000059604645, 0.20000000298023224, 0.4000000059604645, 0.4000000059604645, 0.20000000298023224, 0.4000000059604645, 0.4000000059604645]
+    joint_min: [-1.0499999523162842, -1.5700000524520874, -2.7200000286102295, -1.0499999523162842, -1.5700000524520874, -2.7200000286102295, -1.0499999523162842, -0.5199999809265137, -2.7200000286102295, -1.0499999523162842, -0.5199999809265137, -2.7200000286102295]
+    joint_max: [1.0499999523162842, 3.490000009536743, -0.8399999737739563, 1.0499999523162842, 3.490000009536743, -0.8399999737739563, 1.0499999523162842, 4.539999961853027, -0.8399999737739563, 1.0499999523162842, 4.539999961853027, -0.8399999737739563]
+    projection: clip_normalized_then_joint_bounds_then_slew_then_filter
   policy_hz: 50
   low_level_hz: 500
   horizon_policy_steps: 96
   failure:
     max_abs_roll_pitch_rad: 0.523599
     min_base_height_m: 0.18
+    height_reference: base_link_body_origin_world_z
+    height_comparator: strict_less_than
+    sampling_cadence: first_failing_50Hz_post_action_boundary_after_10_low_level_substeps
+    within_policy_hold_crossings: not_observed
+    first_failure_step_semantics: first_failing_post_action_policy_boundary_1_through_H
     tilt_comparator: greater_than_or_equal
     fallen_orientation_rad_overridden_from: success_orientation_rad
-    semantics: deployment_aligned_absorbing_first_crossing
+    semantics: simulator_fall_label_with_recorded_runtime_differences
     runtime_orientation_comparator_difference_recorded: true
+    base_height_is_privileged_outcome_label: true
+    runtime_supervisor_base_height_predicate: absent
+    deployment_equivalence_claim: forbidden
   statistical_unit: unique_source_trajectory_state_group
   estimand: equal_seed_conditional_effect_on_admission_positive_fixed_states
   natural_incidence_claim: forbidden
@@ -90,14 +203,28 @@ mature_recovery_policy:
 collection:
   artifact_root: saved/qsafe_development/closed_loop_recovery_triage_v3
   cohort_lock_filename: cohort-lock.json
+  attempt_shard_filename_template: source-{source_seed}.attempt-started.json
+  admission_shard_filename_template: source-{source_seed}.admission.npz
+  admission_privileged_shard_filename_template: source-{source_seed}.admission.privileged.npz
+  discovery_shard_filename_template: source-{source_seed}.discovery.npz
+  discovery_privileged_shard_filename_template: source-{source_seed}.discovery.privileged.npz
+  audit_shard_filename_template: source-{source_seed}.audit.npz
+  audit_privileged_shard_filename_template: source-{source_seed}.audit.privileged.npz
+  collection_report_shard_filename_template: source-{source_seed}.collection-report.json
   admission_deployable_filename: admission-ledger-deployable.npz
   admission_privileged_filename: admission-ledger-privileged.npz
+  admission_merge_report_filename: admission-merge-report.json
   discovery_filename: discovery-g384.npz
   discovery_privileged_filename: discovery-g384-privileged.npz
+  discovery_merge_report_filename: discovery-merge-report.json
   audit_filename: audit-g384.npz
+  audit_filename_semantics: optional_post_consumption_materialization_only
+  audit_analysis_input_order: [7801, 7802, 7811, 7812, 7821, 7822]
+  audit_merge_before_selection: forbidden
   audit_privileged_filename: audit-g384-privileged.npz
   selection_lock_filename: selection-lock.json
   audit_consumed_filename: audit-consumed.json
+  triage_report_filename: closed-loop-recovery-triage-report.json
   groups_per_source_seed: 64
   total_groups: 384
   max_groups_per_trajectory: 1
@@ -105,7 +232,8 @@ collection:
   max_proposals_per_source_seed: 4096
   max_source_trajectories_per_seed: 2048
   rejected_proposal_cooldown_policy_steps: 5
-  settle_seconds: 0.05
+  settle_seconds: 0.04
+  settle_policy_steps: 2
   source_impulse:
     interval_policy_steps: 10
     linear_std_mps: 1.0
@@ -118,6 +246,7 @@ collection:
     require_not_failed: true
     min_tilt_rad_inclusive: 0.10
     max_height_m_inclusive: 0.32
+    height_reference: base_link_body_origin_world_z
     boolean_rule: tilt_at_least_min_OR_height_at_most_max
     base_height_is_privileged_sampling_only: true
     future_runtime_input: forbidden
@@ -138,7 +267,7 @@ collection:
     count: 9
     nominal_index: 0
     ordered_names:
-      - nominal_early_L1
+      - nominal
       - mature_actor_L10
       - mature_actor_L25
       - mature_actor_L50
@@ -149,7 +278,11 @@ collection:
       - ramp_crouch_L25
     behavior_steps_array: candidate_behavior_steps
     behavior_override_steps: [0, 10, 25, 50, 10, 10, 25, 25, 25]
+    observation_history_shape: [5, 46]
+    observation_joint_q_slice: [0, 12]
+    observation_previous_q_target_slice: [34, 46]
     t0_nominal_semantics: deterministic_early_actor_mean
+    mature_actor_semantics: deterministic_newest_46d_frame
     post_option_continuation: stochastic_same_early_actor
     reselection_during_option: forbidden
     q_neutral_per_leg_rad: [0.05, 0.70, -1.40]
@@ -162,7 +295,16 @@ collection:
     kd: 5.0
     max_joint_delta: null
     use_action_filter: false
-    tie_priority: ordered_names
+    tie_priority:
+      - nominal
+      - mature_actor_L10
+      - mature_actor_L25
+      - mature_actor_L50
+      - joint_brake_L10
+      - halfway_neutral_L10
+      - halfway_neutral_L25
+      - ramp_neutral_L25
+      - ramp_crouch_L25
   replica_partition:
     schema_version: qsafe.physically_separate_replica_partition.v3
     assignment_timing: before_candidate_outcomes
@@ -187,6 +329,7 @@ firewall:
   per_group_ties: uniform_expectation_all_discovery_minima
   audit_requires_exact_selection_lock_hash: true
   audit_consumed_marker_created_before_outcome_read: true
+  audit_shards_opened_only_after_consumed_marker: true
   interrupted_audit_remains_consumed: true
   audit_runner_up_policy: forbidden
 
@@ -200,6 +343,10 @@ statistics:
     kind: hierarchical_policy_age_seed_then_trajectory_group
     replicates: 50000
     seed: 20260809
+    rng_bit_generator: numpy_PCG64
+    chunk_size: 512
+    draw_order: chunk_then_sorted_age_then_slot_seed_vector_C_then_group_matrix_C_order
+    quantile_method: linear
     confidence: one_sided_0.95
     resample_policy_age_strata: false
     resample_source_seeds_within_stratum: true
@@ -209,6 +356,15 @@ statistics:
   reported_effect: audit_nominal_risk_minus_audit_intervention_risk
   audit_labels: raw_unshrunk_binary_falls
   pair_tie_score: 0.5
+  pair_agreement:
+    candidate_scope: all_K9_unordered_pairs
+    pairs_per_group: 36
+    tie_condition: discovery_or_audit_pair_risk_equal
+    tie_score: 0.5
+    non_tie_score: one_if_risk_difference_signs_agree_else_zero
+    within_group_aggregation: mean_over_36_pairs
+    cohort_aggregation: equal_groups_within_seed_then_equal_six_source_seeds
+    bootstrap_unit: complete_group_score
   natural_frequency_weighting: forbidden
 
 triage_gates:

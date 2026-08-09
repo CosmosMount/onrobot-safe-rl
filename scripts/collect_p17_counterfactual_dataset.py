@@ -4,17 +4,26 @@
 from __future__ import annotations
 
 import argparse
+import os
 
 import gymnasium as gym
 import numpy as np
 import torch
 
 from rl.agents import create_agent
-from safety_data.paths import assert_development_path
+from safety_data.paths import (
+    assert_development_path,
+    assert_safe_evidence_output,
+    require_v3_audit_consumed_or_safe_input,
+)
 from scripts.evaluate_p16_snapshot_replacements import (
     _actor_actions,
     _branch,
     _risks,
+)
+from scripts.collect_native_grouped_qsafe import (
+    _prepare_staged_outputs,
+    _publish_staged_outputs,
 )
 from train.config import load_app_config
 from train.mujoco_snapshot_env import MujocoSnapshotEnv
@@ -42,13 +51,21 @@ def main() -> int:
         default=("/home/xyz/code/unitree_mujoco/"
                  "unitree_robots/go2/scene_empty.xml"))
     args = parser.parse_args()
-    assert_development_path(args.config)
-    checkpoint_path = assert_development_path(args.checkpoint)
-    model_path = assert_development_path(args.model)
-    output_path = assert_development_path(args.output)
+    config_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.config))
+    checkpoint_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.checkpoint))
+    model_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.model))
+    output_path = assert_development_path(
+        assert_safe_evidence_output(args.output))
+    if output_path.suffix != ".npz":
+        parser.error("counterfactual dataset output must use .npz")
+    if os.path.lexists(os.fspath(output_path)):
+        raise FileExistsError(f"refusing to overwrite output: {output_path}")
 
     robot_cfg, train_cfg, agent_cfg = load_app_config(
-        args.config, agent="safe_droq")
+        config_path, agent="safe_droq")
     agent_cfg.device_type = "cuda" if torch.cuda.is_available() else "cpu"
     agent_cfg.buffer_device_type = agent_cfg.device_type
     observation_space = gym.spaces.Box(
@@ -173,26 +190,31 @@ def main() -> int:
             episode_step = 0
 
     output = output_path
-    output.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        output,
-        observations=np.asarray(observations, dtype=np.float32),
-        actions=np.asarray(actions, dtype=np.float32),
-        actions_executed=np.asarray(actions_executed, dtype=np.float32),
-        action_q_targets=np.asarray(action_q_targets, dtype=np.float32),
-        failures=np.asarray(failures, dtype=np.float32),
-        failure_steps=np.asarray(failure_steps, dtype=np.int16),
-        max_tilts=np.asarray(max_tilts, dtype=np.float32),
-        min_heights=np.asarray(min_heights, dtype=np.float32),
-        state_ids=np.asarray(state_ids, dtype=np.int32),
-        candidate_kinds=np.asarray(candidate_kinds),
-        nominal_risks=np.asarray(nominal_risks, dtype=np.float32),
-        safety_contexts=np.asarray(safety_contexts, dtype=np.float32),
-        observation_histories=np.asarray(
-            observation_histories, dtype=np.float32),
-        seed=np.asarray(args.seed, dtype=np.int32),
-        horizon=np.asarray(args.horizon, dtype=np.int32),
-    )
+    staged = _prepare_staged_outputs((output,))
+    staging = staged[0][0]
+    try:
+        np.savez_compressed(
+            staging,
+            observations=np.asarray(observations, dtype=np.float32),
+            actions=np.asarray(actions, dtype=np.float32),
+            actions_executed=np.asarray(actions_executed, dtype=np.float32),
+            action_q_targets=np.asarray(action_q_targets, dtype=np.float32),
+            failures=np.asarray(failures, dtype=np.float32),
+            failure_steps=np.asarray(failure_steps, dtype=np.int16),
+            max_tilts=np.asarray(max_tilts, dtype=np.float32),
+            min_heights=np.asarray(min_heights, dtype=np.float32),
+            state_ids=np.asarray(state_ids, dtype=np.int32),
+            candidate_kinds=np.asarray(candidate_kinds),
+            nominal_risks=np.asarray(nominal_risks, dtype=np.float32),
+            safety_contexts=np.asarray(safety_contexts, dtype=np.float32),
+            observation_histories=np.asarray(
+                observation_histories, dtype=np.float32),
+            seed=np.asarray(args.seed, dtype=np.int32),
+            horizon=np.asarray(args.horizon, dtype=np.int32),
+        )
+        _publish_staged_outputs(staged)
+    finally:
+        staging.unlink(missing_ok=True)
     mixed = 0
     for state_id in range(args.states):
         labels = np.asarray(failures)[np.asarray(state_ids) == state_id]

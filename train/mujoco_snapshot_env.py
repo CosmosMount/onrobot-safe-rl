@@ -16,6 +16,11 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
+from safety_data.paths import (
+    assert_development_path,
+    require_v3_audit_consumed_or_safe_input,
+)
+
 from runtime.inference.actions import (
     ActionApplier,
     ActionFilterButter,
@@ -36,6 +41,8 @@ JOINT_NAMES = tuple(
     for joint in ("hip", "thigh", "calf")
 )
 OBSERVATION_HISTORY_FRAMES = 5
+FAILURE_HEIGHT_REFERENCE = "base_link_body_origin_world_z"
+FAILURE_MEASUREMENT_CADENCE = "post_policy_step_after_all_low_level_substeps"
 
 
 def _frozen_array(value: np.ndarray, *, dtype: Any) -> np.ndarray:
@@ -198,8 +205,17 @@ class MujocoSnapshotEnv:
 
         self.mujoco = mujoco
         self.cfg = cfg
-        self.model_path = Path(model_path).expanduser().resolve()
+        self.model_path = assert_development_path(
+            require_v3_audit_consumed_or_safe_input(model_path))
+        dependency_hash_before = self._xml_dependency_hash(self.model_path)
         self.model = mujoco.MjModel.from_xml_path(str(self.model_path))
+        dependency_hash_after = self._xml_dependency_hash(self.model_path)
+        if dependency_hash_after != dependency_hash_before:
+            raise RuntimeError(
+                "MJCF dependency bytes changed while the MuJoCo model loaded")
+        # Fingerprints must describe the bytes that built this in-memory model,
+        # not a later re-read of external files after collection has started.
+        self._mjcf_dependency_sha256 = dependency_hash_before
         self.data = mujoco.MjData(self.model)
         self.policy_frequency = float(policy_frequency)
         if not np.isfinite(self.policy_frequency) or self.policy_frequency <= 0.0:
@@ -445,7 +461,12 @@ class MujocoSnapshotEnv:
         state = self.robot_state()
         roll, pitch, _ = quat_to_euler_xyz(state.imu_quat)
         tilt = max(abs(roll), abs(pitch))
-        height = float(state.world_position[2])
+        # ``state.world_position`` is the MJCF ``frame_pos`` sensor attached
+        # to the IMU site.  On Go2 that site is offset above ``base_link``, so
+        # using it here silently shifts both the cohort pre-screen and the
+        # fall threshold.  The v3 contract says base height: bind that label to
+        # the base body origin explicitly.
+        height = float(self.data.xpos[self.base_body_id, 2])
         failure = bool(
             tilt >= float(self.cfg.fallen_orientation_rad)
             or height < 0.18)
@@ -489,10 +510,15 @@ class MujocoSnapshotEnv:
             "backend": "mujoco",
             "mujoco_version": str(self.mujoco.__version__),
             "model_path": str(self.model_path),
-            "mjcf_xml_sha256": self._xml_dependency_hash(self.model_path),
+            "mjcf_xml_sha256": self._mjcf_dependency_sha256,
             "timestep_s": float(self.model.opt.timestep),
             "policy_frequency_hz": self.policy_frequency,
             "substeps": self.substeps,
+            "failure_measurement": {
+                "height_reference": FAILURE_HEIGHT_REFERENCE,
+                "cadence": FAILURE_MEASUREMENT_CADENCE,
+                "low_level_substeps_per_policy_step": self.substeps,
+            },
             "kp": self.kp.tolist(),
             "kd": self.kd.tolist(),
             "actuator_ctrl_low": self.ctrl_low.astype(float).tolist(),
@@ -510,7 +536,8 @@ class MujocoSnapshotEnv:
     def _xml_dependency_hash(root_path: Path) -> str:
         """Hash MJCF, recursive includes, and referenced mesh/texture assets."""
         digest = hashlib.sha256()
-        root_path = root_path.resolve()
+        root_path = assert_development_path(
+            require_v3_audit_consumed_or_safe_input(root_path))
         hash_root = root_path.parent
         pending: list[tuple[Path, bool]] = [(root_path, True)]
         seen: set[Path] = set()
@@ -547,11 +574,14 @@ class MujocoSnapshotEnv:
                     continue
                 if element.tag == "include":
                     dependency = path.parent / filename
-                    pending.append((dependency.resolve(), True))
+                    pending.append((assert_development_path(
+                        require_v3_audit_consumed_or_safe_input(dependency)), True))
                 elif element.tag == "mesh":
                     dependency = path.parent / mesh_dir / filename
-                    pending.append((dependency.resolve(), False))
+                    pending.append((assert_development_path(
+                        require_v3_audit_consumed_or_safe_input(dependency)), False))
                 elif element.tag in {"texture", "hfield", "skin"}:
                     dependency = path.parent / texture_dir / filename
-                    pending.append((dependency.resolve(), False))
+                    pending.append((assert_development_path(
+                        require_v3_audit_consumed_or_safe_input(dependency)), False))
         return digest.hexdigest()

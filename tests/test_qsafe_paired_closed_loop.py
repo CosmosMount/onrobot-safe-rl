@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -12,6 +15,7 @@ from safety_data.paired_closed_loop import (
     ShieldStepDecision,
     evaluate_paired_snapshot,
     summarize_paired_closed_loop,
+    _require_bound_actor_critic,
 )
 from train.mujoco_snapshot_env import ApplicationState, BranchSnapshot
 
@@ -123,6 +127,36 @@ def _rollout(fall: bool, *, interventions: int = 0) -> ClosedLoopRollout:
 
 
 class PairedClosedLoopTest(unittest.TestCase):
+    def test_manifest_checkpoint_alias_is_guarded_without_resolve(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit = root / "source-7801.audit.npz"
+            audit.write_bytes(b"must-not-probe")
+            actor_alias = root / "actor.pt"
+            actor_alias.symlink_to(audit)
+            critic = root / "critic.pt"
+            critic.write_bytes(b"critic")
+            shared = {
+                "training_step": 500_000,
+                "observation_dim": 46,
+                "action_dim": 12,
+                "config_sha256": "a" * 64,
+            }
+            actor = SimpleNamespace(
+                training_step=500_000,
+                manifest=lambda: {**shared, "actor_path": str(actor_alias)},
+            )
+            reward_q = SimpleNamespace(
+                training_step=500_000,
+                manifest=lambda: {**shared, "critic_path": str(critic)},
+            )
+            with mock.patch.object(
+                    Path, "resolve",
+                    side_effect=AssertionError("manifest paths must not resolve")):
+                with self.assertRaisesRegex(
+                        PermissionError, "refuse symlink inputs"):
+                    _require_bound_actor_critic(actor, reward_q)
+
     def test_exact_snapshot_arms_share_rng_and_are_order_invariant(self):
         snapshot = _snapshot()
         first_env = _FakeEnv()

@@ -26,7 +26,11 @@ from rl.qsafe.training import (
     train_qsafe_ensemble,
 )
 from safety_data.metrics import evaluate_predictions
-from safety_data.paths import assert_development_path
+from safety_data.paths import (
+    assert_development_path,
+    assert_safe_evidence_output,
+    require_v3_audit_consumed_or_safe_input,
+)
 from safety_data.schema import (
     GroupedBranchDataset,
     PrivilegedBranchView,
@@ -60,7 +64,7 @@ _CANONICAL_LEDGER_ROOT_VALUE = (
     "saved/qsafe_development/ledgers/qsafe_model_test_once_v1")
 _CANONICAL_PROTOCOL_PATH = (
     _REPOSITORY_ROOT / "config" / "qsafe_evidence_protocol.yaml"
-).resolve()
+)
 _LOCKED_HYPERPARAMETERS = (
     "epochs",
     "batch_size",
@@ -225,7 +229,9 @@ def _locked_training_run(
     ledger_value = heldout.get("ledger_root")
     if ledger_value != _CANONICAL_LEDGER_ROOT_VALUE:
         raise ValueError("held-out ledger_root has drifted from its canonical path")
-    ledger_root = assert_development_path(_REPOSITORY_ROOT / ledger_value)
+    ledger_root = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(
+            _REPOSITORY_ROOT / ledger_value))
 
     runs = training.get("runs")
     if not isinstance(runs, dict) or set(runs) != set(_EXPECTED_RUN_CONTRACTS):
@@ -352,10 +358,11 @@ def _consume_heldout_once(
             character not in "0123456789abcdef"
             for character in test_file_sha256):
         raise ValueError("held-out test file SHA-256 is invalid")
-    root = assert_development_path(ledger_root)
+    root = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(ledger_root))
     root.mkdir(parents=True, exist_ok=True)
-    marker = assert_development_path(
-        root / f"{run_id}.{test_file_sha256}.json")
+    marker = assert_development_path(assert_safe_evidence_output(
+        root / f"{run_id}.{test_file_sha256}.json"))
     payload = {
         "schema_version": "qsafe.heldout_consumption.v1",
         "consumption_unit": _HELDOUT_CONSUMPTION_UNIT,
@@ -399,7 +406,11 @@ def _load_heldout_once(
     protocol_name: str,
     git_commit: str,
 ) -> tuple[GroupedBranchDataset, dict[str, str]]:
-    source = assert_development_path(test_path)
+    # The held-out digest is itself an outcome read.  Authorize the raw path
+    # before resolving or hashing it, so a benign-looking symlink cannot expose
+    # a locked v3 audit shard before its consumed marker exists.
+    source = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(test_path))
     test_file_sha256 = _file_sha256(source)
     consumption = _consume_heldout_once(
         test_path=source,
@@ -555,7 +566,8 @@ def main() -> int:
         args.test_privileged,
     )
 
-    protocol_path = assert_development_path(args.protocol)
+    protocol_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.protocol))
     if protocol_path != _CANONICAL_PROTOCOL_PATH:
         raise ValueError(
             "Q_safe training requires the repository's canonical locked protocol")
@@ -565,23 +577,30 @@ def main() -> int:
     run, heldout_policy, ledger_root = _locked_training_run(
         protocol, args.run_id)
     _validate_cli_for_run(args, run, privileged_paths)
-    output = assert_development_path(args.output)
+    output = assert_development_path(assert_safe_evidence_output(args.output))
     if output.exists():
         raise FileExistsError(f"refusing to overwrite output: {output}")
     training_commit = _require_clean_git_state(phase="before training")
 
-    train_path = assert_development_path(args.train)
-    calibration_path = assert_development_path(args.calibration)
-    test_path = assert_development_path(args.test)
+    train_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.train))
+    calibration_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.calibration))
+    test_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.test))
     train_privileged_path = (
         None if args.train_privileged is None
-        else assert_development_path(args.train_privileged))
+        else assert_development_path(
+            require_v3_audit_consumed_or_safe_input(args.train_privileged)))
     calibration_privileged_path = (
         None if args.calibration_privileged is None
-        else assert_development_path(args.calibration_privileged))
+        else assert_development_path(
+            require_v3_audit_consumed_or_safe_input(
+                args.calibration_privileged)))
     test_privileged_path = (
         None if args.test_privileged is None
-        else assert_development_path(args.test_privileged))
+        else assert_development_path(
+            require_v3_audit_consumed_or_safe_input(args.test_privileged)))
     train_data = GroupedBranchDataset.load(train_path)
     _require_preheldout_model_authorization(train_data)
     calibration_data = GroupedBranchDataset.load(calibration_path)

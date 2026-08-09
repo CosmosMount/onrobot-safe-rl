@@ -21,7 +21,11 @@ from safety_data.collector import (
     NativeCollectionConfig,
     collect_native_groups,
 )
-from safety_data.paths import assert_development_path
+from safety_data.paths import (
+    assert_development_path,
+    assert_safe_evidence_output,
+    require_v3_audit_consumed_or_safe_input,
+)
 from safety_data.policies import load_frozen_droq_policy
 from safety_data.schema import GroupedBranchDataset, PrivilegedBranchView
 from train.config import load_app_config
@@ -159,14 +163,18 @@ def main() -> int:
     parser.add_argument("--report")
     args = parser.parse_args()
 
-    config_path = assert_development_path(args.config)
-    model_path = assert_development_path(args.model)
-    output = assert_development_path(args.output)
-    privileged_output = assert_development_path(
+    config_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.config))
+    checkpoint_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.checkpoint))
+    model_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.model))
+    output = assert_development_path(assert_safe_evidence_output(args.output))
+    privileged_output = assert_development_path(assert_safe_evidence_output(
         args.privileged_output or output.with_name(
-            f"{output.stem}.privileged.npz"))
-    report_output = assert_development_path(
-        args.report or output.with_name(f"{output.stem}.report.json"))
+            f"{output.stem}.privileged.npz")))
+    report_output = assert_development_path(assert_safe_evidence_output(
+        args.report or output.with_name(f"{output.stem}.report.json")))
     if output.suffix != ".npz" or privileged_output.suffix != ".npz":
         parser.error("dataset outputs must use .npz")
     if report_output.suffix != ".json":
@@ -228,7 +236,7 @@ def main() -> int:
     torch.set_num_threads(args.torch_threads)
     robot_cfg, train_cfg, _ = load_app_config(config_path)
     policy = load_frozen_droq_policy(
-        args.checkpoint,
+        checkpoint_path,
         config_path,
         observation_dim=robot_cfg.obs_dim,
         action_dim=robot_cfg.num_joints,

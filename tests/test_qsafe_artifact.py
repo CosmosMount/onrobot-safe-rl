@@ -155,6 +155,21 @@ class QSafeArtifactTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "action feature contract"):
                 load_qsafe_artifact(output)
 
+    def test_manifest_symlink_alias_is_rejected_before_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "artifact"
+            artifact.mkdir()
+            audit = root / "source-7801.audit.npz"
+            audit.write_bytes(b"must-not-read")
+            (artifact / "manifest.json").symlink_to(audit)
+            with mock.patch.object(
+                    Path, "read_text",
+                    side_effect=AssertionError("audit alias must not be read")):
+                with self.assertRaisesRegex(
+                        PermissionError, "refuse symlink inputs"):
+                    load_qsafe_artifact(artifact)
+
 
 if __name__ == "__main__":
     unittest.main()

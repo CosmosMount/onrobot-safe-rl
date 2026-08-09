@@ -10,7 +10,11 @@ from pathlib import Path
 
 import yaml
 
-from safety_data.paths import assert_development_path
+from safety_data.paths import (
+    assert_development_path,
+    assert_safe_evidence_output,
+    require_v3_audit_consumed_or_safe_input,
+)
 from safety_data.recovery_option_triage import evaluate_recovery_option_triage
 from safety_data.schema import GroupedBranchDataset
 from scripts.collect_native_grouped_qsafe import (
@@ -23,7 +27,7 @@ from scripts.collect_native_grouped_qsafe import (
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _CANONICAL_PROTOCOL_PATH = (
     _REPOSITORY_ROOT / "config" / "qsafe_recovery_option_triage_v2.yaml"
-).resolve()
+)
 
 
 def _sha256(path: Path) -> str:
@@ -40,25 +44,30 @@ def main() -> int:
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
-    dataset_path = assert_development_path(args.dataset)
-    output = assert_development_path(args.output)
+    dataset_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.dataset))
+    output = assert_development_path(assert_safe_evidence_output(args.output))
     if output.suffix != ".json":
         parser.error("triage report output must use .json")
     if output.exists():
         raise FileExistsError(f"refusing to overwrite output: {output}")
     analyzer_commit = _git_commit()
-    protocol = yaml.safe_load(
-        _CANONICAL_PROTOCOL_PATH.read_text(encoding="utf-8"))
+    protocol_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(_CANONICAL_PROTOCOL_PATH))
+    protocol = yaml.safe_load(protocol_path.read_text(encoding="utf-8"))
     artifact_root = assert_development_path(
-        _REPOSITORY_ROOT / str(protocol["collection"]["artifact_root"])).resolve()
+        require_v3_audit_consumed_or_safe_input(
+            _REPOSITORY_ROOT
+            / str(protocol["collection"]["artifact_root"])))
     if not dataset_path.resolve().is_relative_to(artifact_root) or not (
             output.resolve().is_relative_to(artifact_root)):
         raise ValueError(
             f"triage dataset/report must be below locked artifact root "
             f"{artifact_root}")
     cohort_lock_path = assert_development_path(
-        artifact_root / str(
-            protocol["collection"]["cohort_lock_filename"]))
+        require_v3_audit_consumed_or_safe_input(
+            artifact_root / str(
+                protocol["collection"]["cohort_lock_filename"])))
     cohort_lock = json.loads(cohort_lock_path.read_text(encoding="utf-8"))
     expected_cohort = {
         "schema_version": "qsafe.recovery_option_triage.cohort_lock.v1",
@@ -90,8 +99,8 @@ def main() -> int:
         "schema_version": "qsafe.recovery_option_triage.audit_bundle.v1",
         "analyzer_commit": analyzer_commit,
         "analyzer_worktree_clean": True,
-        "protocol_path": str(_CANONICAL_PROTOCOL_PATH),
-        "protocol_file_sha256": _sha256(_CANONICAL_PROTOCOL_PATH),
+        "protocol_path": str(protocol_path),
+        "protocol_file_sha256": _sha256(protocol_path),
         "cohort_lock_path": str(cohort_lock_path),
         "cohort_lock_sha256": _sha256(cohort_lock_path),
         "dataset_path": str(dataset_path),

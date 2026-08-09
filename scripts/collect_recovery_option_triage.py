@@ -18,7 +18,11 @@ from safety_data.collector import (
     NativeCollectionConfig,
     collect_native_groups,
 )
-from safety_data.paths import assert_development_path
+from safety_data.paths import (
+    assert_development_path,
+    assert_safe_evidence_output,
+    require_v3_audit_consumed_or_safe_input,
+)
 from safety_data.policies import load_frozen_droq_policy
 from safety_data.recovery_options import RecoveryOptionCandidateConfig
 from safety_data.schema import GroupedBranchDataset, PrivilegedBranchView
@@ -35,7 +39,7 @@ from train.mujoco_snapshot_env import MujocoSnapshotEnv
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _CANONICAL_PROTOCOL_PATH = (
     _REPOSITORY_ROOT / "config" / "qsafe_recovery_option_triage_v2.yaml"
-).resolve()
+)
 _PROTOCOL_NAME = "objective1_recovery_option_triage_v2"
 _PROFILE_SCOPE = "development_mechanism_triage_only"
 _EVIDENCE_LIMIT = (
@@ -80,7 +84,8 @@ def _bind_cohort_lock(
     finally:
         staging.unlink(missing_ok=True)
     try:
-        observed = json.loads(path.read_text(encoding="utf-8"))
+        readable = require_v3_audit_consumed_or_safe_input(path)
+        observed = json.loads(readable.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError("triage cohort lock is unreadable") from exc
     if observed != expected:
@@ -90,7 +95,8 @@ def _bind_cohort_lock(
 
 
 def _load_locked_protocol() -> dict:
-    path = assert_development_path(_CANONICAL_PROTOCOL_PATH)
+    path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(_CANONICAL_PROTOCOL_PATH))
     protocol = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(protocol, dict) or protocol.get(
             "protocol_schema_version") != 1 or protocol.get(
@@ -132,12 +138,12 @@ def _output_bundle(
     *,
     artifact_root: Path,
 ) -> tuple[Path, Path, Path]:
-    output = assert_development_path(args.output)
-    privileged = assert_development_path(
+    output = assert_development_path(assert_safe_evidence_output(args.output))
+    privileged = assert_development_path(assert_safe_evidence_output(
         args.privileged_output or output.with_name(
-            f"{output.stem}.privileged.npz"))
-    report = assert_development_path(
-        args.report or output.with_name(f"{output.stem}.report.json"))
+            f"{output.stem}.privileged.npz")))
+    report = assert_development_path(assert_safe_evidence_output(
+        args.report or output.with_name(f"{output.stem}.report.json")))
     if output.suffix != ".npz" or privileged.suffix != ".npz":
         raise ValueError("dataset outputs must use .npz")
     if report.suffix != ".json":
@@ -181,7 +187,8 @@ def main() -> int:
         parser.error(
             f"source seed must be one of the preregistered values {source_seeds}")
     artifact_root = assert_development_path(
-        _REPOSITORY_ROOT / str(collection["artifact_root"]))
+        require_v3_audit_consumed_or_safe_input(
+            _REPOSITORY_ROOT / str(collection["artifact_root"])))
     output, privileged_output, report_output = _output_bundle(
         args, artifact_root=artifact_root)
 
@@ -189,8 +196,8 @@ def main() -> int:
     # actor or observing any branch outcome.
     generator_commit = _git_commit()
     protocol_sha256 = _file_sha256(_CANONICAL_PROTOCOL_PATH)
-    cohort_lock_path = assert_development_path(
-        artifact_root / str(collection["cohort_lock_filename"]))
+    cohort_lock_path = assert_development_path(assert_safe_evidence_output(
+        artifact_root / str(collection["cohort_lock_filename"])))
     cohort_lock = _bind_cohort_lock(
         cohort_lock_path,
         generator_commit=generator_commit,
@@ -198,10 +205,13 @@ def main() -> int:
         source_seeds=source_seeds,
     )
     config_path = assert_development_path(
-        _REPOSITORY_ROOT / str(frozen["config"]))
+        require_v3_audit_consumed_or_safe_input(
+            _REPOSITORY_ROOT / str(frozen["config"])))
     checkpoint_path = assert_development_path(
-        _REPOSITORY_ROOT / str(frozen["checkpoint"]))
-    model_path = assert_development_path(str(target["model_mjcf"]))
+        require_v3_audit_consumed_or_safe_input(
+            _REPOSITORY_ROOT / str(frozen["checkpoint"])))
+    model_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(str(target["model_mjcf"])))
     torch.set_num_threads(1)
     robot_cfg, train_cfg, _ = load_app_config(config_path)
     if not np.isclose(float(robot_cfg.move_speed), float(

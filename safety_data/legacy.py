@@ -7,7 +7,10 @@ from typing import Any
 
 import numpy as np
 
-from safety_data.paths import assert_development_path
+from safety_data.paths import (
+    assert_development_path,
+    require_v3_audit_consumed_or_safe_input,
+)
 
 
 def audit_legacy_p17(
@@ -18,7 +21,8 @@ def audit_legacy_p17(
         raise ValueError(
             "legacy P17 access is opt-in; pass acknowledge_legacy=True and never "
             "use the result as Phase-1 evidence")
-    source = assert_development_path(path)
+    source = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(path))
     with np.load(source, allow_pickle=False) as payload:
         fields = set(payload.files)
         history = (

@@ -6,19 +6,32 @@ import copy
 from dataclasses import dataclass
 import hashlib
 import math
-from pathlib import Path
+import re
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
 from safety_data.native import NativeGroupEvaluation, ReplicaSeedBundle
-from safety_data.paths import assert_development_path
 from safety_data.schema import (
     GroupedBranchDataset,
     PRIVILEGED_SCHEMA_VERSION,
     PrivilegedBranchView,
     SCHEMA_VERSION,
 )
+
+
+_METADATA_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+
+def _checked_metadata_label(value: str, name: str) -> str:
+    """Validate a manifest label without ever treating it as a path."""
+    if not isinstance(value, str) or not value.strip() or not (
+            _METADATA_LABEL.fullmatch(value)):
+        raise ValueError(
+            f"{name} must use only letters, digits, underscores, and hyphens")
+    if value.casefold().startswith(("formal", "sealed")):
+        raise ValueError(f"{name} may not use a protected evidence prefix")
+    return value
 
 
 @dataclass(frozen=True)
@@ -72,6 +85,7 @@ class CollectedGroup:
     evaluation: NativeGroupEvaluation
     randomness: GroupRandomness
     candidate_option_steps: np.ndarray | None = None
+    candidate_behavior_steps: np.ndarray | None = None
     privileged_features: np.ndarray | None = None
 
 
@@ -91,14 +105,10 @@ class GroupedBranchAssembler:
         fall_definition: Mapping[str, Any],
         action_application_contract: Mapping[str, Any],
         collection_protocol: Mapping[str, Any],
+        recovery_program: Mapping[str, Any] | None = None,
         privileged_feature_names: Sequence[str] | None = None,
     ):
-        if not isinstance(split, str) or not split.strip():
-            raise ValueError("split must be a nonempty string")
-        # A split name is metadata rather than a file path, but applying the
-        # same component guard prevents development collectors from smuggling
-        # a protected evaluation label into an otherwise innocuous output.
-        assert_development_path(Path(split))
+        _checked_metadata_label(split, "split")
         if not isinstance(generator_commit, str) or not generator_commit.strip():
             raise ValueError("generator_commit must be a nonempty string")
         if isinstance(horizon_steps, bool) or not isinstance(
@@ -126,6 +136,9 @@ class GroupedBranchAssembler:
             "state_hash_contract": "sha256_compound_snapshot_v1",
             "collection_protocol": copy.deepcopy(dict(collection_protocol)),
         }
+        if recovery_program is not None:
+            self.manifest["recovery_program"] = copy.deepcopy(
+                dict(recovery_program))
         self.privileged_feature_names = (
             None if privileged_feature_names is None
             else np.asarray(list(privileged_feature_names), dtype=str))
@@ -138,7 +151,7 @@ class GroupedBranchAssembler:
         self._group_ids: set[str] = set()
         self._state_hashes: set[str] = set()
         self._shape: tuple[int, int] | None = None
-        self._uses_option_steps: bool | None = None
+        self._duration_mode: str | None = None
 
     def add(self, group: CollectedGroup) -> None:
         identity = group.identity
@@ -202,11 +215,21 @@ class GroupedBranchAssembler:
         if candidate_count < 2 or not bool(mask[0]) or kinds[0] != "nominal":
             raise ValueError("candidate zero must be a valid nominal")
         uses_option_steps = group.candidate_option_steps is not None
-        if self._uses_option_steps is None:
-            self._uses_option_steps = uses_option_steps
-        elif uses_option_steps != self._uses_option_steps:
+        uses_behavior_steps = group.candidate_behavior_steps is not None
+        if uses_option_steps and uses_behavior_steps:
             raise ValueError(
-                "all groups must consistently include candidate_option_steps")
+                "candidate_option_steps and candidate_behavior_steps are "
+                "mutually exclusive")
+        duration_mode = (
+            "option" if uses_option_steps
+            else "behavior" if uses_behavior_steps
+            else "none")
+        if self._duration_mode is None:
+            self._duration_mode = duration_mode
+        elif duration_mode != self._duration_mode:
+            raise ValueError(
+                "all groups must consistently use the same candidate duration "
+                "contract")
         option_steps = None
         if uses_option_steps:
             raw_option_steps = np.asarray(group.candidate_option_steps)
@@ -219,6 +242,20 @@ class GroupedBranchAssembler:
                 raise ValueError(
                     "candidate_option_steps must lock nominal to 1 and lie in [1,4]")
             option_steps = raw_option_steps.astype(np.int8, copy=True)
+        behavior_steps = None
+        if uses_behavior_steps:
+            raw_behavior_steps = np.asarray(group.candidate_behavior_steps)
+            if raw_behavior_steps.shape != (candidate_count,) or (
+                    raw_behavior_steps.dtype.kind not in "iu"):
+                raise ValueError(
+                    "candidate_behavior_steps must be an integer [K] array")
+            if raw_behavior_steps[0] != 0 or np.any(
+                    raw_behavior_steps[1:] < 1) or np.any(
+                        raw_behavior_steps > int(self.manifest["horizon_steps"])):
+                raise ValueError(
+                    "candidate_behavior_steps must lock nominal to 0 and "
+                    "recovery behaviors to [1,H]")
+            behavior_steps = raw_behavior_steps.astype(np.int16, copy=True)
         for name in (
             "candidate_executed", "candidate_q_target",
         ):
@@ -280,6 +317,8 @@ class GroupedBranchAssembler:
             randomness=group.randomness,
             candidate_option_steps=(
                 None if option_steps is None else option_steps.copy()),
+            candidate_behavior_steps=(
+                None if behavior_steps is None else behavior_steps.copy()),
             privileged_features=(
                 None if privileged is None else privileged.copy()),
         ))
@@ -348,10 +387,14 @@ class GroupedBranchAssembler:
                 group.randomness.candidate_seed for group in self._groups
             ], dtype=np.uint64),
         }
-        if self._uses_option_steps:
+        if self._duration_mode == "option":
             arrays["candidate_option_steps"] = np.stack([
                 group.candidate_option_steps for group in self._groups
             ]).astype(np.int8)
+        elif self._duration_mode == "behavior":
+            arrays["candidate_behavior_steps"] = np.stack([
+                group.candidate_behavior_steps for group in self._groups
+            ]).astype(np.int16)
         dataset = GroupedBranchDataset(dict(self.manifest), arrays)
         dataset.validate(verify_hash=False)
         privileged_view = None
@@ -533,9 +576,7 @@ class NativeCollectionConfig:
         "fall-reduction gates")
 
     def __post_init__(self) -> None:
-        if not isinstance(self.split, str) or not self.split.strip():
-            raise ValueError("collection split must be nonempty")
-        assert_development_path(Path(self.split))
+        _checked_metadata_label(self.split, "collection split")
         for name in (
             "target_groups", "source_seed", "policy_training_seed",
             "horizon_steps", "replicas", "max_episode_steps",
@@ -586,7 +627,7 @@ class NativeCollectionConfig:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must be nonempty text")
-        assert_development_path(Path(self.profile_name))
+        _checked_metadata_label(self.profile_name, "profile_name")
 
     def replica_partition_manifest(self) -> dict[str, Any] | None:
         """Return the pre-outcome replica role contract, if requested."""

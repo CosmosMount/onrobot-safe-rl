@@ -27,7 +27,10 @@ from omegaconf import OmegaConf
 import torch
 
 from rl.agents.droq.network import DroQEnsembleCritic
-from safety_data.paths import assert_development_path
+from safety_data.paths import (
+    assert_development_path,
+    require_v3_audit_consumed_or_safe_input,
+)
 from train.config import load_app_config
 
 
@@ -84,9 +87,11 @@ def _state_dict_sha256(state_dict: Mapping[str, Any]) -> str:
 
 
 def _critic_path(checkpoint: str | Path) -> Path:
-    checked = assert_development_path(checkpoint)
+    checked = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(checkpoint))
     critic = checked / "critic.pt" if checked.is_dir() else checked
-    critic = assert_development_path(critic)
+    critic = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(critic))
     if critic.name != "critic.pt":
         raise ValueError(
             "frozen DroQ reward-Q checkpoints must be an agent directory "
@@ -313,7 +318,8 @@ def load_frozen_droq_reward_q(
     zero even when the environment training step is known.
     """
     critic_path = _critic_path(checkpoint)
-    config_path = assert_development_path(config)
+    config_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(config))
     if not config_path.is_file():
         raise FileNotFoundError(config_path)
     observation_dim = _positive_int(observation_dim, "observation_dim")

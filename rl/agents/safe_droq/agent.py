@@ -18,6 +18,10 @@ from rl.agents.base.inference_snapshot import inference_snapshot
 from rl.agents.safe_droq.network import SafetyCritic
 from rl.agents.safe_droq.replay import SafetyReplay
 from rl.utils.types import NDArray, Tensor
+from safety_data.paths import (
+    assert_development_path,
+    require_v3_audit_consumed_or_safe_input,
+)
 
 
 @dataclass
@@ -527,6 +531,8 @@ class SafeDroQAgent(DroQAgent):
             os.path.join(path, "safety_replay.pt"))
 
     def load(self, path: str) -> None:
+        path = str(assert_development_path(
+            require_v3_audit_consumed_or_safe_input(path)))
         super().load(path)
         self._safety_critic.load(
             os.path.join(path, "safety_critic.pt"),
@@ -534,8 +540,11 @@ class SafeDroQAgent(DroQAgent):
         self._target_safety_critic.load(
             os.path.join(path, "target_safety_critic.pt"),
             load_optimizer=False)
+        state_path = assert_development_path(
+            require_v3_audit_consumed_or_safe_input(
+                os.path.join(path, "safety_agent_state.pt")))
         state = torch.load(
-            os.path.join(path, "safety_agent_state.pt"),
+            state_path,
             map_location=self._device)
         self._safety_updates = int(state["safety_updates"])
         self._safety_action_steps = int(

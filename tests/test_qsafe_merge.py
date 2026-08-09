@@ -314,6 +314,37 @@ class GroupedShardMergeTest(unittest.TestCase):
             self.assertFalse(output.exists())
             self.assertFalse(report.exists())
 
+    def test_cli_treats_a_dangling_output_symlink_as_occupied(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "merged.npz"
+            missing_target = root / "missing-target.npz"
+            output.symlink_to(missing_target)
+            protocol = root / "protocol.json"
+            protocol.write_text(json.dumps({
+                "phase1": {"data_gate": {
+                    "min_independent_groups": 1,
+                    "min_independent_trajectory_clusters": 1,
+                    "min_source_seeds": 1,
+                    "min_candidates_per_group": 2,
+                    "min_replicas_per_candidate": 1,
+                    "min_mixed_outcome_fraction": 0.0,
+                    "max_duplicate_group_fraction": 0.0,
+                }},
+            }), encoding="utf-8")
+            argv = [
+                "merge_grouped_qsafe_shards.py",
+                str(root / "unopened-shard-0.npz"),
+                str(root / "unopened-shard-1.npz"),
+                "--output", str(output),
+                "--protocol", str(protocol),
+            ]
+            with mock.patch("sys.argv", argv):
+                with self.assertRaisesRegex(FileExistsError, "overwrite"):
+                    main()
+            self.assertTrue(output.is_symlink())
+            self.assertFalse(missing_target.exists())
+
     def test_cli_publishes_complete_hashed_triplet_and_never_overwrites(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

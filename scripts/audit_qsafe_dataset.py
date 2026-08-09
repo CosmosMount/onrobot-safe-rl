@@ -11,7 +11,11 @@ from typing import Any
 import numpy as np
 
 from safety_data.metrics import evaluate_predictions
-from safety_data.paths import assert_development_path
+from safety_data.paths import (
+    assert_development_path,
+    assert_safe_evidence_output,
+    require_v3_audit_consumed_or_safe_input,
+)
 from safety_data.schema import GroupedBranchDataset, audit_split_disjointness
 
 
@@ -35,6 +39,8 @@ def main() -> int:
     parser.add_argument("--bootstrap-seed", type=int, default=20260809)
     parser.add_argument("--output", help="Optional development JSON report")
     args = parser.parse_args()
+    output_path = (
+        None if not args.output else assert_safe_evidence_output(args.output))
 
     datasets = [GroupedBranchDataset.load(path) for path in args.datasets]
     result: dict[str, Any] = {
@@ -44,7 +50,8 @@ def main() -> int:
     if args.predictions:
         if len(datasets) != 1:
             parser.error("--predictions requires exactly one dataset")
-        prediction_path = assert_development_path(args.predictions)
+        prediction_path = assert_development_path(
+            require_v3_audit_consumed_or_safe_input(args.predictions))
         prediction = np.load(prediction_path, allow_pickle=False)
         result["metrics"] = evaluate_predictions(
             datasets[0], prediction,
@@ -53,8 +60,8 @@ def main() -> int:
         )
     result = _json_value(result)
     rendered = json.dumps(result, indent=2, sort_keys=True)
-    if args.output:
-        output = assert_development_path(args.output)
+    if output_path is not None:
+        output = assert_development_path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(rendered + "\n", encoding="utf-8")
     print(rendered)

@@ -8,6 +8,11 @@ Decision date: 2026-08-09
 
 Objective-2 status: **blocked**
 
+Implementation note: after commit `5dcf5a3` and before any simulator outcome,
+the candidate-0 serialized name was shortened from `nominal_early_L1` to the
+existing grouped-schema identity `nominal`. Its controller and all scientific
+semantics remain unchanged; the amendment is recorded in the YAML protocol.
+
 ## 1. Decision carried forward from v2
 
 The independent v2 audit falsified the actor-local, one-to-four-step residual
@@ -44,6 +49,21 @@ The v3 question is:
 > by at least 5 percentage points, with a one-sided 95% trajectory-cluster
 > lower bound of at least 3 points, on independent audit replicas?
 
+Here, “fall” is the locked simulator label: tilt greater than or equal to
+`0.523599 rad`, or the `base_link` body-origin world height strictly below
+`0.18 m`. A pre-outcome code
+audit found that the prior helper read the IMU site's world height, whose MJCF
+origin is 0.04232 m above `base_link`; v3 now explicitly reads the body origin,
+matching the preregistered “base height” quantity. Failure is sampled once at
+each 50 Hz post-action boundary, after the ten 500 Hz low-level substeps;
+within-hold threshold crossings that recover before that boundary are not
+observed. `first_failure_step` is therefore the first failing post-action
+policy boundary in `1..H`. This matches the policy-transition cadence used by
+training and online fall accounting. It is not claimed to be bit-for-bit equivalent to
+the runtime supervisor, which uses a strict tilt comparison and has no
+base-height predicate; height is a privileged outcome label only and can never
+enter the future runtime trigger.
+
 The sampled actor ages are `25,438`, `50,030`, and `100,359` environment
 steps from one frozen SAC training chain. Two fresh environment/source seeds
 are used at every age. This is a bounded mechanism test for the
@@ -69,6 +89,15 @@ and ten-seed online A/B evidence pass. Speed expansion remains prohibited.
 All actors use `config/go2_50hz_sqrl_paper_sac_pretrain.yaml`, whose SHA-256 is
 `ebf312ef27f64326a6ef478e0f86273af9f9cbaf61dd09b632fb10868524f726`.
 The exact actor identities are locked below.
+
+The external Go2 MJCF path and all recursively referenced XML, mesh, and
+texture bytes are locked by dependency digest
+`f914b2658761d49e19f17c89d14c1af0989e5e1012a7cdbeab9fb5885fc7a021`;
+collection refuses to create an attempt marker if that digest changes.
+The protocol also records the exact float32 initial pose, action offsets, and
+joint limits used by the runtime action projection, closing the dependency on
+the resolved shared robot configuration rather than relying only on the
+overlay YAML hash.
 
 | Role | Step | Behavior fingerprint | State-dict fingerprint |
 |---|---:|---|---|
@@ -126,11 +155,16 @@ the locked Gaussian impulse program (1.0 m/s linear and 4.0 rad/s angular
 standard deviation every ten policy steps). Branch continuations receive no
 future exogenous impulse. A state can be proposed only when it is not already a
 failure and satisfies the preregistered mechanical pre-screen:
-`tilt >= 0.10 rad OR base_height <= 0.32 m`. After a rejected proposal, five
+`tilt >= 0.10 rad OR base_link_body_height <= 0.32 m`. After a rejected proposal, five
 source steps must elapse before the next proposal from that trajectory. Tilt
 comes from the deployable quaternion, while base height is privileged and may
 be used only for simulator cohort construction; it cannot be an input to a
 future Q_safe or its runtime trigger.
+
+Each source reset settles for exactly two 50 Hz policy steps (`0.04 s`). The
+original `0.05 s` preregistration was amended before outcomes because Python's
+banker's rounding also executed it as two steps; the explicit value removes
+that ambiguity without changing the implemented reset trajectory.
 
 Every proposal receives exactly 32 **admission-only nominal** H96 replicas from
 a seed domain disjoint from discovery and audit. A proposal is accepted iff
@@ -170,13 +204,26 @@ Before an audit file can be opened, a no-clobber selection lock must contain:
 
 The global candidate is the nonnominal candidate with minimum equal-group,
 equal-source-seed discovery fall risk. Exact ties are broken by the locked
-candidate order above. The audit tool accepts only the exact selection-lock
-hash, creates an atomic consumed marker before reading outcomes, and never
-tries a runner-up. A failed or interrupted audit remains consumed.
+candidate order above. The six source audit shards remain unopened and
+unmerged at this point. The audit tool accepts only the exact selection-lock
+hash, creates an atomic consumed marker, and only then opens the six locked
+shard paths in source-seed order and merges them in memory. It never tries a
+runner-up; a failed or interrupted audit remains consumed. The aggregate
+`audit-g384.npz` name is reserved for optional post-consumption
+materialization, never for a pre-selection merge.
 
 No protected path with a component beginning `formal` or `sealed` may be
 listed, opened, hashed, or used. Every v1/v2 result is excluded. Collection
 must bind to a clean Git commit containing this protocol and the implementation.
+
+The filesystem firewall assumes a controlled, single-user experiment
+workspace. Supported CLIs and public loaders reject protected names, locked
+audit aliases, symlinks, premature audit loads, and accidental artifact reuse.
+They are not a hostile-filesystem sandbox against a malicious same-UID process
+racing path replacement or constructing hard links during a run. No other
+process may therefore mutate the repository, checkpoint tree, MJCF dependency
+tree, or v3 artifact root from preflight through final report publication;
+clean-commit checks and before/after hashes detect ordinary drift.
 
 ## 7. Preregistered statistics and gates
 
@@ -186,7 +233,12 @@ the 64 groups in each source seed, then equally across six seeds. Confidence
 bounds use 50,000 hierarchical bootstrap draws: resample source seeds within
 each of the three fixed policy-age strata, then resample complete trajectory
 groups within each sampled seed. Candidates and replicas are never resampled.
-Bootstrap seed is `20260809`.
+Bootstrap seed is `20260809`. The implementation locks NumPy `PCG64`, a
+512-draw chunk, and this exact RNG-call order: chunk, sorted policy age, source
+seed slot, one C-order seed-choice vector for that slot, then one C-order
+group-index matrix for that slot. It also locks the `linear` quantile method.
+These operational choices are part of the protocol because changing chunking
+or vectorization changes the pseudorandom draw stream.
 
 Because discovery and audit use the same accepted states but independent
 branch randomness, audit establishes branch-randomness replication on this
@@ -238,6 +290,13 @@ must satisfy all of:
 A conditional pass authorizes a fresh option-ranking Q_safe protocol. A
 failure leaves only the state-risk trigger plus fixed backup route authorized.
 
+Pair agreement covers all 36 unordered pairs among K9 within each group. If
+either discovery or audit gives equal risk to a pair, that comparison scores
+`0.5`; otherwise matching risk-difference signs score one and disagreement
+scores zero. The 36 scores are averaged within group, then aggregated with the
+same equal-group/equal-seed estimand and bootstrapped as one complete group
+score.
+
 ### No-headroom and inconclusive decisions
 
 Audit effects for all eight fixed recovery candidates and the discovery-locked
@@ -262,8 +321,10 @@ audit reuse nor sample top-up is allowed.
    ledger, physical discovery/audit split, selection lock, one-shot auditor,
    schema validation, and deterministic tests.
 3. Commit the implementation and require the entire test suite to pass.
-4. Collect all six fresh shards once from that clean commit; failed attempts
-   are retained in the cohort manifest.
+4. Collect all six fresh shards once from that clean commit. An atomic,
+   no-clobber per-source attempt marker is published immediately before the
+   first simulator step, so an interrupted or failed attempt remains consumed
+   and retained without exposing candidate summaries.
 5. Create the discovery selection lock, then consume audit exactly once.
 6. Commit the evidence report whether the result passes, fails, or is
    inconclusive.

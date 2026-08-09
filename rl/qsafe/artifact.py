@@ -18,7 +18,11 @@ from rl.qsafe.data import NormalizationStats
 from rl.qsafe.loss import QSafeLossConfig
 from rl.qsafe.network import QSafeEnsemble, QSafeNetworkConfig, SelectiveAdvantageQSafe
 from rl.qsafe.training import QSafeTrainingConfig, TrainedQSafeEnsemble
-from safety_data.paths import assert_development_path
+from safety_data.paths import (
+    assert_development_path,
+    assert_safe_evidence_output,
+    require_v3_audit_consumed_or_safe_input,
+)
 
 
 ARTIFACT_SCHEMA_VERSION = "qsafe.selective_advantage.v1"
@@ -84,7 +88,7 @@ def save_qsafe_artifact(
     pre_publish_check: Callable[[], None] | None = None,
 ) -> Path:
     """Save an artifact without overwriting any prior experimental result."""
-    output = assert_development_path(path)
+    output = assert_development_path(assert_safe_evidence_output(path))
     if output.exists():
         raise FileExistsError(f"refusing to overwrite Q_safe artifact: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -175,7 +179,8 @@ def save_qsafe_artifact(
 def _safe_component(root: Path, filename: Any) -> Path:
     if not isinstance(filename, str) or Path(filename).name != filename:
         raise ValueError(f"invalid artifact component name: {filename!r}")
-    component = assert_development_path(root / filename)
+    component = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(root / filename))
     if component.parent != root:
         raise ValueError("artifact component escapes its directory")
     return component
@@ -187,7 +192,8 @@ def load_qsafe_artifact(
     device: torch.device | str = "cpu",
 ) -> LoadedQSafeArtifact:
     """Load only after all declared component hashes have been verified."""
-    source = assert_development_path(path)
+    source = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(path))
     manifest_path = _safe_component(source, "manifest.json")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("schema_version") != ARTIFACT_SCHEMA_VERSION:
@@ -202,6 +208,7 @@ def load_qsafe_artifact(
             raise ValueError(f"Q_safe artifact hash mismatch: {filename}")
 
     normalization_path = _safe_component(source, "normalization.npz")
+    require_v3_audit_consumed_or_safe_input(normalization_path)
     with np.load(normalization_path, allow_pickle=False) as payload:
         files = set(payload.files)
         if not {"observation_mean", "observation_std"}.issubset(files):

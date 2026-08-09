@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import numpy as np
@@ -38,6 +40,28 @@ class MujocoSnapshotEnvTest(unittest.TestCase):
         result.reset_standing(settle_seconds=0.02, rng=np.random.default_rng(7))
         return result
 
+    def test_recursive_mjcf_dependency_requires_audit_marker_before_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / "model.xml"
+            audit = root / "source-7801.audit.npz"
+            model.write_text(
+                '<mujoco><include file="source-7801.audit.npz"/></mujoco>',
+                encoding="utf-8",
+            )
+            audit.write_bytes(b"must-not-read")
+            original_read_bytes = Path.read_bytes
+
+            def guarded_read(path: Path):
+                if path == audit:
+                    raise AssertionError("audit dependency must not be read")
+                return original_read_bytes(path)
+
+            with mock.patch.object(Path, "read_bytes", guarded_read):
+                with self.assertRaisesRegex(
+                        PermissionError, "audit-consumed marker"):
+                    MujocoSnapshotEnv._xml_dependency_hash(model)
+
     def test_reset_uses_absolute_init_qpos_in_corrected_observation(self):
         env = self.env()
         history = env.record_observation()
@@ -47,6 +71,30 @@ class MujocoSnapshotEnvTest(unittest.TestCase):
             np.broadcast_to(self.robot.init_qpos, (5, 12)))
         with self.assertRaisesRegex(ValueError, "normalized policy action"):
             env.observation(np.zeros(12, dtype=np.float32))
+
+    def test_measurement_height_is_base_body_not_offset_imu_site(self):
+        env = self.env()
+        measurement = env.measurement()
+        expected = float(env.data.xpos[env.base_body_id, 2])
+        imu_site_height = float(env.robot_state().world_position[2])
+        self.assertEqual(measurement.height_m, expected)
+        self.assertGreater(abs(imu_site_height - expected), 0.01)
+
+    def test_base_body_height_failure_uses_strict_point18_boundary(self):
+        env = self.env()
+        env.data.qpos[3:7] = np.asarray([1.0, 0.0, 0.0, 0.0])
+        env.data.qvel[:] = 0.0
+        for height, expected_failure in ((0.179, True), (0.180, False)):
+            with self.subTest(height=height):
+                env.data.qpos[2] = height
+                env.mujoco.mj_forward(env.model, env.data)
+                measurement = env.measurement()
+                self.assertAlmostEqual(measurement.height_m, height, places=12)
+                self.assertEqual(measurement.failure, expected_failure)
+                self.assertLess(
+                    measurement.tilt_rad,
+                    float(env.cfg.fallen_orientation_rad),
+                )
 
     def test_unfiltered_step_reports_requested_executed_and_q_target(self):
         env = self.env()
@@ -457,6 +505,11 @@ class MujocoSnapshotEnvTest(unittest.TestCase):
         self.assertEqual(fingerprint["kp"], [60.0] * 12)
         self.assertEqual(fingerprint["kd"], [5.0] * 12)
         self.assertEqual(len(fingerprint["mjcf_xml_sha256"]), 64)
+        self.assertEqual(fingerprint["failure_measurement"], {
+            "height_reference": "base_link_body_origin_world_z",
+            "cadence": "post_policy_step_after_all_low_level_substeps",
+            "low_level_substeps_per_policy_step": fingerprint["substeps"],
+        })
 
 
 if __name__ == "__main__":

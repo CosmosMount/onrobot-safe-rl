@@ -4,6 +4,12 @@ from typing import Any, Optional
 import torch
 import torch.nn as nn
 
+from safety_data.paths import (
+    assert_development_path,
+    assert_safe_evidence_output,
+    require_v3_audit_consumed_or_safe_input,
+)
+
 
 class Network:
     """
@@ -112,14 +118,16 @@ class Network:
         args:
             path (str): The full file path to save the checkpoint (e.g. "checkpoints/actor.pt").
         """
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        checked_path = assert_development_path(
+            assert_safe_evidence_output(path))
+        os.makedirs(os.path.dirname(checked_path), exist_ok=True)
         ckpt = {
             "network_state_dict": self.network.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict() if self.optimizer is not None else None,
             "scheduler_state_dict": self.scheduler.state_dict() if self.scheduler is not None else None,
             "update_step": self.update_step,
         }
-        torch.save(ckpt, path)
+        torch.save(ckpt, checked_path)
 
     def load(self, path: str, param_key: Optional[str] = None, load_optimizer: bool = True) -> None:
         """
@@ -129,7 +137,11 @@ class Network:
             param_key (str): If specified, only the subset of parameters is loaded.
             load_optimizer (bool): If False, only the parameters are loaded.
         """
-        ckpt = torch.load(path, map_location=next(self.network.parameters()).device)
+        checked_path = assert_development_path(
+            require_v3_audit_consumed_or_safe_input(path))
+        ckpt = torch.load(
+            checked_path,
+            map_location=next(self.network.parameters()).device)
 
         if param_key:
             # Load only specific parameter key

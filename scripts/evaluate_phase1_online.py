@@ -13,7 +13,11 @@ from typing import Any
 import numpy as np
 import yaml
 
-from safety_data.paths import assert_development_path
+from safety_data.paths import (
+    assert_development_path,
+    assert_safe_evidence_output,
+    require_v3_audit_consumed_or_safe_input,
+)
 from safety_data.phase1_stats import (
     CommonGateStatus,
     OnlineGateThresholds,
@@ -62,9 +66,12 @@ def main() -> int:
     parser.add_argument("--bootstrap-seed", type=int, default=20260809)
     args = parser.parse_args()
 
-    input_path = assert_development_path(args.input)
-    output_path = assert_development_path(args.output)
-    protocol_path = assert_development_path(args.protocol)
+    input_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.input))
+    output_path = assert_development_path(
+        assert_safe_evidence_output(args.output))
+    protocol_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.protocol))
     if output_path.exists():
         raise FileExistsError(f"refusing to overwrite evidence report: {output_path}")
     payload = json.loads(input_path.read_text(encoding="utf-8"))

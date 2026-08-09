@@ -11,7 +11,11 @@ import numpy as np
 import torch
 
 from rl.agents import create_agent
-from safety_data.paths import assert_development_path
+from safety_data.paths import (
+    assert_development_path,
+    assert_safe_evidence_output,
+    require_v3_audit_consumed_or_safe_input,
+)
 from scripts.evaluate_p16_snapshot_replacements import (
     _actor_actions,
     _branch,
@@ -44,14 +48,18 @@ def main() -> int:
         "--output",
         default="saved/experiments/p17_contracted_fallbacks.json")
     args = parser.parse_args()
-    assert_development_path(args.config)
-    checkpoint_path = assert_development_path(args.checkpoint)
-    model_path = assert_development_path(args.model)
-    output_path = assert_development_path(args.output)
+    config_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.config))
+    checkpoint_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.checkpoint))
+    model_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.model))
+    output_path = assert_development_path(
+        assert_safe_evidence_output(args.output))
     alphas = [float(value) for value in args.alphas.split(",")]
 
     robot_cfg, train_cfg, agent_cfg = load_app_config(
-        args.config, agent="safe_droq")
+        config_path, agent="safe_droq")
     agent_cfg.device_type = "cuda" if torch.cuda.is_available() else "cpu"
     agent_cfg.buffer_device_type = agent_cfg.device_type
     observation_space = gym.spaces.Box(

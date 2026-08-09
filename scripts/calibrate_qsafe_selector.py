@@ -23,7 +23,11 @@ from rl.qsafe.calibration import (
     calibrate_selector,
 )
 from rl.qsafe.data import TorchGroupedView
-from safety_data.paths import assert_development_path
+from safety_data.paths import (
+    assert_development_path,
+    assert_safe_evidence_output,
+    require_v3_audit_consumed_or_safe_input,
+)
 from safety_data.policies import load_frozen_droq_policy
 from safety_data.reward_q import load_frozen_droq_reward_q
 from safety_data.schema import GroupedBranchDataset
@@ -141,12 +145,19 @@ def main() -> int:
     parser.add_argument("--bootstrap-seed", type=int, default=20260809)
     args = parser.parse_args()
 
-    artifact_path = assert_development_path(args.artifact)
-    calibration_path = assert_development_path(args.calibration)
-    checkpoint = assert_development_path(args.checkpoint)
-    config_path = assert_development_path(args.config)
-    protocol_path = assert_development_path(args.protocol)
-    output = assert_development_path(args.output)
+    # Guard the lexical spelling before any resolver or loader can follow a
+    # final-component alias into a locked audit artifact.
+    artifact_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.artifact))
+    calibration_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.calibration))
+    checkpoint = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.checkpoint))
+    config_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.config))
+    protocol_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.protocol))
+    output = assert_development_path(assert_safe_evidence_output(args.output))
     if output.suffix != ".json":
         parser.error("selector calibration output must use .json")
     if output.exists():

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
+import os
 
 import gymnasium as gym
 import numpy as np
@@ -16,6 +16,15 @@ import torch.optim as optim
 from rl.agents import create_agent
 from rl.agents.base.network import Network
 from rl.agents.safe_droq.network import SafetyCritic
+from safety_data.paths import (
+    assert_development_path,
+    assert_safe_evidence_output,
+    require_v3_audit_consumed_or_safe_input,
+)
+from scripts.collect_native_grouped_qsafe import (
+    _prepare_staged_outputs,
+    _publish_staged_outputs,
+)
 from train.config import load_app_config
 
 
@@ -65,9 +74,30 @@ def main() -> int:
         help="Use the latest N observation frames (1-4).")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+    config_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.config))
+    checkpoint_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.checkpoint))
+    dataset_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(args.dataset))
+    validation_path = (
+        None if args.validation_dataset is None
+        else assert_development_path(
+            require_v3_audit_consumed_or_safe_input(
+                args.validation_dataset)))
+    output = assert_development_path(assert_safe_evidence_output(args.output))
+    report_path = assert_development_path(assert_safe_evidence_output(
+        output.with_suffix(".metrics.json")))
+    if output == report_path:
+        raise ValueError("Q_safe checkpoint and metrics outputs must be distinct")
+    existing = [
+        path for path in (output, report_path)
+        if os.path.lexists(os.fspath(path))]
+    if existing:
+        raise FileExistsError(f"refusing to overwrite outputs: {existing}")
 
     robot_cfg, _, agent_cfg = load_app_config(
-        args.config, agent="safe_droq")
+        config_path, agent="safe_droq")
     agent_cfg.device_type = "cuda" if torch.cuda.is_available() else "cpu"
     agent_cfg.buffer_device_type = agent_cfg.device_type
     agent = create_agent(
@@ -76,9 +106,9 @@ def main() -> int:
         gym.spaces.Box(
             -1.0, 1.0, (robot_cfg.num_joints,), dtype=np.float32),
         {}, agent_cfg)
-    agent.load(str(Path(args.checkpoint).resolve()))
+    agent.load(str(checkpoint_path))
     device = agent._device
-    data = np.load(args.dataset)
+    data = np.load(dataset_path)
     state_ids_np = data["state_ids"]
     unique_states = np.unique(state_ids_np)
     rng = np.random.default_rng(args.seed)
@@ -245,11 +275,8 @@ def main() -> int:
             ttf_correct / ttf_total if ttf_total else float("nan"))
         return result
 
-    output = Path(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    safety_critic.save(str(output))
-    if args.validation_dataset:
-        validation = np.load(args.validation_dataset)
+    if validation_path is not None:
+        validation = np.load(validation_path)
         val_observations_np = validation["observations"]
         if args.history_frames > 1:
             val_observations_np = validation["observation_histories"][
@@ -291,17 +318,24 @@ def main() -> int:
     report = {
         "train": evaluate(train_states),
         "validation": validation_metrics,
-        "dataset": str(Path(args.dataset).resolve()),
+        "dataset": str(dataset_path),
         "validation_dataset": (
-            str(Path(args.validation_dataset).resolve())
-            if args.validation_dataset else None),
+            str(validation_path) if validation_path is not None else None),
         "use_safety_context": args.use_safety_context,
         "hidden_dims": args.hidden_dims,
         "history_frames": args.history_frames,
-        "checkpoint": str(Path(args.checkpoint).resolve()),
+        "checkpoint": str(checkpoint_path),
     }
-    report_path = output.with_suffix(".metrics.json")
-    report_path.write_text(json.dumps(report, indent=2))
+    staged = _prepare_staged_outputs((output, report_path))
+    checkpoint_staging, report_staging = (item[0] for item in staged)
+    try:
+        safety_critic.save(str(checkpoint_staging))
+        report_staging.write_text(
+            json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        _publish_staged_outputs(staged)
+    finally:
+        for staging, _ in staged:
+            staging.unlink(missing_ok=True)
     print(json.dumps(report, indent=2))
     return 0
 

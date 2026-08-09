@@ -10,7 +10,12 @@ from typing import Any, Iterable, Mapping
 
 import numpy as np
 
-from safety_data.paths import assert_development_path
+from safety_data.paths import (
+    ProtectedEvidencePathError,
+    assert_development_path,
+    assert_safe_evidence_output,
+    require_v3_audit_consumed_or_safe_input,
+)
 
 
 SCHEMA_VERSION = "qsafe.grouped.v1"
@@ -23,6 +28,21 @@ INDEPENDENT_REPLICA_PARTITION_VERSION = (
 RECOVERY_OPTION_CANDIDATE_PROTOCOL_VERSION = (
     "qsafe.recovery_option_candidates.v2")
 RECOVERY_OPTION_CANDIDATE_COUNT = 29
+CLOSED_LOOP_RECOVERY_CANDIDATE_PROTOCOL_VERSION = (
+    "qsafe.closed_loop_recovery_behaviors.v3")
+CLOSED_LOOP_RECOVERY_CANDIDATE_COUNT = 9
+CLOSED_LOOP_RECOVERY_CANDIDATE_KINDS = (
+    "nominal",
+    "mature_actor_L10",
+    "mature_actor_L25",
+    "mature_actor_L50",
+    "joint_brake_L10",
+    "halfway_neutral_L10",
+    "halfway_neutral_L25",
+    "ramp_neutral_L25",
+    "ramp_crouch_L25",
+)
+CLOSED_LOOP_RECOVERY_BEHAVIOR_STEPS = (0, 10, 25, 50, 10, 10, 25, 25, 25)
 
 REQUIRED_ARRAYS = (
     "group_id",
@@ -71,6 +91,13 @@ REQUIRED_MANIFEST_KEYS = (
 
 class DatasetValidationError(ValueError):
     """The grouped dataset cannot be used without violating its contract."""
+
+
+def _authorize_evidence_input(path: str | Path) -> Path:
+    try:
+        return require_v3_audit_consumed_or_safe_input(path)
+    except ProtectedEvidencePathError as exc:
+        raise DatasetValidationError(str(exc)) from exc
 
 
 def _validate_optional_replica_partition(
@@ -448,6 +475,11 @@ class GroupedBranchDataset:
             raise DatasetValidationError("candidate_protocol must be a mapping")
         option_protocol = candidate_protocol.get("protocol_version")
         has_option_steps = "candidate_option_steps" in self.arrays
+        has_behavior_steps = "candidate_behavior_steps" in self.arrays
+        if has_option_steps and has_behavior_steps:
+            raise DatasetValidationError(
+                "candidate_option_steps and candidate_behavior_steps are "
+                "mutually exclusive")
         if option_protocol == RECOVERY_OPTION_CANDIDATE_PROTOCOL_VERSION:
             if candidate_protocol.get(
                     "option_steps_array") != "candidate_option_steps" or (
@@ -492,6 +524,58 @@ class GroupedBranchDataset:
                 if not np.all(option_steps == expected_option_steps[None, :]):
                     raise DatasetValidationError(
                         "candidate_option_steps differs from locked template-major order")
+        if option_protocol == CLOSED_LOOP_RECOVERY_CANDIDATE_PROTOCOL_VERSION:
+            if candidate_protocol.get(
+                    "behavior_steps_array") != "candidate_behavior_steps":
+                raise DatasetValidationError(
+                    "closed-loop recovery protocol does not bind its behavior "
+                    "duration array")
+            if candidate_count != CLOSED_LOOP_RECOVERY_CANDIDATE_COUNT or (
+                    candidate_protocol.get("count")
+                    != CLOSED_LOOP_RECOVERY_CANDIDATE_COUNT):
+                raise DatasetValidationError(
+                    "closed-loop recovery v3 requires exactly K=9")
+            if not has_behavior_steps:
+                raise DatasetValidationError(
+                    "closed-loop recovery dataset is missing "
+                    "candidate_behavior_steps")
+            ordered_names = candidate_protocol.get("ordered_names")
+            if ordered_names != list(CLOSED_LOOP_RECOVERY_CANDIDATE_KINDS) or (
+                    not np.all(candidate_kind == np.asarray(
+                        CLOSED_LOOP_RECOVERY_CANDIDATE_KINDS,
+                        dtype=str)[None, :])):
+                raise DatasetValidationError(
+                    "candidate_kind differs from locked closed-loop recovery "
+                    "order")
+            if candidate_protocol.get("behavior_override_steps") != list(
+                    CLOSED_LOOP_RECOVERY_BEHAVIOR_STEPS):
+                raise DatasetValidationError(
+                    "closed-loop recovery manifest durations differ from the "
+                    "locked K9 order")
+        elif has_behavior_steps:
+            raise DatasetValidationError(
+                "candidate_behavior_steps requires the closed-loop recovery "
+                "v3 protocol")
+        if has_behavior_steps:
+            behavior_steps = np.asarray(self.arrays[
+                "candidate_behavior_steps"])
+            if behavior_steps.shape != (group_count, candidate_count) or (
+                    behavior_steps.dtype.kind not in "iu"):
+                raise DatasetValidationError(
+                    "candidate_behavior_steps must be an integer [G,K] array")
+            if np.any(behavior_steps[:, 0] != 0) or np.any(
+                    behavior_steps[:, 1:] < 1) or np.any(
+                        behavior_steps > horizon):
+                raise DatasetValidationError(
+                    "candidate_behavior_steps must lock nominal to 0 and "
+                    "recovery behaviors to [1,H]")
+            if option_protocol == CLOSED_LOOP_RECOVERY_CANDIDATE_PROTOCOL_VERSION:
+                expected_behavior_steps = np.asarray(
+                    CLOSED_LOOP_RECOVERY_BEHAVIOR_STEPS, dtype=np.int64)
+                if not np.all(
+                        behavior_steps == expected_behavior_steps[None, :]):
+                    raise DatasetValidationError(
+                        "candidate_behavior_steps differs from locked K9 order")
 
         nominal = np.asarray(self.arrays["nominal_action_requested"])
         if nominal.shape != (group_count, ACTION_DIM):
@@ -677,7 +761,7 @@ class GroupedBranchDataset:
         }
 
     def save(self, path: str | Path) -> Path:
-        output = assert_development_path(path)
+        output = assert_development_path(assert_safe_evidence_output(path))
         if output.suffix != ".npz":
             raise DatasetValidationError("grouped datasets must use a .npz path")
         report = self.validate(verify_hash=False)
@@ -696,7 +780,7 @@ class GroupedBranchDataset:
 
     @classmethod
     def load(cls, path: str | Path) -> "GroupedBranchDataset":
-        source = assert_development_path(path)
+        source = assert_development_path(_authorize_evidence_input(path))
         with np.load(source, allow_pickle=False) as payload:
             if "manifest_json" not in payload.files:
                 raise DatasetValidationError("dataset has no manifest_json")
@@ -787,7 +871,7 @@ class PrivilegedBranchView:
         }
 
     def save(self, path: str | Path) -> Path:
-        output = assert_development_path(path)
+        output = assert_development_path(assert_safe_evidence_output(path))
         if output.suffix != ".npz":
             raise DatasetValidationError("privileged views must use a .npz path")
         report = self.validate(verify_hash=False)
@@ -812,7 +896,7 @@ class PrivilegedBranchView:
         cls, path: str | Path, *,
         deployable: GroupedBranchDataset | None = None,
     ) -> "PrivilegedBranchView":
-        source = assert_development_path(path)
+        source = assert_development_path(_authorize_evidence_input(path))
         with np.load(source, allow_pickle=False) as payload:
             required = {
                 "manifest_json", "group_id", "state_hash", "features", "feature_names"}

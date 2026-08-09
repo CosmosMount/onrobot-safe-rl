@@ -21,7 +21,10 @@ import torch
 
 from rl.agents.droq.inference import DroQInferencePolicy
 from rl.agents.inference import build_inference_policy
-from safety_data.paths import assert_development_path
+from safety_data.paths import (
+    assert_development_path,
+    require_v3_audit_consumed_or_safe_input,
+)
 from train.config import load_app_config
 
 
@@ -81,9 +84,11 @@ def _state_dict_sha256(state_dict: Mapping[str, Any]) -> str:
 
 
 def _actor_path(checkpoint: str | Path) -> Path:
-    checked = assert_development_path(checkpoint)
+    checked = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(checkpoint))
     actor = checked / "actor.pt" if checked.is_dir() else checked
-    actor = assert_development_path(actor)
+    actor = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(actor))
     if actor.name != "actor.pt":
         raise ValueError(
             "frozen DroQ checkpoints must be an agent directory or actor.pt")
@@ -254,7 +259,8 @@ def load_frozen_droq_policy(
     update counts are intentionally not conflated with environment steps.
     """
     actor_path = _actor_path(checkpoint)
-    config_path = assert_development_path(config)
+    config_path = assert_development_path(
+        require_v3_audit_consumed_or_safe_input(config))
     if not config_path.is_file():
         raise FileNotFoundError(config_path)
     observation_dim = _nonnegative_int(observation_dim, "observation_dim")

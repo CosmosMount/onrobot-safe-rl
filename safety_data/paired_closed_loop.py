@@ -18,7 +18,6 @@ import copy
 from dataclasses import asdict, dataclass
 import hashlib
 import math
-from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, Protocol, Sequence
 
@@ -33,6 +32,7 @@ from safety_data.candidates import (
     EvidenceCandidateConfig,
     build_evidence_candidates,
 )
+from safety_data.paths import require_v3_audit_consumed_or_safe_input
 from train.mujoco_snapshot_env import BranchSnapshot, MujocoSnapshotEnv
 
 
@@ -243,7 +243,9 @@ def _require_bound_actor_critic(
     critic_path = critic_manifest.get("critic_path")
     if not isinstance(actor_path, str) or not isinstance(critic_path, str):
         raise ValueError("actor and reward critic manifests require checkpoint paths")
-    if Path(actor_path).resolve().parent != Path(critic_path).resolve().parent:
+    actor_file = require_v3_audit_consumed_or_safe_input(actor_path)
+    critic_file = require_v3_audit_consumed_or_safe_input(critic_path)
+    if actor_file.parent != critic_file.parent:
         raise ValueError("actor and reward critic are not from one checkpoint directory")
     return actor_manifest, critic_manifest
 
