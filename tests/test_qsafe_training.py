@@ -21,6 +21,11 @@ from rl.qsafe.training import (
     train_qsafe_ensemble,
 )
 from safety_data.splits import nested_trajectory_subsets
+from safety_data.recovery_options import (
+    RECOVERY_OPTION_KINDS,
+    RECOVERY_OPTION_STEPS,
+    RecoveryOptionCandidateConfig,
+)
 from tests.test_safety_data import synthetic_dataset
 from tests.test_selective_qsafe import inputs, outcome_tensors
 
@@ -116,6 +121,33 @@ class NormalizationAndViewTest(unittest.TestCase):
             [1e-300, 1.0, 1.0, 1.0], dtype=np.float64)
         normalization = NormalizationStats.fit(dataset)
         with self.assertRaisesRegex(ValueError, "cannot be represented"):
+            TorchGroupedView(dataset, normalization)
+
+    def test_v1_view_refuses_to_collapse_recovery_option_durations(self):
+        dataset, _ = synthetic_dataset()
+        for name in (
+                "candidate_requested", "candidate_executed",
+                "candidate_q_target", "candidate_kind", "candidate_mask",
+                "fall", "first_failure_step", "max_tilt_rad",
+                "min_height_m"):
+            dataset.arrays[name] = np.repeat(
+                dataset.arrays[name][:, :1], 29, axis=1)
+        dataset.arrays["candidate_kind"] = np.repeat(
+            np.asarray(RECOVERY_OPTION_KINDS)[None, :],
+            dataset.group_count,
+            axis=0,
+        )
+        dataset.arrays["candidate_mask"] = np.ones(
+            (dataset.group_count, 29), dtype=bool)
+        dataset.arrays["candidate_option_steps"] = np.repeat(
+            np.asarray(RECOVERY_OPTION_STEPS, dtype=np.int8)[None, :],
+            dataset.group_count,
+            axis=0,
+        )
+        dataset.manifest["candidate_protocol"] = (
+            RecoveryOptionCandidateConfig().manifest_protocol())
+        normalization = NormalizationStats.fit(dataset)
+        with self.assertRaisesRegex(ValueError, "duration-aware v2 model"):
             TorchGroupedView(dataset, normalization)
 
 

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -139,6 +140,33 @@ class TrainSelectiveQSafeCliTest(unittest.TestCase):
             for name, expected in contract.items():
                 self.assertEqual(run[name], expected)
             self.assertEqual(heldout["consumptions_per_key"], 1)
+
+    def test_recovery_option_data_refuses_before_heldout_consumption(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            argv = [
+                "train_selective_qsafe",
+                "--run-id", "primary_selective_deployable",
+                "--train", str(root / "train.npz"),
+                "--calibration", str(root / "calibration.npz"),
+                "--test", str(root / "evaluation.npz"),
+                "--output", str(root / "artifact"),
+                "--device", "cpu",
+            ]
+            recovery = SimpleNamespace(
+                arrays={"candidate_option_steps": np.ones((1, 29), np.int8)})
+            with mock.patch("sys.argv", argv), mock.patch.object(
+                    train_selective_qsafe.GroupedBranchDataset,
+                    "load", return_value=recovery) as load, mock.patch.object(
+                    train_selective_qsafe,
+                    "_require_clean_git_state", return_value="d" * 40), mock.patch.object(
+                    train_selective_qsafe,
+                    "_load_heldout_once") as heldout:
+                with self.assertRaisesRegex(
+                        ValueError, "not authorized for model training"):
+                    train_selective_qsafe.main()
+            self.assertEqual(load.call_count, 1)
+            heldout.assert_not_called()
 
     def test_ledger_and_git_checks_are_anchored_to_repository(self):
         protocol = yaml.safe_load(Path(

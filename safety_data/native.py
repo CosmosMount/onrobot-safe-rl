@@ -148,6 +148,31 @@ def _checked_horizon_steps(value: int) -> int:
     return horizon
 
 
+def _checked_option_steps(
+    value: np.ndarray | None,
+    *,
+    candidate_count: int,
+) -> np.ndarray:
+    """Return locked per-candidate recovery-option durations.
+
+    Candidate zero is the nominal action and therefore has no residual option;
+    its duration is locked to one step.  Recovery candidates may hold a
+    linearly decaying residual for one through four steps.  ``None`` preserves
+    the former one-step evaluator exactly.
+    """
+    if value is None:
+        return np.ones(candidate_count, dtype=np.int64)
+    raw = np.asarray(value)
+    if raw.dtype.kind not in "iu" or raw.ndim != 1 or raw.shape != (
+            candidate_count,):
+        raise ValueError("option_steps must be a one-dimensional integer [K] array")
+    if raw[0] != 1:
+        raise ValueError("nominal candidate option_steps[0] must equal 1")
+    if np.any(raw < 1) or np.any(raw > 4):
+        raise ValueError("recovery candidate option_steps must lie in [1, 4]")
+    return np.array(raw, dtype=np.int64, copy=True)
+
+
 def evaluate_same_state_group(
     env: MujocoSnapshotEnv,
     snapshot: BranchSnapshot,
@@ -157,12 +182,22 @@ def evaluate_same_state_group(
     horizon_steps: int,
     continuation_policy: ContinuationPolicy,
     disturbance_program: DisturbanceProgram | None = None,
+    option_steps: np.ndarray | None = None,
 ) -> NativeGroupEvaluation:
-    """Evaluate K actions with R paired common-random-number continuations.
+    """Evaluate K actions/options with paired common-random continuations.
 
     Prefer an explicit :class:`ReplicaSeedBundle`.  A one-dimensional integer
     vector is accepted only as a backward-compatible equal-seed bundle; the
     returned ``seed_contract`` makes that legacy coupling observable.
+
+    ``option_steps`` defaults to one for every candidate, which is exactly the
+    former one-action branch contract.  When recovery candidate ``k`` has
+    length ``L > 1``, step zero remains its exact requested action.  At steps
+    ``1 .. L-1`` the evaluator calls the same seeded nominal continuation as
+    every other candidate and adds the locked residual
+    ``((L-step)/L) * (candidate[k] - candidate[0])``, clipping the combined
+    normalized action to ``[-1, 1]``.  Steps at or after ``L`` use the nominal
+    continuation unchanged.  Candidate zero must always have length one.
     """
     candidate_values = np.asarray(candidates, dtype=np.float32)
     seeds = (
@@ -183,6 +218,8 @@ def evaluate_same_state_group(
     horizon_steps = _checked_horizon_steps(horizon_steps)
 
     candidate_count = len(candidate_values)
+    option_lengths = _checked_option_steps(
+        option_steps, candidate_count=candidate_count)
     replica_count = seeds.replica_count
     requested = np.empty((candidate_count, env.cfg.num_joints), np.float32)
     executed = np.empty_like(requested)
@@ -200,7 +237,10 @@ def evaluate_same_state_group(
         else _capture_branch_state(disturbance_program, "disturbance_program"))
 
     try:
+        nominal_action = candidate_values[0]
         for candidate_index, first_action in enumerate(candidate_values):
+            option_length = int(option_lengths[candidate_index])
+            option_residual = first_action - nominal_action
             for replica_index, (
                     crn_id, rollout_seed, perturbation_seed) in enumerate(zip(
                         seeds.crn_id,
@@ -215,12 +255,16 @@ def evaluate_same_state_group(
                     if disturbance_program is not None:
                         disturbance_program(
                             env, step, _rng(int(perturbation_seed), 1, step))
-                    action = (
-                        first_action
-                        if step == 0
-                        else continuation_policy(
+                    if step == 0:
+                        action = first_action
+                    else:
+                        action = continuation_policy(
                             env.record_observation(), step,
-                            _rng(int(rollout_seed), 0, step)))
+                            _rng(int(rollout_seed), 0, step))
+                        if step < option_length:
+                            decay = (option_length - step) / option_length
+                            action = np.clip(
+                                action + decay * option_residual, -1.0, 1.0)
                     result = env.step(action)
                     if step == 0:
                         if replica_index == 0:

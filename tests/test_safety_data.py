@@ -140,6 +140,46 @@ class GroupedBranchDatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(DatasetValidationError, "physically separate"):
             dataset.validate()
 
+    def test_validates_optional_preoutcome_replica_partition(self):
+        dataset, _ = synthetic_dataset()
+        partition = {
+            "schema_version": "qsafe.independent_replica_partition.v2",
+            "assignment_timing": "before_candidate_outcomes",
+            "axis": "replica",
+            "ordering": "discovery_then_audit",
+            "discovery_indices": [0, 1],
+            "audit_indices": [2, 3],
+            "discovery_replicas": 2,
+            "audit_replicas": 2,
+            "exhaustive": True,
+        }
+        dataset.manifest["collection_protocol"] = {
+            "replica_partition": partition,
+        }
+        self.assertEqual(dataset.validate()["replica_partition"], partition)
+
+        partition["assignment_timing"] = "after_candidate_outcomes"
+        with self.assertRaisesRegex(
+                DatasetValidationError, "assignment_timing"):
+            dataset.validate()
+
+    def test_option_steps_cannot_exist_without_locked_k29_protocol(self):
+        dataset, _ = synthetic_dataset()
+        dataset.arrays["candidate_option_steps"] = np.ones(
+            (dataset.group_count, dataset.candidate_count), dtype=np.int8)
+        with self.assertRaisesRegex(
+                DatasetValidationError, "requires the recovery-option"):
+            dataset.validate()
+
+        dataset.manifest["candidate_protocol"] = {
+            "protocol_version": "qsafe.recovery_option_candidates.v2",
+            "count": dataset.candidate_count,
+            "option_steps_array": "candidate_option_steps",
+            "option_semantics": "linear_decay_actor_residual_v1",
+        }
+        with self.assertRaisesRegex(DatasetValidationError, "exactly K=29"):
+            dataset.validate()
+
     def test_privileged_view_is_separate_and_identity_aligned(self):
         dataset, _ = synthetic_dataset()
         view = PrivilegedBranchView(

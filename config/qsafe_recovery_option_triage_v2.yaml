@@ -44,6 +44,8 @@ frozen_policy:
   config_sha256: ebf312ef27f64326a6ef478e0f86273af9f9cbaf61dd09b632fb10868524f726
 
 collection:
+  artifact_root: saved/qsafe_development/recovery_option_triage_v2
+  cohort_lock_filename: cohort-lock.json
   source_seeds: [7601, 7602, 7603]
   groups_per_source_seed: 128
   total_groups: 384

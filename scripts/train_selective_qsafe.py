@@ -446,6 +446,17 @@ def _load_privileged(
         path, deployable=dataset)
 
 
+def _require_preheldout_model_authorization(
+    train_dataset: GroupedBranchDataset,
+) -> None:
+    """Reject triage-only option labels before touching held-out state."""
+    if "candidate_option_steps" in train_dataset.arrays:
+        raise ValueError(
+            "recovery-option triage data are not authorized for model training; "
+            "a passed independent-replica triage and a fresh duration-aware "
+            "model protocol are required before held-out consumption")
+
+
 def _data_gate(
     dataset: GroupedBranchDataset,
     thresholds: dict[str, Any],
@@ -572,6 +583,7 @@ def main() -> int:
         None if args.test_privileged is None
         else assert_development_path(args.test_privileged))
     train_data = GroupedBranchDataset.load(train_path)
+    _require_preheldout_model_authorization(train_data)
     calibration_data = GroupedBranchDataset.load(calibration_path)
     train_privileged = _load_privileged(train_privileged_path, train_data)
     calibration_privileged = _load_privileged(

@@ -135,6 +135,8 @@ def main() -> int:
     parser.add_argument("--policy-training-seed", type=int, default=42)
     parser.add_argument("--training-step", type=int)
     parser.add_argument("--replicas", type=int, default=8)
+    parser.add_argument("--discovery-replicas", type=int)
+    parser.add_argument("--audit-replicas", type=int)
     parser.add_argument("--horizon", type=int, default=32)
     parser.add_argument("--accept-probability", type=float, default=0.50)
     parser.add_argument("--max-episode-steps", type=int, default=100)
@@ -179,6 +181,14 @@ def main() -> int:
         parser.error("torch threads and progress interval must be positive")
     if not 0.0 < args.accept_probability <= 1.0:
         parser.error("accept probability must lie in (0,1]")
+    if (args.discovery_replicas is None) != (args.audit_replicas is None):
+        parser.error(
+            "discovery and audit replica counts must be supplied together")
+    if args.discovery_replicas is not None and (
+            args.discovery_replicas <= 0 or args.audit_replicas <= 0 or
+            args.discovery_replicas + args.audit_replicas != args.replicas):
+        parser.error(
+            "positive discovery plus audit replica counts must equal --replicas")
     candidate_config = EvidenceCandidateConfig(
         actor_sample_max_delta_rms=args.actor_local_rms,
         perturbation_radius_rms=args.perturbation_rms,
@@ -209,6 +219,8 @@ def main() -> int:
         source_impulse_interval_steps=args.source_impulse_interval,
         source_linear_std_mps=args.source_linear_std,
         source_angular_std_radps=args.source_angular_std,
+        discovery_replicas=args.discovery_replicas,
+        audit_replicas=args.audit_replicas,
     )
     # Fail before loading a checkpoint or allocating MuJoCo when the artifact
     # could not truthfully name the code revision that generated it.

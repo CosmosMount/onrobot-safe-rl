@@ -114,6 +114,28 @@ def _data_gate(dataset, thresholds):
     return {"pass": all(checks.values()), "checks": checks}
 
 
+def _data_gate_thresholds(protocol: dict) -> tuple[dict, str]:
+    """Route legacy Phase-1 and recovery-triage merge contracts explicitly."""
+    if isinstance(protocol.get("phase1"), dict) and isinstance(
+            protocol["phase1"].get("data_gate"), dict):
+        return dict(protocol["phase1"]["data_gate"]), "phase1"
+    if protocol.get(
+            "protocol_name") == "objective1_recovery_option_triage_v2":
+        data = protocol["triage_gates"]["data"]
+        return {
+            "min_independent_groups": int(data["min_independent_groups"]),
+            "min_independent_trajectory_clusters": int(
+                data["min_trajectory_clusters"]),
+            "min_source_seeds": len(data["required_source_seeds"]),
+            "min_candidates_per_group": int(data["candidates_per_group"]),
+            "min_replicas_per_candidate": int(data["discovery_replicas"])
+            + int(data["audit_replicas"]),
+            "min_mixed_outcome_fraction": 0.0,
+            "max_duplicate_group_fraction": 0.0,
+        }, "recovery_option_triage"
+    raise ValueError("unsupported grouped-shard merge protocol")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("shards", nargs="+", help="At least two deployable .npz shards")
@@ -171,7 +193,8 @@ def main() -> int:
         ]
         combined_privileged = merge_privileged_shards(
             views, datasets, combined)
-    data_gate = _data_gate(combined, protocol["phase1"]["data_gate"])
+    gate_thresholds, gate_role = _data_gate_thresholds(protocol)
+    data_gate = _data_gate(combined, gate_thresholds)
     staged_paths: list[Path] = []
     rendered = ""
     try:
@@ -233,6 +256,8 @@ def main() -> int:
             "input_shards": input_shards,
             "input_privileged_shards": input_privileged_shards,
             "validation": combined.validate(),
+            "data_gate_role": gate_role,
+            "collection_data_gate": data_gate,
             "phase1_data_gate": data_gate,
             "phase2_authorized": False,
         }

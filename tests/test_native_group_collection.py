@@ -12,6 +12,11 @@ from safety_data.collector import (
     collect_native_groups,
 )
 from safety_data.policies import load_frozen_droq_policy
+from safety_data.recovery_options import (
+    RECOVERY_OPTION_KINDS,
+    RECOVERY_OPTION_STEPS,
+    RecoveryOptionCandidateConfig,
+)
 from train.config import load_app_config
 from train.mujoco_snapshot_env import MujocoSnapshotEnv
 
@@ -95,6 +100,77 @@ class NativeGroupCollectionIntegrationTest(unittest.TestCase):
             result.dataset["rollout_seed"],
             result.dataset["perturbation_seed"],
         ))
+        result.privileged.validate(result.dataset)
+
+    def test_real_mjcf_recovery_option_partition_to_grouped_schema(self):
+        try:
+            import mujoco  # noqa: F401
+        except ImportError as exc:
+            raise unittest.SkipTest("mujoco is unavailable") from exc
+        if not MODEL.exists() or not (CHECKPOINT / "actor.pt").exists():
+            raise unittest.SkipTest("real MJCF or development checkpoint is unavailable")
+        robot, train, _ = load_app_config(CONFIG)
+        policy = load_frozen_droq_policy(
+            CHECKPOINT,
+            CONFIG,
+            observation_dim=robot.obs_dim,
+            action_dim=robot.num_joints,
+            device="cpu",
+        )
+        env = MujocoSnapshotEnv(
+            MODEL,
+            robot,
+            policy_frequency=train.control_frequency,
+            max_joint_delta=train.max_joint_delta,
+            use_action_filter=train.use_action_filter,
+        )
+        result = collect_native_groups(
+            env=env,
+            source_policy=policy,
+            continuation_policy=policy,
+            candidate_config=RecoveryOptionCandidateConfig(),
+            branch_disturbance=GaussianImpulseSchedule(
+                policy_steps=(1,), linear_std_mps=0.0,
+                angular_std_radps=0.0),
+            config=NativeCollectionConfig(
+                split="development_recovery_option_integration",
+                target_groups=1,
+                source_seed=8802,
+                policy_training_seed=42,
+                horizon_steps=4,
+                replicas=2,
+                discovery_replicas=1,
+                audit_replicas=1,
+                natural_acceptance_probability=1.0,
+                max_episode_steps=2,
+                max_groups_per_trajectory=1,
+                max_source_steps=2,
+                settle_seconds=0.02,
+                profile_name="objective1_recovery_option_triage_v2",
+                profile_scope="development_mechanism_triage_only",
+                evidence_limit="integration test only",
+            ),
+            generator_commit="integration-test",
+        )
+        report = result.dataset.validate()
+        self.assertEqual(report["groups"], 1)
+        self.assertEqual(report["max_candidates"], 29)
+        self.assertEqual(report["replicas"], 2)
+        self.assertEqual(
+            report["replica_partition"]["discovery_indices"], [0])
+        self.assertEqual(report["replica_partition"]["audit_indices"], [1])
+        np.testing.assert_array_equal(
+            result.dataset["candidate_option_steps"][0],
+            np.asarray(RECOVERY_OPTION_STEPS),
+        )
+        np.testing.assert_array_equal(
+            result.dataset["candidate_kind"][0],
+            np.asarray(RECOVERY_OPTION_KINDS),
+        )
+        self.assertEqual(
+            result.dataset.manifest["candidate_protocol"],
+            RecoveryOptionCandidateConfig().manifest_protocol(),
+        )
         result.privileged.validate(result.dataset)
 
 

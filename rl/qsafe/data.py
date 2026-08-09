@@ -119,6 +119,11 @@ class TorchGroupedView:
         action_view: ActionView = "application_concat",
     ):
         dataset.validate()
+        if "candidate_option_steps" in dataset.arrays:
+            raise ValueError(
+                "recovery-option datasets require a duration-aware v2 model "
+                "and a passed independent-replica label gate; the v1 Q_safe "
+                "view must not collapse distinct option durations")
         if privileged is not None:
             privileged.validate(dataset)
         command = np.asarray(dataset["command_vx"], dtype=np.float64)

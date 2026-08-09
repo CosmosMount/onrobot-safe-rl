@@ -142,6 +142,139 @@ class MujocoSnapshotEnvTest(unittest.TestCase):
                 continuation_policy=StatefulContinuation(),
             )
 
+    def test_recovery_option_l1_is_backward_compatible_and_restores_state(self):
+        env = self.env(filtered=True)
+        env.record_observation()
+        snapshot = env.capture()
+        snapshot_hash = snapshot.compound_sha256()
+        nominal = np.zeros(12, dtype=np.float32)
+        recovery = nominal.copy()
+        recovery[0] = 0.25
+        candidates = np.stack([nominal, recovery])
+
+        class StatefulContinuation:
+            def __init__(self):
+                self.counter = 17
+
+            def capture_branch_state(self):
+                return self.counter
+
+            def restore_branch_state(self, state):
+                self.counter = state
+
+            def __call__(self, history, step, rng):
+                del history, step
+                self.counter += 1
+                return (rng.normal(0.0, 0.01, size=12)
+                        + self.counter * 1e-5).astype(np.float32)
+
+        continuation = StatefulContinuation()
+        legacy = evaluate_same_state_group(
+            env,
+            snapshot,
+            candidates,
+            np.asarray([1101, 1102], dtype=np.int64),
+            horizon_steps=4,
+            continuation_policy=continuation,
+        )
+        self.assertEqual(continuation.counter, 17)
+        self.assertEqual(env.capture().compound_sha256(), snapshot_hash)
+
+        explicit_l1 = evaluate_same_state_group(
+            env,
+            snapshot,
+            candidates,
+            np.asarray([1101, 1102], dtype=np.int64),
+            horizon_steps=4,
+            continuation_policy=continuation,
+            option_steps=np.ones(2, dtype=np.int64),
+        )
+        self.assertEqual(continuation.counter, 17)
+        self.assertEqual(env.capture().compound_sha256(), snapshot_hash)
+        for name in (
+                "candidate_requested", "candidate_executed",
+                "candidate_q_target", "fall", "first_failure_step",
+                "max_tilt_rad", "min_height_m", "crn_id", "rollout_seed",
+                "perturbation_seed"):
+            with self.subTest(field=name):
+                np.testing.assert_array_equal(
+                    getattr(legacy, name), getattr(explicit_l1, name))
+        self.assertEqual(legacy.seed_contract, explicit_l1.seed_contract)
+
+    def test_recovery_option_l3_has_exact_decay_and_paired_crn(self):
+        env = self.env(filtered=True)
+        env.record_observation()
+        snapshot = env.capture()
+        snapshot_hash = snapshot.compound_sha256()
+        nominal = np.zeros(12, dtype=np.float32)
+        recovery = nominal.copy()
+        recovery[0] = 1.0
+        candidates = np.stack([nominal, recovery])
+        action_trace = []
+        continuation_trace = []
+        original_step = env.step
+
+        def recording_step(action):
+            action_trace.append(np.asarray(action, dtype=np.float32).copy())
+            return original_step(action)
+
+        def continuation(history, step, rng):
+            del history, step
+            action = rng.normal(0.0, 0.01, size=12).astype(np.float32)
+            action[0] += 0.5
+            continuation_trace.append(action.copy())
+            return action
+
+        env.step = recording_step  # type: ignore[method-assign]
+        result = evaluate_same_state_group(
+            env,
+            snapshot,
+            candidates,
+            ReplicaSeedBundle(
+                crn_id=np.asarray([21, 22], dtype=np.int64),
+                rollout_seed=np.asarray([121, 122], dtype=np.int64),
+                perturbation_seed=np.asarray([221, 222], dtype=np.int64),
+            ),
+            horizon_steps=4,
+            continuation_policy=continuation,
+            option_steps=np.asarray([1, 3], dtype=np.int64),
+        )
+        self.assertFalse(np.any(result.fall))
+        self.assertEqual(env.capture().compound_sha256(), snapshot_hash)
+
+        actions = np.asarray(action_trace).reshape(2, 2, 4, 12)
+        continuations = np.asarray(continuation_trace).reshape(2, 2, 3, 12)
+        np.testing.assert_array_equal(continuations[0], continuations[1])
+        for replica_index in range(2):
+            np.testing.assert_array_equal(actions[0, replica_index, 0], nominal)
+            np.testing.assert_array_equal(actions[1, replica_index, 0], recovery)
+            np.testing.assert_array_equal(
+                actions[0, replica_index, 1:],
+                continuations[0, replica_index])
+            np.testing.assert_allclose(
+                actions[1, replica_index, 1],
+                np.clip(
+                    continuations[1, replica_index, 0]
+                    + (2.0 / 3.0) * (recovery - nominal),
+                    -1.0,
+                    1.0),
+                rtol=0.0,
+                atol=1e-7,
+            )
+            np.testing.assert_allclose(
+                actions[1, replica_index, 2],
+                np.clip(
+                    continuations[1, replica_index, 1]
+                    + (1.0 / 3.0) * (recovery - nominal),
+                    -1.0,
+                    1.0),
+                rtol=0.0,
+                atol=1e-7,
+            )
+            np.testing.assert_array_equal(
+                actions[1, replica_index, 3],
+                continuations[1, replica_index, 2])
+
     def test_explicit_replica_seed_streams_are_isolated_and_paired(self):
         env = self.env(filtered=True)
         env.record_observation()
@@ -298,6 +431,26 @@ class MujocoSnapshotEnvTest(unittest.TestCase):
                 horizon_steps=2,
                 continuation_policy=continuation,
             )
+        invalid_options = (
+            (np.asarray([1.0, 2.0]), "one-dimensional integer"),
+            (np.asarray([[1, 2]], dtype=np.int64), "one-dimensional integer"),
+            (np.asarray([1], dtype=np.int64), "one-dimensional integer"),
+            (np.asarray([2, 2], dtype=np.int64), "nominal candidate"),
+            (np.asarray([1, 0], dtype=np.int64), r"\[1, 4\]"),
+            (np.asarray([1, 5], dtype=np.int64), r"\[1, 4\]"),
+        )
+        for option_steps, expected in invalid_options:
+            with self.subTest(option_steps=option_steps), self.assertRaisesRegex(
+                    ValueError, expected):
+                evaluate_same_state_group(
+                    env,
+                    snapshot,
+                    candidates,
+                    np.asarray([11], dtype=np.int64),
+                    horizon_steps=2,
+                    continuation_policy=continuation,
+                    option_steps=option_steps,
+                )
 
     def test_fingerprint_locks_runtime_pd_gains(self):
         fingerprint = self.env().simulator_fingerprint()

@@ -218,6 +218,7 @@ class CommonGateStatus:
     """Common evidence gates that are shared by every online claim route."""
 
     data_gate: bool
+    label_reliability_gate: bool
     mechanics_gate: bool
     model_gate: bool
     paired_closed_loop_gate: bool

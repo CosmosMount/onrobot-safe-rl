@@ -11,11 +11,13 @@ from unittest import mock
 from contextlib import redirect_stdout
 
 import numpy as np
+import yaml
 
 from safety_data.merge import merge_grouped_shards, merge_privileged_shards
 from safety_data.schema import PRIVILEGED_SCHEMA_VERSION, PrivilegedBranchView
 from scripts.merge_grouped_qsafe_shards import (
     _clean_git_commit,
+    _data_gate_thresholds,
     _publish_no_clobber,
     main,
 )
@@ -78,6 +80,17 @@ class GroupedShardMergeTest(unittest.TestCase):
             command = call.args[0]
             self.assertEqual(
                 command[:3], ["git", "-C", str(repository_root)])
+
+    def test_triage_protocol_routes_to_locked_merge_dimensions(self):
+        protocol = yaml.safe_load(Path(
+            "config/qsafe_recovery_option_triage_v2.yaml"
+        ).read_text(encoding="utf-8"))
+        thresholds, role = _data_gate_thresholds(protocol)
+        self.assertEqual(role, "recovery_option_triage")
+        self.assertEqual(thresholds["min_independent_groups"], 384)
+        self.assertEqual(thresholds["min_independent_trajectory_clusters"], 78)
+        self.assertEqual(thresholds["min_candidates_per_group"], 29)
+        self.assertEqual(thresholds["min_replicas_per_candidate"], 64)
 
     def test_merge_preserves_shard_order_and_privileged_alignment(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -296,7 +309,7 @@ class GroupedShardMergeTest(unittest.TestCase):
                     "scripts.merge_grouped_qsafe_shards._clean_git_commit",
                     return_value="merge-tool-test-commit",
             ):
-                with self.assertRaises(KeyError):
+                with self.assertRaises(ValueError):
                     main()
             self.assertFalse(output.exists())
             self.assertFalse(report.exists())

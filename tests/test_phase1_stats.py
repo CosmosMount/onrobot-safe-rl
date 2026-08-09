@@ -238,6 +238,7 @@ class Phase1CompilerTest(unittest.TestCase):
         }
         cls.all_common = CommonGateStatus(
             data_gate=True,
+            label_reliability_gate=True,
             mechanics_gate=True,
             model_gate=True,
             paired_closed_loop_gate=True,
@@ -256,6 +257,13 @@ class Phase1CompilerTest(unittest.TestCase):
         decision = compile_phase1_evidence(
             failed_common, {"fresh_030": self.reports["fresh_030"]})
         self.assertTrue(decision.online_route_expression)
+        self.assertFalse(decision.common_mechanism_gates)
+        self.assertFalse(decision.phase1_pass)
+
+        failed_label = replace(
+            self.all_common, label_reliability_gate=False)
+        decision = compile_phase1_evidence(
+            failed_label, {"fresh_030": self.reports["fresh_030"]})
         self.assertFalse(decision.common_mechanism_gates)
         self.assertFalse(decision.phase1_pass)
 
@@ -286,6 +294,7 @@ class Phase1CompilerTest(unittest.TestCase):
         payload = {
             "common_gates": {
                 "data_gate": True,
+                "label_reliability_gate": True,
                 "mechanics_gate": True,
                 "model_gate": True,
                 "paired_closed_loop_gate": True,

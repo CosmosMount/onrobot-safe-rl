@@ -1,5 +1,9 @@
 """Evidence-safe grouped counterfactual data and evaluation utilities."""
 
+from safety_data.label_reliability import (
+    LabelReliabilityError,
+    evaluate_independent_replica_label_gate,
+)
 from safety_data.metrics import evaluate_predictions
 from safety_data.phase1_stats import (
     CommonGateStatus,
@@ -25,6 +29,7 @@ __all__ = [
     "DatasetValidationError",
     "CommonGateStatus",
     "GroupedBranchDataset",
+    "LabelReliabilityError",
     "OnlineGateThresholds",
     "OnlineRun",
     "Phase1EvidenceDecision",
@@ -38,5 +43,6 @@ __all__ = [
     "audit_split_disjointness",
     "compile_phase1_evidence",
     "evaluate_online_route",
+    "evaluate_independent_replica_label_gate",
     "evaluate_predictions",
 ]

@@ -18,6 +18,11 @@ PRIVILEGED_SCHEMA_VERSION = "qsafe.privileged.v1"
 OBSERVATION_FRAMES = 5
 OBSERVATION_DIM = 46
 ACTION_DIM = 12
+INDEPENDENT_REPLICA_PARTITION_VERSION = (
+    "qsafe.independent_replica_partition.v2")
+RECOVERY_OPTION_CANDIDATE_PROTOCOL_VERSION = (
+    "qsafe.recovery_option_candidates.v2")
+RECOVERY_OPTION_CANDIDATE_COUNT = 29
 
 REQUIRED_ARRAYS = (
     "group_id",
@@ -66,6 +71,88 @@ REQUIRED_MANIFEST_KEYS = (
 
 class DatasetValidationError(ValueError):
     """The grouped dataset cannot be used without violating its contract."""
+
+
+def _validate_optional_replica_partition(
+    manifest: Mapping[str, Any],
+    *,
+    replica_count: int,
+) -> dict[str, Any] | None:
+    """Validate a pre-outcome discovery/audit replica-axis contract.
+
+    Legacy grouped datasets intentionally remain loadable without a partition,
+    but an artifact that declares one is checked at the schema boundary.  The
+    label-reliability gate separately requires this contract and therefore
+    refuses legacy datasets.
+    """
+    collection = manifest.get("collection_protocol")
+    if collection is None:
+        return None
+    if not isinstance(collection, Mapping):
+        raise DatasetValidationError("collection_protocol must be a mapping")
+    partition = collection.get("replica_partition")
+    if partition is None:
+        return None
+    expected_keys = {
+        "schema_version", "assignment_timing", "axis", "ordering",
+        "discovery_indices", "audit_indices", "discovery_replicas",
+        "audit_replicas", "exhaustive",
+    }
+    if not isinstance(partition, Mapping) or set(partition) != expected_keys:
+        raise DatasetValidationError(
+            "replica_partition must contain exactly the v2 contract fields")
+    expected_literals = {
+        "schema_version": INDEPENDENT_REPLICA_PARTITION_VERSION,
+        "assignment_timing": "before_candidate_outcomes",
+        "axis": "replica",
+        "ordering": "discovery_then_audit",
+    }
+    for name, expected in expected_literals.items():
+        if partition[name] != expected:
+            raise DatasetValidationError(
+                f"replica_partition.{name}={partition[name]!r}, "
+                f"expected {expected!r}")
+    if partition["exhaustive"] is not True:
+        raise DatasetValidationError("replica_partition.exhaustive must be true")
+
+    def indices(name: str) -> list[int]:
+        raw = partition[name]
+        if not isinstance(raw, list) or not raw or any(
+                isinstance(value, (bool, np.bool_)) or not isinstance(
+                    value, (int, np.integer)) for value in raw):
+            raise DatasetValidationError(
+                f"replica_partition.{name} must be a nonempty integer list")
+        result = [int(value) for value in raw]
+        if result != sorted(set(result)) or result[0] < 0:
+            raise DatasetValidationError(
+                f"replica_partition.{name} must be unique and sorted")
+        return result
+
+    discovery = indices("discovery_indices")
+    audit = indices("audit_indices")
+    counts: dict[str, int] = {}
+    for name in ("discovery_replicas", "audit_replicas"):
+        raw = partition[name]
+        if isinstance(raw, (bool, np.bool_)) or not isinstance(
+                raw, (int, np.integer)) or int(raw) <= 0:
+            raise DatasetValidationError(
+                f"replica_partition.{name} must be a positive integer")
+        counts[name] = int(raw)
+    if counts["discovery_replicas"] != len(discovery) or (
+            counts["audit_replicas"] != len(audit)):
+        raise DatasetValidationError(
+            "replica_partition counts do not match their index lists")
+    expected_discovery = list(range(counts["discovery_replicas"]))
+    expected_audit = list(range(
+        counts["discovery_replicas"],
+        counts["discovery_replicas"] + counts["audit_replicas"],
+    ))
+    if discovery != expected_discovery or audit != expected_audit or (
+            len(discovery) + len(audit) != replica_count):
+        raise DatasetValidationError(
+            "replica_partition must exhaustively order discovery then audit "
+            "over the replica axis")
+    return dict(partition)
 
 
 def _as_text(values: np.ndarray) -> np.ndarray:
@@ -356,6 +443,56 @@ class GroupedBranchDataset:
         if np.any(candidate_kind[:, 0] != "nominal"):
             raise DatasetValidationError("candidate 0 must be named 'nominal'")
 
+        candidate_protocol = self.manifest["candidate_protocol"]
+        if not isinstance(candidate_protocol, Mapping):
+            raise DatasetValidationError("candidate_protocol must be a mapping")
+        option_protocol = candidate_protocol.get("protocol_version")
+        has_option_steps = "candidate_option_steps" in self.arrays
+        if option_protocol == RECOVERY_OPTION_CANDIDATE_PROTOCOL_VERSION:
+            if candidate_protocol.get(
+                    "option_steps_array") != "candidate_option_steps" or (
+                    candidate_protocol.get("option_semantics")
+                    != "linear_decay_actor_residual_v1"):
+                raise DatasetValidationError(
+                    "recovery-option candidate protocol does not bind its "
+                    "duration array and execution semantics")
+            if candidate_count != RECOVERY_OPTION_CANDIDATE_COUNT or (
+                    candidate_protocol.get("count")
+                    != RECOVERY_OPTION_CANDIDATE_COUNT):
+                raise DatasetValidationError(
+                    "recovery-option v2 requires exactly K=29")
+            if not has_option_steps:
+                raise DatasetValidationError(
+                    "recovery-option dataset is missing candidate_option_steps")
+            ordered_kinds = candidate_protocol.get("ordered_kinds")
+            if not isinstance(ordered_kinds, list) or len(
+                    ordered_kinds) != RECOVERY_OPTION_CANDIDATE_COUNT or (
+                    any(not isinstance(value, str) or not value
+                        for value in ordered_kinds)) or not np.all(
+                            candidate_kind == np.asarray(
+                                ordered_kinds, dtype=str)[None, :]):
+                raise DatasetValidationError(
+                    "candidate_kind differs from recovery-option ordered_kinds")
+        elif has_option_steps:
+            raise DatasetValidationError(
+                "candidate_option_steps requires the recovery-option v2 protocol")
+        if has_option_steps:
+            option_steps = np.asarray(self.arrays["candidate_option_steps"])
+            if option_steps.shape != (group_count, candidate_count) or (
+                    option_steps.dtype.kind not in "iu"):
+                raise DatasetValidationError(
+                    "candidate_option_steps must be an integer [G,K] array")
+            if np.any(option_steps[:, 0] != 1) or np.any(option_steps < 1) or (
+                    np.any(option_steps > 4)):
+                raise DatasetValidationError(
+                    "candidate_option_steps must lock nominal to 1 and lie in [1,4]")
+            if option_protocol == RECOVERY_OPTION_CANDIDATE_PROTOCOL_VERSION:
+                expected_option_steps = np.asarray(
+                    [1, *([1, 2, 3, 4] * 7)], dtype=np.int64)
+                if not np.all(option_steps == expected_option_steps[None, :]):
+                    raise DatasetValidationError(
+                        "candidate_option_steps differs from locked template-major order")
+
         nominal = np.asarray(self.arrays["nominal_action_requested"])
         if nominal.shape != (group_count, ACTION_DIM):
             raise DatasetValidationError("nominal_action_requested must have shape [G, 12]")
@@ -406,6 +543,8 @@ class GroupedBranchDataset:
         replica_count = fall.shape[2]
         if replica_count < 1:
             raise DatasetValidationError("at least one CRN replica is required")
+        replica_partition = _validate_optional_replica_partition(
+            self.manifest, replica_count=replica_count)
         outcome_shape = (group_count, candidate_count, replica_count)
         for name in ("first_failure_step", "max_tilt_rad", "min_height_m"):
             if self.arrays[name].shape != outcome_shape:
@@ -524,6 +663,7 @@ class GroupedBranchDataset:
             "min_valid_candidates_per_group": int(
                 candidate_mask.sum(axis=1).min()),
             "replicas_per_candidate": replica_count,
+            "replica_partition": replica_partition,
             "unique_trajectory_clusters": int(len(np.unique(
                 _as_text(self.arrays["trajectory_id"])))),
             "unique_source_seeds": int(len(np.unique(

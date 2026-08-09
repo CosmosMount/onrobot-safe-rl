@@ -71,6 +71,7 @@ class CollectedGroup:
     candidate_mask: np.ndarray
     evaluation: NativeGroupEvaluation
     randomness: GroupRandomness
+    candidate_option_steps: np.ndarray | None = None
     privileged_features: np.ndarray | None = None
 
 
@@ -137,6 +138,7 @@ class GroupedBranchAssembler:
         self._group_ids: set[str] = set()
         self._state_hashes: set[str] = set()
         self._shape: tuple[int, int] | None = None
+        self._uses_option_steps: bool | None = None
 
     def add(self, group: CollectedGroup) -> None:
         identity = group.identity
@@ -199,6 +201,24 @@ class GroupedBranchAssembler:
         replica_count = group.randomness.crn_id.shape[0]
         if candidate_count < 2 or not bool(mask[0]) or kinds[0] != "nominal":
             raise ValueError("candidate zero must be a valid nominal")
+        uses_option_steps = group.candidate_option_steps is not None
+        if self._uses_option_steps is None:
+            self._uses_option_steps = uses_option_steps
+        elif uses_option_steps != self._uses_option_steps:
+            raise ValueError(
+                "all groups must consistently include candidate_option_steps")
+        option_steps = None
+        if uses_option_steps:
+            raw_option_steps = np.asarray(group.candidate_option_steps)
+            if raw_option_steps.shape != (candidate_count,) or (
+                    raw_option_steps.dtype.kind not in "iu"):
+                raise ValueError(
+                    "candidate_option_steps must be an integer [K] array")
+            if raw_option_steps[0] != 1 or np.any(raw_option_steps < 1) or (
+                    np.any(raw_option_steps > 4)):
+                raise ValueError(
+                    "candidate_option_steps must lock nominal to 1 and lie in [1,4]")
+            option_steps = raw_option_steps.astype(np.int8, copy=True)
         for name in (
             "candidate_executed", "candidate_q_target",
         ):
@@ -258,6 +278,8 @@ class GroupedBranchAssembler:
             candidate_mask=mask.copy(),
             evaluation=frozen_evaluation,
             randomness=group.randomness,
+            candidate_option_steps=(
+                None if option_steps is None else option_steps.copy()),
             privileged_features=(
                 None if privileged is None else privileged.copy()),
         ))
@@ -326,6 +348,10 @@ class GroupedBranchAssembler:
                 group.randomness.candidate_seed for group in self._groups
             ], dtype=np.uint64),
         }
+        if self._uses_option_steps:
+            arrays["candidate_option_steps"] = np.stack([
+                group.candidate_option_steps for group in self._groups
+            ]).astype(np.int8)
         dataset = GroupedBranchDataset(dict(self.manifest), arrays)
         dataset.validate(verify_hash=False)
         privileged_view = None
@@ -497,6 +523,14 @@ class NativeCollectionConfig:
     source_impulse_interval_steps: int = 10
     source_linear_std_mps: float = 1.0
     source_angular_std_radps: float = 4.0
+    discovery_replicas: int | None = None
+    audit_replicas: int | None = None
+    profile_name: str = NATIVE_POC_PROFILE_NAME
+    profile_scope: str = NATIVE_POC_PROFILE_SCOPE
+    evidence_limit: str = (
+        "strong-impulse boundary/mechanism development data only; does not "
+        "replace natural closed-loop paired evaluation or independent online "
+        "fall-reduction gates")
 
     def __post_init__(self) -> None:
         if not isinstance(self.split, str) or not self.split.strip():
@@ -534,6 +568,44 @@ class NativeCollectionConfig:
         if self.settle_seconds < 0.0 or self.source_linear_std_mps < 0.0 or (
                 self.source_angular_std_radps < 0.0):
             raise ValueError("settle time and source impulse scales must be nonnegative")
+        partition_counts = (self.discovery_replicas, self.audit_replicas)
+        if (partition_counts[0] is None) != (partition_counts[1] is None):
+            raise ValueError(
+                "discovery_replicas and audit_replicas must be supplied together")
+        if partition_counts[0] is not None:
+            for name, value in zip(
+                    ("discovery_replicas", "audit_replicas"),
+                    partition_counts, strict=True):
+                if isinstance(value, bool) or not isinstance(
+                        value, (int, np.integer)) or int(value) <= 0:
+                    raise ValueError(f"{name} must be a positive integer")
+            if int(partition_counts[0]) + int(partition_counts[1]) != self.replicas:
+                raise ValueError(
+                    "discovery plus audit replicas must equal total replicas")
+        for name in ("profile_name", "profile_scope", "evidence_limit"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be nonempty text")
+        assert_development_path(Path(self.profile_name))
+
+    def replica_partition_manifest(self) -> dict[str, Any] | None:
+        """Return the pre-outcome replica role contract, if requested."""
+        if self.discovery_replicas is None:
+            return None
+        assert self.audit_replicas is not None
+        discovery = int(self.discovery_replicas)
+        audit = int(self.audit_replicas)
+        return {
+            "schema_version": "qsafe.independent_replica_partition.v2",
+            "assignment_timing": "before_candidate_outcomes",
+            "axis": "replica",
+            "ordering": "discovery_then_audit",
+            "discovery_indices": list(range(discovery)),
+            "audit_indices": list(range(discovery, discovery + audit)),
+            "discovery_replicas": discovery,
+            "audit_replicas": audit,
+            "exhaustive": True,
+        }
 
 
 @dataclass(frozen=True)
@@ -644,18 +716,17 @@ def collect_native_groups(
         },
         action_application_contract=_action_application_contract(env),
         collection_protocol={
-            "version": "qsafe.native_collection.v2",
-            "profile_name": NATIVE_POC_PROFILE_NAME,
-            "scope": NATIVE_POC_PROFILE_SCOPE,
+            "version": (
+                "qsafe.native_collection.v3"
+                if config.replica_partition_manifest() is not None
+                else "qsafe.native_collection.v2"),
+            "profile_name": config.profile_name,
+            "scope": config.profile_scope,
             "profile_parameters": profile_parameters,
             "profile_default_parameters": copy.deepcopy(NATIVE_POC_DEFAULTS),
             "profile_default_parameters_match": (
                 profile_parameters == NATIVE_POC_DEFAULTS),
-            "evidence_limit": (
-                "strong-impulse boundary/mechanism development data only; "
-                "does not replace natural closed-loop paired evaluation or "
-                "independent online fall-reduction gates"
-            ),
+            "evidence_limit": config.evidence_limit,
             "selection_timing": "before_candidate_outcomes",
             "boundary_rule": "physical_near_failure_or_random_accept",
             "natural_acceptance_probability": float(
@@ -702,6 +773,9 @@ def collect_native_groups(
             "continuation": (
                 "externally_seeded_stochastic_frozen_actor_repeated_each_policy_step"),
             "outcome_conditioned_rejection": False,
+            **(
+                {"replica_partition": config.replica_partition_manifest()}
+                if config.replica_partition_manifest() is not None else {}),
         },
         privileged_feature_names=PRIVILEGED_FEATURE_NAMES,
     )
@@ -785,16 +859,23 @@ def collect_native_groups(
                 for sample_index in range(ACTOR_SAMPLE_COUNT)
             ])
             try:
-                candidates = build_evidence_candidates(
-                    nominal=nominal,
-                    deterministic_mean=deterministic,
-                    previous_requested=env.previous_action_requested,
-                    actor_samples=actor_samples,
-                    action_applier=env.action_applier,
-                    current_qpos=np.asarray(
+                candidate_arguments = {
+                    "nominal": nominal,
+                    "deterministic_mean": deterministic,
+                    "previous_requested": env.previous_action_requested,
+                    "actor_samples": actor_samples,
+                    "action_applier": env.action_applier,
+                    "current_qpos": np.asarray(
                         env.data.qpos[env.qpos_addresses], dtype=np.float32),
-                    candidate_seed=randomness.candidate_seed,
-                    config=candidate_config,
+                    "candidate_seed": randomness.candidate_seed,
+                }
+                custom_builder = getattr(
+                    candidate_config, "build_candidates", None)
+                candidates = (
+                    custom_builder(**candidate_arguments)
+                    if callable(custom_builder)
+                    else build_evidence_candidates(
+                        **candidate_arguments, config=candidate_config)
                 )
             except InsufficientCandidateSupportError:
                 # Candidate support is known before any branch rollout.  Keep
@@ -810,6 +891,7 @@ def collect_native_groups(
                     horizon_steps=config.horizon_steps,
                     continuation_policy=continuation_policy,
                     disturbance_program=branch_disturbance,
+                    option_steps=getattr(candidates, "option_steps", None),
                 )
                 for name in ("candidate_requested", "candidate_executed",
                              "candidate_q_target"):
@@ -851,6 +933,8 @@ def collect_native_groups(
                     candidate_mask=candidates.mask,
                     evaluation=evaluation,
                     randomness=randomness,
+                    candidate_option_steps=getattr(
+                        candidates, "option_steps", None),
                     privileged_features=privileged_at_snapshot,
                 ))
                 near_failure_groups += int(accepted_near)
