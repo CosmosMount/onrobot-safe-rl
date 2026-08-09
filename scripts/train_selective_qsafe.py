@@ -631,12 +631,16 @@ def main() -> int:
             "deployable 46D observation does not contain the command")
 
     normalization = NormalizationStats.fit(train_data, train_privileged)
+    action_view = str(run["action_feature_view"])
     train_view = TorchGroupedView(
-        train_data, normalization, train_privileged)
+        train_data, normalization, train_privileged,
+        action_view=action_view, view_role="training")
     calibration_view = TorchGroupedView(
-        calibration_data, normalization, calibration_privileged)
+        calibration_data, normalization, calibration_privileged,
+        action_view=action_view, view_role="calibration")
     test_view = TorchGroupedView(
-        test_data, normalization, test_privileged)
+        test_data, normalization, test_privileged,
+        action_view=action_view, view_role="test")
     expected_feature_view = str(run["feature_view"])
     for role, view in (
         ("train", train_view),

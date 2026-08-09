@@ -221,7 +221,12 @@ def main() -> int:
             reward_manifest["critic_path"]).resolve().parent:
         raise ValueError("runtime actor and reward critic are not one checkpoint bundle")
 
-    view = TorchGroupedView(dataset, artifact.normalization)
+    view = TorchGroupedView(
+        dataset,
+        artifact.normalization,
+        action_view=artifact.action_view,
+        view_role="calibration",
+    )
     member_risk = _member_predictions(
         artifact, view, device=device, batch_size=args.batch_size)
     reward_values = _reward_values(reward_q, dataset)

@@ -2,17 +2,179 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
-from typing import Literal, Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 import numpy as np
 import torch
 
+from runtime.inference.actions import action_to_qpos, qpos_to_action
 from safety_data.schema import GroupedBranchDataset, PrivilegedBranchView
+from rl.qsafe.recovery_program import (
+    RECOVERY_PROGRAM_VIEW,
+    build_recovery_program_features,
+    validate_recovery_program_binding,
+)
 
 
 FeatureView = Literal["deployable", "privileged"]
-ActionView = Literal["application_concat", "requested"]
+ViewRole = Literal["training", "calibration", "test"]
+ActionView = Literal[
+    "application_concat",
+    "requested",
+    "recovery_program_v1",
+]
+
+_RECOVERY_ACTION_VECTOR_FIELDS = (
+    "init_qpos",
+    "action_offset",
+    "joint_min",
+    "joint_max",
+)
+_RECOVERY_ACTION_PROJECTION = (
+    "clip_normalized_then_joint_bounds_then_slew_then_filter")
+_RECOVERY_ACTION_CONTRACT_FIELDS = frozenset({
+    "q_target_semantic",
+    *_RECOVERY_ACTION_VECTOR_FIELDS,
+    "projection",
+    "max_joint_delta",
+    "use_action_filter",
+})
+
+
+def _validate_recovery_action_application_contract(
+    action_contract: object,
+    recovery_binding: Mapping[str, Any],
+) -> dict[str, np.ndarray]:
+    """Bind the collected action application to the recovery library exactly."""
+    if not isinstance(action_contract, Mapping):
+        raise ValueError(
+            "recovery_program_v1 requires an action-application contract")
+    if set(action_contract) != _RECOVERY_ACTION_CONTRACT_FIELDS:
+        missing = sorted(_RECOVERY_ACTION_CONTRACT_FIELDS - set(action_contract))
+        extra = sorted(set(action_contract) - _RECOVERY_ACTION_CONTRACT_FIELDS)
+        raise ValueError(
+            "recovery_program_v1 action-application contract must have the "
+            f"exact locked keyset; missing={missing}, extra={extra}")
+    recovery_manifest = recovery_binding.get("manifest")
+    if not isinstance(recovery_manifest, Mapping):
+        raise ValueError(
+            "recovery_program_v1 recovery-program manifest is incomplete")
+    recovery_projection = recovery_manifest.get("action_projection")
+    if not isinstance(recovery_projection, Mapping):
+        raise ValueError(
+            "recovery_program_v1 recovery action projection is incomplete")
+
+    if action_contract.get(
+            "q_target_semantic") != "absolute_joint_position_sent":
+        raise ValueError(
+            "recovery_program_v1 action-application q_target semantics drifted")
+    if action_contract.get("projection") != _RECOVERY_ACTION_PROJECTION:
+        raise ValueError(
+            "recovery_program_v1 action-application projection semantics "
+            "drifted")
+
+    projection_vectors: dict[str, np.ndarray] = {}
+    for field in _RECOVERY_ACTION_VECTOR_FIELDS:
+        try:
+            collected = np.asarray(action_contract.get(field))
+            recovery = np.asarray(recovery_projection.get(field))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "recovery_program_v1 action-application contract cannot be "
+                "compared with the recovery action projection") from exc
+        if collected.shape != (12,) or recovery.shape != (12,) or not (
+                np.array_equal(collected, recovery, equal_nan=False)):
+            raise ValueError(
+                "recovery_program_v1 action-application contract field "
+                f"{field!r} differs elementwise from the recovery action "
+                "projection")
+        projection_vectors[field] = np.asarray(
+            collected, dtype=np.float32).copy()
+
+    if recovery_projection.get("max_joint_delta") is not None or (
+            recovery_projection.get("use_action_filter") is not False):
+        raise ValueError(
+            "recovery_program_v1 recovery action projection must disable "
+            "slew limiting and action filtering")
+    if action_contract.get("max_joint_delta") is not None:
+        raise ValueError(
+            "recovery_program_v1 action-application max_joint_delta "
+            "semantics differ from the recovery action projection")
+    if action_contract.get("use_action_filter") is not False:
+        raise ValueError(
+            "recovery_program_v1 action-application filter semantics differ "
+            "from the recovery action projection")
+    return projection_vectors
+
+
+def _validate_recovery_candidate_projection(
+    *,
+    candidate_requested: np.ndarray,
+    candidate_executed: np.ndarray,
+    candidate_q_target: np.ndarray,
+    candidate_mask: np.ndarray,
+    projection_vectors: Mapping[str, np.ndarray],
+) -> None:
+    """Replay every valid K9 application tuple with the runtime projection."""
+    requested = np.asarray(candidate_requested)
+    executed = np.asarray(candidate_executed)
+    q_target = np.asarray(candidate_q_target)
+    mask = np.asarray(candidate_mask)
+    for group_index, candidate_index in np.argwhere(mask):
+        expected_q_target = action_to_qpos(
+            requested[group_index, candidate_index],
+            init_qpos=projection_vectors["init_qpos"],
+            action_offset=projection_vectors["action_offset"],
+            joint_min=projection_vectors["joint_min"],
+            joint_max=projection_vectors["joint_max"],
+        )
+        if not np.array_equal(
+                q_target[group_index, candidate_index],
+                expected_q_target,
+                equal_nan=False):
+            raise ValueError(
+                "recovery_program_v1 candidate_q_target is not the exact "
+                "runtime action_to_qpos projection of candidate_requested "
+                f"at group={group_index}, candidate={candidate_index}")
+        expected_executed = qpos_to_action(
+            q_target[group_index, candidate_index],
+            init_qpos=projection_vectors["init_qpos"],
+            action_offset=projection_vectors["action_offset"],
+        )
+        if not np.array_equal(
+                executed[group_index, candidate_index],
+                expected_executed,
+                equal_nan=False):
+            raise ValueError(
+                "recovery_program_v1 candidate_executed is not the exact "
+                "runtime qpos_to_action projection of candidate_q_target "
+                f"at group={group_index}, candidate={candidate_index}")
+
+
+def _validated_dataset_identity(
+    dataset: GroupedBranchDataset,
+    validation_report: Mapping[str, Any],
+) -> tuple[str, str]:
+    """Return the validated immutable content/split identity of one fit set."""
+    content_sha256 = validation_report.get("content_sha256")
+    split = dataset.manifest.get("split")
+    if not isinstance(content_sha256, str) or len(content_sha256) != 64 or any(
+            character not in "0123456789abcdef"
+            for character in content_sha256):
+        raise ValueError("dataset validation did not produce a content SHA-256")
+    manifest_content_sha256 = dataset.manifest.get("content_sha256")
+    if manifest_content_sha256 is not None:
+        if not isinstance(manifest_content_sha256, str) or (
+                manifest_content_sha256 != content_sha256):
+            raise ValueError(
+                "dataset manifest content SHA-256 differs from validated "
+                "content")
+        content_sha256 = manifest_content_sha256
+    if not isinstance(split, str) or not split:
+        raise ValueError("dataset manifest split must be nonempty text")
+    return content_sha256, split
 
 
 @dataclass(frozen=True)
@@ -21,6 +183,8 @@ class NormalizationStats:
     observation_std: np.ndarray
     privileged_mean: np.ndarray | None = None
     privileged_std: np.ndarray | None = None
+    fit_content_sha256: str | None = None
+    fit_split: str | None = None
 
     def __post_init__(self) -> None:
         observation_mean = np.asarray(
@@ -36,6 +200,21 @@ class NormalizationStats:
         object.__setattr__(self, "observation_std", observation_std)
         observation_mean.setflags(write=False)
         observation_std.setflags(write=False)
+        if (self.fit_content_sha256 is None) != (self.fit_split is None):
+            raise ValueError(
+                "normalization fit content SHA-256 and split must both be "
+                "present or absent")
+        if self.fit_content_sha256 is not None:
+            if not isinstance(self.fit_content_sha256, str) or len(
+                    self.fit_content_sha256) != 64 or any(
+                    character not in "0123456789abcdef"
+                    for character in self.fit_content_sha256):
+                raise ValueError(
+                    "normalization fit_content_sha256 must be a lowercase "
+                    "SHA-256 digest")
+            if not isinstance(self.fit_split, str) or not self.fit_split:
+                raise ValueError(
+                    "normalization fit_split must be nonempty text")
         if self.privileged_mean is None or self.privileged_std is None:
             if self.privileged_mean is not None or self.privileged_std is not None:
                 raise ValueError("privileged mean/std must both be present or absent")
@@ -58,6 +237,9 @@ class NormalizationStats:
         """Return exact equality for train-fitted preprocessing provenance."""
         if not isinstance(other, NormalizationStats):
             return False
+        if self.fit_content_sha256 != other.fit_content_sha256 or (
+                self.fit_split != other.fit_split):
+            return False
         for left, right in (
             (self.observation_mean, other.observation_mean),
             (self.observation_std, other.observation_std),
@@ -76,19 +258,28 @@ class NormalizationStats:
         dataset: GroupedBranchDataset,
         privileged: PrivilegedBranchView | None = None,
     ) -> "NormalizationStats":
-        dataset.validate()
+        validation_report = dataset.validate()
+        fit_content_sha256, fit_split = _validated_dataset_identity(
+            dataset, validation_report)
         observation = np.asarray(dataset["obs_history"], dtype=np.float64)
         observation_mean = observation.mean(axis=(0, 1))
         observation_std = np.maximum(observation.std(axis=(0, 1)), 1e-6)
         if privileged is None:
-            return cls(observation_mean, observation_std)
+            return cls(
+                observation_mean,
+                observation_std,
+                fit_content_sha256=fit_content_sha256,
+                fit_split=fit_split,
+            )
         privileged.validate(dataset)
         features = np.asarray(privileged.features, dtype=np.float64)
         return cls(
             observation_mean,
             observation_std,
-            features.mean(axis=0),
-            np.maximum(features.std(axis=0), 1e-6),
+            privileged_mean=features.mean(axis=0),
+            privileged_std=np.maximum(features.std(axis=0), 1e-6),
+            fit_content_sha256=fit_content_sha256,
+            fit_split=fit_split,
         )
 
 
@@ -117,8 +308,9 @@ class TorchGroupedView:
         *,
         allow_mixed_command_speeds: bool = False,
         action_view: ActionView = "application_concat",
+        view_role: ViewRole = "training",
     ):
-        dataset.validate()
+        validation_report = dataset.validate()
         if "candidate_option_steps" in dataset.arrays:
             raise ValueError(
                 "recovery-option datasets require a duration-aware v2 model "
@@ -140,14 +332,22 @@ class TorchGroupedView:
                     normalization.privileged_mean.shape != (
                         privileged.features.shape[1],)):
                 raise ValueError("normalization does not match privileged feature width")
-        if action_view not in ("application_concat", "requested"):
+        if action_view not in (
+                "application_concat", "requested", RECOVERY_PROGRAM_VIEW):
             raise ValueError(f"unknown action_view={action_view!r}")
+        if view_role not in ("training", "calibration", "test"):
+            raise ValueError(f"unknown view_role={view_role!r}")
         self.dataset = dataset
         self.normalization = normalization
         self.privileged = privileged
         self.feature_view: FeatureView = (
             "privileged" if privileged is not None else "deployable")
         self.action_view: ActionView = action_view
+        self.view_role: ViewRole = view_role
+        self._recovery_program_binding: dict[str, object] | None = None
+        self._recovery_program_feature_manifest: dict[str, object] | None = None
+        self.recovery_program_feature_contract_sha256: str | None = None
+        self.recovery_library_fingerprint_sha256: str | None = None
         self.observation = (
             np.asarray(dataset["obs_history"], dtype=np.float32)
             - normalization.observation_mean[None, None, :]
@@ -157,9 +357,81 @@ class TorchGroupedView:
         self.mask = np.asarray(dataset["candidate_mask"], dtype=bool)
         nominal_requested = np.asarray(
             dataset["nominal_action_requested"], dtype=np.float32)
-        candidate_requested = np.asarray(
-            dataset["candidate_requested"], dtype=np.float32)
-        if action_view == "application_concat":
+        candidate_requested_on_disk = np.asarray(dataset["candidate_requested"])
+        if action_view == RECOVERY_PROGRAM_VIEW:
+            current_content_sha256, current_split = _validated_dataset_identity(
+                dataset, validation_report)
+            if normalization.fit_content_sha256 is None or (
+                    normalization.fit_split is None):
+                raise ValueError(
+                    "recovery_program_v1 requires normalization fit "
+                    "content/split provenance")
+            if view_role == "training" and (
+                    normalization.fit_content_sha256
+                    != current_content_sha256 or
+                    normalization.fit_split != current_split):
+                raise ValueError(
+                    "recovery_program_v1 training view requires fit "
+                    "normalization provenance matching this dataset content "
+                    "and split")
+            if view_role == "training":
+                exact_fit = NormalizationStats.fit(dataset, privileged)
+                if not normalization.equivalent_to(exact_fit):
+                    raise ValueError(
+                        "recovery_program_v1 training normalization must "
+                        "exactly equal NormalizationStats.fit on this dataset")
+            recovery_binding = dataset.manifest.get("recovery_program")
+            feature_manifest = dataset.manifest.get(
+                "recovery_program_feature_contract")
+            if not isinstance(recovery_binding, dict) or not isinstance(
+                    feature_manifest, dict):
+                raise ValueError(
+                    "recovery_program_v1 requires recovery-program and feature "
+                    "manifest bindings")
+            library_fingerprint = validate_recovery_program_binding(
+                recovery_binding)
+            projection_vectors = _validate_recovery_action_application_contract(
+                dataset.manifest.get("action_application_contract"),
+                recovery_binding,
+            )
+            feature_fingerprint = feature_manifest.get(
+                "feature_contract_sha256")
+            features = build_recovery_program_features(
+                # Do not cast here.  V4's training/runtime bit contract requires
+                # the evidence file itself to carry native float32 application
+                # tuples; otherwise a float64 producer bug would be hidden at
+                # the training boundary while runtime inference fails closed.
+                candidate_requested=candidate_requested_on_disk,
+                candidate_executed=np.asarray(dataset["candidate_executed"]),
+                candidate_q_target=np.asarray(dataset["candidate_q_target"]),
+                candidate_names=np.asarray(dataset["candidate_kind"]),
+                candidate_behavior_steps=np.asarray(
+                    dataset["candidate_behavior_steps"]),
+                candidate_mask=np.asarray(dataset["candidate_mask"]),
+                nominal_index=0,
+                feature_manifest=feature_manifest,
+                feature_manifest_fingerprint_sha256=feature_fingerprint,
+                recovery_library_fingerprint_sha256=library_fingerprint,
+            )
+            _validate_recovery_candidate_projection(
+                candidate_requested=candidate_requested_on_disk,
+                candidate_executed=np.asarray(dataset["candidate_executed"]),
+                candidate_q_target=np.asarray(dataset["candidate_q_target"]),
+                candidate_mask=np.asarray(dataset["candidate_mask"]),
+                projection_vectors=projection_vectors,
+            )
+            raw_candidate = features.candidate_descriptor
+            self.nominal = features.nominal_descriptor
+            self._recovery_program_binding = copy.deepcopy(recovery_binding)
+            self._recovery_program_feature_manifest = copy.deepcopy(
+                feature_manifest)
+            self.recovery_program_feature_contract_sha256 = (
+                features.feature_contract_sha256)
+            self.recovery_library_fingerprint_sha256 = (
+                features.recovery_library_fingerprint_sha256)
+        elif action_view == "application_concat":
+            candidate_requested = np.asarray(
+                candidate_requested_on_disk, dtype=np.float32)
             raw_candidate = np.concatenate([
                 candidate_requested,
                 np.asarray(dataset["candidate_executed"], dtype=np.float32),
@@ -169,6 +441,8 @@ class TorchGroupedView:
             # its requested component has a separate nominal field on disk.
             self.nominal = raw_candidate[:, 0].copy()
         else:
+            candidate_requested = np.asarray(
+                candidate_requested_on_disk, dtype=np.float32)
             raw_candidate = candidate_requested
             self.nominal = nominal_requested
         # Invalid candidates are allowed to carry arbitrary sentinels on disk.
@@ -206,12 +480,23 @@ class TorchGroupedView:
         ).astype(np.float32, copy=False)
         probability = np.asarray(
             dataset["acceptance_probability"], dtype=np.float64)
-        group_weight = (
-            float(probability.min()) / probability).astype(np.float32)
-        if not np.all(np.isfinite(group_weight)) or np.any(group_weight <= 0.0):
-            raise ValueError(
-                "acceptance-probability range cannot be represented by "
-                "positive float32 IPW weights")
+        if action_view == RECOVERY_PROGRAM_VIEW:
+            if not np.array_equal(
+                    probability,
+                    np.ones(dataset.group_count, dtype=np.float64),
+                    equal_nan=False):
+                raise ValueError(
+                    "recovery_program_v1 requires exact unit acceptance "
+                    "probability for every group; IPW is forbidden")
+            group_weight = np.ones(dataset.group_count, dtype=np.float32)
+        else:
+            group_weight = (
+                float(probability.min()) / probability).astype(np.float32)
+            if not np.all(np.isfinite(group_weight)) or np.any(
+                    group_weight <= 0.0):
+                raise ValueError(
+                    "acceptance-probability range cannot be represented by "
+                    "positive float32 IPW weights")
         self.group_weight = group_weight
         self.privileged_features = None
         if privileged is not None:
@@ -237,6 +522,16 @@ class TorchGroupedView:
     @property
     def action_dim(self) -> int:
         return int(self.candidate.shape[2])
+
+    @property
+    def recovery_program_binding(self) -> dict[str, object] | None:
+        """Return an isolated copy of the exact V4 recovery-library binding."""
+        return copy.deepcopy(self._recovery_program_binding)
+
+    @property
+    def recovery_program_feature_manifest(self) -> dict[str, object] | None:
+        """Return an isolated copy of the exact V4 feature manifest."""
+        return copy.deepcopy(self._recovery_program_feature_manifest)
 
     @property
     def trajectory_id(self) -> np.ndarray:

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 import math
-from numbers import Integral
+from numbers import Integral, Real
 from typing import Sequence
 
 import numpy as np
@@ -22,6 +23,7 @@ from rl.qsafe.network import (
     QSafeNetworkConfig,
     SelectiveAdvantageQSafe,
 )
+from rl.qsafe.recovery_program import RECOVERY_PROGRAM_VIEW
 from safety_data.schema import audit_split_disjointness
 
 
@@ -33,7 +35,7 @@ class QSafeTrainingConfig:
     weight_decay: float = 1e-5
     gradient_clip_norm: float = 5.0
     ensemble_members: int = 5
-    seed: int = 20260809
+    seed: int = 20260810
     device: str = "cpu"
     calibration_steps: int = 100
 
@@ -74,6 +76,175 @@ class TrainedQSafeEnsemble:
     train_split: str | None = None
     action_view: str | None = None
     action_dim: int | None = None
+    recovery_program_binding: dict[str, object] | None = None
+    recovery_program_feature_manifest: dict[str, object] | None = None
+    recovery_program_feature_contract_sha256: str | None = None
+    recovery_library_fingerprint_sha256: str | None = None
+    network_config: QSafeNetworkConfig | None = None
+    training_config: QSafeTrainingConfig | None = None
+    loss_config: QSafeLossConfig | None = None
+
+
+RECOVERY_PROGRAM_V4_NETWORK_CONFIG = QSafeNetworkConfig(
+    observation_dim=46,
+    history_frames=5,
+    action_dim=82,
+    frame_hidden_dim=128,
+    state_hidden_dim=128,
+    action_hidden_dim=128,
+    privileged_dim=0,
+    action_mode="selective_advantage",
+)
+RECOVERY_PROGRAM_V4_TRAINING_CONFIG = QSafeTrainingConfig(
+    epochs=100,
+    batch_size=64,
+    learning_rate=3e-4,
+    weight_decay=1e-5,
+    gradient_clip_norm=5.0,
+    ensemble_members=5,
+    seed=20260810,
+    device="cpu",
+    calibration_steps=100,
+)
+RECOVERY_PROGRAM_V4_LOSS_CONFIG = QSafeLossConfig(
+    absolute_risk_weight=1.0,
+    state_risk_weight=0.5,
+    relative_risk_weight=1.0,
+    ranking_weight=0.5,
+    ttf_weight=0.1,
+    max_tilt_weight=0.1,
+    min_height_weight=0.1,
+)
+RECOVERY_PROGRAM_V4_MEMBER_SEED_STRIDE = 1009
+
+
+def _require_recovery_program_v4_training_contract(
+    view: TorchGroupedView,
+    network_config: QSafeNetworkConfig,
+    training_config: QSafeTrainingConfig,
+    loss_config: QSafeLossConfig,
+) -> None:
+    """Fail closed if a recovery-program model departs from preregistration."""
+    if view.action_view != RECOVERY_PROGRAM_VIEW:
+        return
+    if view.view_role != "training":
+        raise ValueError(
+            "recovery_program_v1 primary training view must have role "
+            "'training'")
+    for name, actual, expected in (
+        ("network", network_config, RECOVERY_PROGRAM_V4_NETWORK_CONFIG),
+        ("training", training_config, RECOVERY_PROGRAM_V4_TRAINING_CONFIG),
+        ("loss", loss_config, RECOVERY_PROGRAM_V4_LOSS_CONFIG),
+    ):
+        if actual != expected:
+            raise ValueError(
+                "recovery_program_v1 requires the exact V4 "
+                f"{name} configuration")
+
+
+def _configure_recovery_program_v4_determinism(
+    view: TorchGroupedView,
+) -> None:
+    if view.action_view != RECOVERY_PROGRAM_VIEW:
+        return
+    torch.set_num_threads(1)
+    torch.use_deterministic_algorithms(True)
+
+
+def _validate_member_epoch_metadata(
+    member: TrainedQSafeMember,
+    *,
+    expected_seed: int,
+    expected_epochs: int,
+    expected_network_config: QSafeNetworkConfig,
+) -> None:
+    if not isinstance(member.model, SelectiveAdvantageQSafe) or (
+            member.model.config != expected_network_config):
+        raise ValueError(
+            "trained member network metadata disagrees with configuration")
+    if member.seed != expected_seed:
+        raise ValueError("trained member seed metadata disagrees with its slot")
+    if len(member.epoch_loss) != expected_epochs:
+        raise ValueError(
+            "trained member epoch metadata does not match configured epochs")
+    if not all(
+            not isinstance(value, bool)
+            and isinstance(value, Real)
+            and math.isfinite(float(value))
+            for value in member.epoch_loss):
+        raise ValueError("trained member epoch metadata must be finite")
+
+
+def _view_recovery_contract(
+    view: TorchGroupedView,
+) -> tuple[
+    dict[str, object] | None,
+    dict[str, object] | None,
+    str | None,
+    str | None,
+]:
+    contract = (
+        view.recovery_program_binding,
+        view.recovery_program_feature_manifest,
+        view.recovery_program_feature_contract_sha256,
+        view.recovery_library_fingerprint_sha256,
+    )
+    if view.action_view == RECOVERY_PROGRAM_VIEW:
+        if not isinstance(contract[0], dict) or not isinstance(
+                contract[1], dict) or not isinstance(contract[2], str) or not (
+                    isinstance(contract[3], str)):
+            raise ValueError(
+                "recovery_program_v1 view is missing its exact recovery contract")
+    elif any(value is not None for value in contract):
+        raise ValueError(
+            "legacy action view must not carry a recovery-program contract")
+    return contract
+
+
+def _trained_recovery_contract(
+    trained: TrainedQSafeEnsemble,
+) -> tuple[
+    dict[str, object] | None,
+    dict[str, object] | None,
+    str | None,
+    str | None,
+]:
+    contract = (
+        copy.deepcopy(trained.recovery_program_binding),
+        copy.deepcopy(trained.recovery_program_feature_manifest),
+        trained.recovery_program_feature_contract_sha256,
+        trained.recovery_library_fingerprint_sha256,
+    )
+    if trained.action_view == RECOVERY_PROGRAM_VIEW:
+        if not isinstance(contract[0], dict) or not isinstance(
+                contract[1], dict) or not isinstance(contract[2], str) or not (
+                    isinstance(contract[3], str)):
+            raise ValueError(
+                "trained recovery_program_v1 ensemble is missing provenance")
+    elif any(value is not None for value in contract):
+        raise ValueError(
+            "legacy trained ensemble must not carry recovery-program provenance")
+    return contract
+
+
+def _require_same_recovery_contract(
+    left: tuple[
+        dict[str, object] | None,
+        dict[str, object] | None,
+        str | None,
+        str | None,
+    ],
+    right: tuple[
+        dict[str, object] | None,
+        dict[str, object] | None,
+        str | None,
+        str | None,
+    ],
+    *,
+    context: str,
+) -> None:
+    if left != right:
+        raise ValueError(f"{context} recovery-program contracts differ")
 
 
 def _forward_loss(
@@ -111,6 +282,9 @@ def train_qsafe_member(
     seed: int,
     bootstrap: bool = True,
 ) -> TrainedQSafeMember:
+    _require_recovery_program_v4_training_contract(
+        view, network_config, training_config, loss_config)
+    _configure_recovery_program_v4_determinism(view)
     if network_config.privileged_dim != view.privileged_dim:
         raise ValueError("network privileged_dim does not match dataset view")
     if network_config.action_dim != view.action_dim:
@@ -124,6 +298,11 @@ def train_qsafe_member(
         model.parameters(),
         lr=training_config.learning_rate,
         weight_decay=training_config.weight_decay,
+        betas=(0.9, 0.999),
+        eps=1e-8,
+        amsgrad=False,
+        foreach=False,
+        fused=False,
     )
     if bootstrap:
         training_indices, sampled_trajectories = trajectory_bootstrap_indices(
@@ -189,6 +368,11 @@ def fit_temperature(
     steps: int,
     batch_size: int = 256,
 ) -> float:
+    if calibration.action_view == RECOVERY_PROGRAM_VIEW and (
+            calibration.view_role != "calibration"):
+        raise ValueError(
+            "recovery_program_v1 temperature fitting requires a calibration "
+            "view")
     if steps <= 0:
         return 1.0
     if batch_size <= 0:
@@ -224,7 +408,15 @@ def fit_temperature(
         raise ValueError("model produced non-finite calibration logits")
     log_temperature = torch.zeros((), dtype=logits.dtype, device=logits.device,
                                   requires_grad=True)
-    optimizer = torch.optim.Adam([log_temperature], lr=0.05)
+    optimizer = torch.optim.Adam(
+        [log_temperature],
+        lr=0.05,
+        betas=(0.9, 0.999),
+        eps=1e-8,
+        amsgrad=False,
+        foreach=False,
+        fused=False,
+    )
     for _ in range(steps):
         temperature = torch.exp(torch.clamp(log_temperature, -4.0, 4.0))
         loss = _temperature_loss(
@@ -249,12 +441,16 @@ def train_qsafe_ensemble(
     calibration: TorchGroupedView | None = None,
 ) -> TrainedQSafeEnsemble:
     loss_config = QSafeLossConfig() if loss_config is None else loss_config
+    _require_recovery_program_v4_training_contract(
+        train, network_config, training_config, loss_config)
+    _configure_recovery_program_v4_determinism(train)
     if network_config.privileged_dim != train.privileged_dim:
         raise ValueError(
             "network privileged_dim must explicitly match the training view")
     if network_config.action_dim != train.action_dim:
         raise ValueError(
             "network action_dim must explicitly match the training action_view")
+    train_recovery_contract = _view_recovery_contract(train)
     if calibration is not None:
         audit_split_disjointness([train.dataset, calibration.dataset])
         if not calibration.normalization.equivalent_to(train.normalization):
@@ -264,13 +460,26 @@ def train_qsafe_ensemble(
         if calibration.action_view != train.action_view or (
                 calibration.action_dim != train.action_dim):
             raise ValueError("train/calibration action views differ")
+        if train.action_view == RECOVERY_PROGRAM_VIEW and (
+                calibration.view_role != "calibration"):
+            raise ValueError(
+                "recovery_program_v1 calibration view must have role "
+                "'calibration'")
+        _require_same_recovery_contract(
+            train_recovery_contract,
+            _view_recovery_contract(calibration),
+            context="train/calibration",
+        )
         if abs(calibration.command_vx - train.command_vx) > 1e-6:
             raise ValueError(
                 "train/calibration command speeds differ for an unconditioned model")
     config = network_config
     members = []
     for member_index in range(training_config.ensemble_members):
-        seed = training_config.seed + 1009 * member_index
+        seed = (
+            training_config.seed
+            + RECOVERY_PROGRAM_V4_MEMBER_SEED_STRIDE * member_index
+        )
         trained = train_qsafe_member(
             train,
             config,
@@ -278,6 +487,12 @@ def train_qsafe_ensemble(
             loss_config,
             seed=seed,
             bootstrap=True,
+        )
+        _validate_member_epoch_metadata(
+            trained,
+            expected_seed=seed,
+            expected_epochs=training_config.epochs,
+            expected_network_config=network_config,
         )
         if calibration is not None:
             trained.temperature = fit_temperature(
@@ -301,6 +516,14 @@ def train_qsafe_ensemble(
         train_split=str(train.dataset.manifest["split"]),
         action_view=train.action_view,
         action_dim=train.action_dim,
+        recovery_program_binding=copy.deepcopy(train_recovery_contract[0]),
+        recovery_program_feature_manifest=copy.deepcopy(
+            train_recovery_contract[1]),
+        recovery_program_feature_contract_sha256=train_recovery_contract[2],
+        recovery_library_fingerprint_sha256=train_recovery_contract[3],
+        network_config=members[0].model.config,
+        training_config=training_config,
+        loss_config=loss_config,
     )
 
 
@@ -332,6 +555,11 @@ def predict_qsafe_ensemble(
         raise ValueError("prediction and trained action views differ")
     if trained.action_dim is not None and view.action_dim != trained.action_dim:
         raise ValueError("prediction and trained action dimensions differ")
+    _require_same_recovery_contract(
+        _trained_recovery_contract(trained),
+        _view_recovery_contract(view),
+        context="prediction/training",
+    )
     if trained.command_vx is not None and abs(
             view.command_vx - trained.command_vx) > 1e-6:
         raise ValueError(
