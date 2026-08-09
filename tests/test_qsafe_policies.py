@@ -151,6 +151,36 @@ train:
             manifest["training_step"] = -1
             self.assertEqual(policy.manifest()["training_step"], 123)
 
+    def test_live_integrity_rejects_weight_hook_and_callable_mutation(self):
+        with tempfile.TemporaryDirectory() as raw_directory:
+            actor, config = self._fixture(Path(raw_directory))
+            observation = np.zeros(self.observation_dim, dtype=np.float32)
+            for mutation, message in (
+                (
+                    lambda policy: next(
+                        policy._policy.actor.parameters()).data.add_(1.0),
+                    "mutated",
+                ),
+                (
+                    lambda policy: policy._policy.actor.register_forward_hook(
+                        lambda module, inputs, output: output),
+                    "tensors, hooks, or mode",
+                ),
+                (
+                    lambda policy: setattr(
+                        policy._policy,
+                        "decide",
+                        lambda *args, **kwargs: None,
+                    ),
+                    "method was overridden",
+                ),
+            ):
+                with self.subTest(message=message):
+                    policy = self._load(actor, config)
+                    mutation(policy)
+                    with self.assertRaisesRegex(ValueError, message):
+                        policy.deterministic_action(observation)
+
     def test_policy_fingerprint_tracks_loaded_weights_not_checkpoint_extras(self):
         with tempfile.TemporaryDirectory() as raw_directory:
             root = Path(raw_directory)

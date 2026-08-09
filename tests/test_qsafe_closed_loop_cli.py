@@ -11,6 +11,7 @@ from unittest import mock
 import numpy as np
 
 from safety_data.recovery_behaviors import RecoveryBehaviorConfig
+import scripts.collect_closed_loop_recovery_triage as collect_cli
 from scripts.collect_closed_loop_recovery_triage import (
     _cohort_lock,
     _load_protocol,
@@ -190,6 +191,99 @@ class ClosedLoopRecoveryCliContractTest(unittest.TestCase):
             self.assertIn("audit", outputs)
             self.assertIn("audit_privileged", outputs)
             self.assertFalse(any(".audit" in name for name in observed))
+
+    def test_preflight_only_returns_before_every_consuming_boundary(self):
+        protocol = copy.deepcopy(_load_protocol())
+        with tempfile.TemporaryDirectory() as directory:
+            artifact_root = Path(directory) / "preflight-must-not-create"
+            protocol["collection"]["artifact_root"] = str(artifact_root)
+            policy_entry = _policy_for_seed(protocol, 7801)
+            mature_entry = protocol["mature_recovery_policy"]
+
+            def policy(manifest):
+                value = mock.Mock()
+                value.manifest.return_value = copy.deepcopy(manifest)
+                return value
+
+            early_policy = policy(policy_entry)
+            mature_policy = policy(mature_entry)
+            robot_cfg = SimpleNamespace(
+                move_speed=protocol["target"]["command_speed_mps"],
+                success_orientation_rad=protocol["target"]["failure"][
+                    "max_abs_roll_pitch_rad"],
+                obs_dim=46,
+                num_joints=12,
+            )
+            train_cfg = SimpleNamespace(
+                control_frequency=50.0,
+                max_joint_delta=None,
+                use_action_filter=False,
+            )
+            env = mock.Mock(name="preflight_environment")
+            recovery_program = mock.Mock(name="preflight_recovery_program")
+            recovery_program.manifest_protocol.return_value = copy.deepcopy(
+                protocol["collection"]["candidates"])
+            recovery_program.fingerprint.return_value = "f" * 64
+            prepared = SimpleNamespace(recovery_program_binding={
+                "fingerprint_sha256": "f" * 64,
+            })
+
+            def replace_config(value, **changes):
+                return SimpleNamespace(**(vars(value) | changes))
+
+            argv = [
+                "collect_closed_loop_recovery_triage.py",
+                "--source-seed", "7801",
+                "--preflight-only",
+            ]
+            unreachable = AssertionError(
+                "preflight-only crossed a consuming boundary")
+            with mock.patch("sys.argv", argv), mock.patch.object(
+                    collect_cli, "_load_protocol", return_value=protocol), \
+                    mock.patch.object(
+                        collect_cli, "_git_commit", return_value="a" * 40), \
+                    mock.patch.object(
+                        collect_cli, "load_app_config",
+                        return_value=(robot_cfg, train_cfg, object())), \
+                    mock.patch.object(
+                        collect_cli, "replace", side_effect=replace_config), \
+                    mock.patch.object(
+                        collect_cli, "load_frozen_droq_policy",
+                        side_effect=(early_policy, mature_policy)), \
+                    mock.patch.object(
+                        collect_cli, "MujocoSnapshotEnv", return_value=env), \
+                    mock.patch.object(
+                        collect_cli, "_verify_runtime_contract"), \
+                    mock.patch.object(
+                        collect_cli, "build_recovery_behavior_library",
+                        return_value=recovery_program), \
+                    mock.patch.object(
+                        collect_cli,
+                        "preflight_closed_loop_recovery_collection",
+                        return_value=prepared) as preflight, \
+                    mock.patch.object(
+                        collect_cli, "_cohort_lock",
+                        side_effect=unreachable) as cohort_lock, \
+                    mock.patch.object(
+                        collect_cli, "_start_attempt",
+                        side_effect=unreachable) as start_attempt, \
+                    mock.patch.object(
+                        collect_cli,
+                        "collect_preflighted_closed_loop_recovery_triage",
+                        side_effect=unreachable) as collector, \
+                    mock.patch.object(
+                        collect_cli, "_prepare_staged_outputs",
+                        side_effect=unreachable) as prepare_outputs, \
+                    mock.patch.object(collect_cli.torch, "set_num_threads"), \
+                    mock.patch("builtins.print"):
+                self.assertEqual(collect_cli.main(), 0)
+
+            preflight.assert_called_once()
+            cohort_lock.assert_not_called()
+            start_attempt.assert_not_called()
+            collector.assert_not_called()
+            prepare_outputs.assert_not_called()
+            self.assertFalse(artifact_root.exists())
 
     def test_cohort_lock_accepts_identical_race_loser_but_rejects_symlink(self):
         protocol = _load_protocol()

@@ -309,6 +309,21 @@ def _int_vector(array: np.ndarray, size: int, name: str) -> np.ndarray:
     return value.astype(np.int64, copy=False)
 
 
+def _seed_vector(array: np.ndarray, size: int, name: str) -> np.ndarray:
+    """Validate a seed vector without narrowing V4's tagged uint64 values."""
+    value = np.asarray(array)
+    if value.shape != (size,) or value.dtype.kind not in "iu" or np.any(
+            value < 0):
+        raise ClosedLoopRecoveryTriageError(
+            f"{name} must be a nonnegative integer [{size}] vector")
+    return value.astype(np.uint64, copy=False)
+
+
+def _seed_json_list(array: np.ndarray) -> list[int]:
+    """Convert uint64 seeds to unbounded JSON integers without int64 wrap."""
+    return [int(value) for value in np.asarray(array).reshape(-1)]
+
+
 def _binary_array(array: np.ndarray, shape: tuple[int, ...], name: str) -> np.ndarray:
     value = np.asarray(array)
     if value.shape != shape or value.dtype.kind not in "biu" or not np.all(
@@ -327,7 +342,7 @@ def _seed_matrix(
     if value.shape != shape or value.dtype.kind not in "iu" or np.any(value < 0):
         raise ClosedLoopRecoveryTriageError(
             f"{name} must be a nonnegative integer array with shape {shape}")
-    result = value.astype(np.int64, copy=False)
+    result = value.astype(np.uint64, copy=False)
     if len(np.unique(result)) != result.size:
         raise ClosedLoopRecoveryTriageError(
             f"{name} seeds must be globally unique")
@@ -1240,7 +1255,7 @@ def _load_outcome_npz(
         name: _seed_matrix(arrays[name], (groups, replicas), name)
         for name in ("crn_id", "rollout_seed", "perturbation_seed")
     }
-    candidate_seed = _int_vector(
+    candidate_seed = _seed_vector(
         arrays["candidate_seed"], groups, "candidate_seed")
     if len(np.unique(candidate_seed)) != groups:
         raise ClosedLoopRecoveryTriageError(
@@ -1274,7 +1289,7 @@ def _load_outcome_npz(
         ):
             result[name] = _seed_matrix(
                 arrays[name], (groups, spec["audit_replicas"]), name)
-        result["preassigned_audit_candidate_seed"] = _int_vector(
+        result["preassigned_audit_candidate_seed"] = _seed_vector(
             arrays["preassigned_audit_candidate_seed"],
             groups,
             "preassigned_audit_candidate_seed",
@@ -2362,6 +2377,7 @@ def create_selection_lock(
     discovery_path: str | os.PathLike[str],
     collection_report_paths: Sequence[str | os.PathLike[str]],
     selection_lock_path: str | os.PathLike[str],
+    selection_semantics: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Read only admission/discovery artifacts and publish the one-way lock.
 
@@ -2496,26 +2512,26 @@ def create_selection_lock(
         replica_partition.append({
             "group_index": group,
             "group_id": str(discovery["group_id"][group]),
-            "admission_crn_ids": admission[
-                "admission_crn_id"][group].astype(int).tolist(),
-            "admission_rollout_seeds": admission[
-                "admission_rollout_seed"][group].astype(int).tolist(),
-            "admission_perturbation_seeds": admission[
-                "admission_perturbation_seed"][group].astype(int).tolist(),
-            "discovery_crn_ids": discovery[
-                "crn_id"][group].astype(int).tolist(),
-            "discovery_rollout_seeds": discovery[
-                "rollout_seed"][group].astype(int).tolist(),
-            "discovery_perturbation_seeds": discovery[
-                "perturbation_seed"][group].astype(int).tolist(),
+            "admission_crn_ids": _seed_json_list(
+                admission["admission_crn_id"][group]),
+            "admission_rollout_seeds": _seed_json_list(
+                admission["admission_rollout_seed"][group]),
+            "admission_perturbation_seeds": _seed_json_list(
+                admission["admission_perturbation_seed"][group]),
+            "discovery_crn_ids": _seed_json_list(
+                discovery["crn_id"][group]),
+            "discovery_rollout_seeds": _seed_json_list(
+                discovery["rollout_seed"][group]),
+            "discovery_perturbation_seeds": _seed_json_list(
+                discovery["perturbation_seed"][group]),
             "discovery_candidate_seed": int(discovery[
                 "candidate_seed"][group]),
-            "audit_crn_ids": discovery[
-                "preassigned_audit_crn_id"][group].astype(int).tolist(),
-            "audit_rollout_seeds": discovery[
-                "preassigned_audit_rollout_seed"][group].astype(int).tolist(),
-            "audit_perturbation_seeds": discovery[
-                "preassigned_audit_perturbation_seed"][group].astype(int).tolist(),
+            "audit_crn_ids": _seed_json_list(
+                discovery["preassigned_audit_crn_id"][group]),
+            "audit_rollout_seeds": _seed_json_list(
+                discovery["preassigned_audit_rollout_seed"][group]),
+            "audit_perturbation_seeds": _seed_json_list(
+                discovery["preassigned_audit_perturbation_seed"][group]),
             "audit_candidate_seed": int(discovery[
                 "preassigned_audit_candidate_seed"][group]),
         })
@@ -2590,6 +2606,12 @@ def create_selection_lock(
         "audit_authorized": bool(informativeness["pass"]),
         "audit_runner_up_policy": "forbidden",
     }
+    if selection_semantics is not None:
+        if not isinstance(selection_semantics, Mapping) or not selection_semantics:
+            raise ClosedLoopRecoveryTriageError(
+                "selection_semantics must be a nonempty mapping")
+        lock["selection_semantics"] = _json_copy(
+            selection_semantics, "selection_semantics")
     lock_sha256 = _atomic_no_clobber_json(lock_file, lock)
     result = _json_copy(lock, "selection lock")
     result["selection_lock_sha256"] = lock_sha256
@@ -2784,7 +2806,7 @@ def _read_selection_lock(
     policy_age = np.empty(spec["groups"], dtype=np.int64)
     winners: list[np.ndarray] = []
     seed_arrays = {
-        key: np.empty((spec["groups"], count), dtype=np.int64)
+        key: np.empty((spec["groups"], count), dtype=np.uint64)
         for key, count in (
             ("admission_crn_ids", spec["admission_replicas"]),
             ("admission_rollout_seeds", spec["admission_replicas"]),
@@ -2798,8 +2820,8 @@ def _read_selection_lock(
         )
     }
     candidate_seed_arrays = {
-        "discovery_candidate_seed": np.empty(spec["groups"], dtype=np.int64),
-        "audit_candidate_seed": np.empty(spec["groups"], dtype=np.int64),
+        "discovery_candidate_seed": np.empty(spec["groups"], dtype=np.uint64),
+        "audit_candidate_seed": np.empty(spec["groups"], dtype=np.uint64),
     }
     admission_lower, admission_upper = map(
         int, spec["data_gate"]["admission_falls_inclusive"])
@@ -2858,8 +2880,12 @@ def _read_selection_lock(
                     f"selection-lock {key} is invalid")
             target[index] = values
         for key, target in candidate_seed_arrays.items():
-            target[index] = _integer(
+            candidate_seed = _integer(
                 seed_record.get(key), f"selection-lock {key}", minimum=0)
+            if candidate_seed >= 1 << 64:
+                raise ClosedLoopRecoveryTriageError(
+                    f"selection-lock {key} exceeds uint64")
+            target[index] = candidate_seed
     text_state = np.asarray(state, dtype=str)
     text_trajectory = np.asarray(trajectory, dtype=str)
     if any(len(set(values)) != spec["groups"] for values in (
@@ -2876,6 +2902,15 @@ def _read_selection_lock(
            for index in range(spec["groups"])):
         raise ClosedLoopRecoveryTriageError(
             "selection-lock source seed/policy age binding drifted")
+    seed_derivation = spec["protocol"].get("seed_derivation")
+    requires_v4_tag = isinstance(seed_derivation, Mapping) and (
+        seed_derivation.get("v4_tag_bit63") == 1
+        and seed_derivation.get("historical_v2_v3_tag_bit63") == 0
+    )
+    if requires_v4_tag and any(np.any(value < np.uint64(1 << 63)) for value in (
+            *seed_arrays.values(), *candidate_seed_arrays.values())):
+        raise ClosedLoopRecoveryTriageError(
+            "selection-lock V4 seed is missing the bit-63 protocol tag")
     if any(len(np.unique(value)) != spec["groups"]
            for value in candidate_seed_arrays.values()) or not (
                _disjoint_seed_domains(

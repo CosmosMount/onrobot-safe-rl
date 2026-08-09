@@ -190,7 +190,12 @@ def _recovery_program_binding(protocol: dict) -> dict:
     }
 
 
-def _write_admission(root: Path, protocol: dict) -> Path:
+def _write_admission(
+    root: Path,
+    protocol: dict,
+    *,
+    v4_tagged_seeds: bool = False,
+) -> Path:
     path = root / protocol["collection"]["admission_deployable_filename"]
     identities = _identities()
     fall = np.zeros((12, 4), dtype=bool)
@@ -220,6 +225,11 @@ def _write_admission(root: Path, protocol: dict) -> Path:
         "accepted_group_index": np.arange(12, dtype=np.int64),
         "decision_reason": np.asarray(["accepted_1_to_3_of_4"] * 12),
     }
+    if v4_tagged_seeds:
+        for name in (
+                "admission_crn_id", "admission_rollout_seed",
+                "admission_perturbation_seed"):
+            arrays[name] |= np.uint64(1 << 63)
     ledger = AdmissionLedger(
         manifest={
             "schema_version": ADMISSION_SCHEMA_VERSION,
@@ -295,6 +305,7 @@ def _grouped_dataset(
     risk: np.ndarray,
     *,
     group_slice: slice = slice(None),
+    v4_tagged_seeds: bool = False,
 ) -> GroupedBranchDataset:
     identities = {
         name: values[group_slice]
@@ -361,6 +372,11 @@ def _grouped_dataset(
             dtype=np.uint64,
         ),
     }
+    if v4_tagged_seeds:
+        for name in (
+                "crn_id", "rollout_seed", "perturbation_seed",
+                "candidate_seed"):
+            arrays[name] |= np.uint64(1 << 63)
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "split": f"closed_loop_recovery_v3_{role}",
@@ -395,11 +411,15 @@ def _write_discovery(
     root: Path,
     protocol: dict,
     risk: np.ndarray | None = None,
+    *,
+    v4_tagged_seeds: bool = False,
 ) -> Path:
     path = root / protocol["collection"]["discovery_filename"]
     if risk is None:
         risk = _informative_discovery_risk()
-    dataset = _grouped_dataset(protocol, "discovery", risk)
+    dataset = _grouped_dataset(
+        protocol, "discovery", risk,
+        v4_tagged_seeds=v4_tagged_seeds)
     dataset.arrays["preassigned_audit_crn_id"] = np.arange(
         7_000_000, 7_000_000 + 12 * 20, dtype=np.uint64).reshape(12, 20)
     dataset.arrays["preassigned_audit_rollout_seed"] = np.arange(
@@ -408,6 +428,13 @@ def _write_discovery(
         9_000_000, 9_000_000 + 12 * 20, dtype=np.uint64).reshape(12, 20)
     dataset.arrays["preassigned_audit_candidate_seed"] = np.arange(
         9_500_000, 9_500_000 + 12, dtype=np.uint64)
+    if v4_tagged_seeds:
+        for name in (
+                "preassigned_audit_crn_id",
+                "preassigned_audit_rollout_seed",
+                "preassigned_audit_perturbation_seed",
+                "preassigned_audit_candidate_seed"):
+            dataset.arrays[name] |= np.uint64(1 << 63)
     dataset.manifest["shards"] = [{
         "ordinal": ordinal,
         "content_sha256": _fingerprint(f"discovery-shard-{seed}"),
@@ -426,13 +453,15 @@ def _write_audit(
     risk: np.ndarray,
     *,
     wrong_seed: bool = False,
+    v4_tagged_seeds: bool = False,
 ) -> tuple[list[Path], list[dict[str, str]]]:
     paths: list[Path] = []
     commitments: list[dict[str, str]] = []
     for ordinal, seed in enumerate(SOURCE_SEEDS):
         selected = slice(2 * ordinal, 2 * ordinal + 2)
         dataset = _grouped_dataset(
-            protocol, "audit", risk[selected], group_slice=selected)
+            protocol, "audit", risk[selected], group_slice=selected,
+            v4_tagged_seeds=v4_tagged_seeds)
         for name, base in (
             ("crn_id", 7_000_000),
             ("rollout_seed", 8_000_000),
@@ -446,6 +475,11 @@ def _write_audit(
             9_500_000 + 2 * ordinal + 2,
             dtype=np.uint64,
         )
+        if v4_tagged_seeds:
+            for name in (
+                    "crn_id", "rollout_seed", "perturbation_seed",
+                    "candidate_seed"):
+                dataset.arrays[name] |= np.uint64(1 << 63)
         if wrong_seed and ordinal == 0:
             dataset.arrays["rollout_seed"][0, 0] += 999_999
         path = root / f"source-{seed}.audit.npz"
@@ -783,11 +817,13 @@ def _prepare_readiness(
     audit_risk: np.ndarray | None = None,
     *,
     wrong_seed: bool = False,
+    v4_tagged_seeds: bool = False,
 ) -> tuple[list[Path], list[Path]]:
     if audit_risk is None:
         audit_risk = _informative_discovery_risk()
     audit_paths, audit_commitments = _write_audit(
-        root, protocol, audit_risk, wrong_seed=wrong_seed)
+        root, protocol, audit_risk, wrong_seed=wrong_seed,
+        v4_tagged_seeds=v4_tagged_seeds)
     return audit_paths, _write_collection_reports(
         root, protocol, audit_paths, audit_commitments)
 
@@ -923,6 +959,10 @@ class ClosedLoopRecoverySelectionLockTest(_ScaledV3TestCase):
             admission = _write_admission(root, protocol)
             discovery = _write_discovery(root, protocol)
             _, reports = _prepare_readiness(root, protocol)
+            selection_semantics = {
+                "schema_version": "qsafe.test.selection_semantics.v1",
+                "primary_selection": "synthetic_test_only",
+            }
             previous = Path.cwd()
             try:
                 os.chdir(away)
@@ -937,12 +977,18 @@ class ClosedLoopRecoverySelectionLockTest(_ScaledV3TestCase):
                     collection_report_paths=reports,
                     selection_lock_path=(root / protocol["collection"][
                         "selection_lock_filename"]),
+                    selection_semantics=selection_semantics,
                 )
             finally:
                 os.chdir(previous)
             self.assertEqual(
                 readiness["manifest"]["artifact_root"], str(root.resolve()))
             self.assertTrue(lock["audit_authorized"])
+            self.assertEqual(lock["selection_semantics"], selection_semantics)
+            persisted = json.loads((root / protocol["collection"][
+                "selection_lock_filename"]).read_text(encoding="utf-8"))
+            self.assertEqual(
+                persisted["selection_semantics"], selection_semantics)
 
     def test_selection_requires_untampered_merge_completion_reports(self):
         with tempfile.TemporaryDirectory(prefix="qsafe-v3-") as directory:
@@ -1201,6 +1247,54 @@ class ClosedLoopRecoveryAuditTest(_ScaledV3TestCase):
             selection_lock_path=lock_path,
         )
         return protocol, lock_path, lock, audit
+
+    def test_v4_tagged_uint64_seeds_round_trip_through_lock_and_audit(self):
+        with tempfile.TemporaryDirectory(prefix="qsafe-v3-") as directory:
+            root = Path(directory)
+            protocol = _protocol(root)
+            admission = _write_admission(
+                root, protocol, v4_tagged_seeds=True)
+            discovery = _write_discovery(
+                root, protocol, v4_tagged_seeds=True)
+            audit, reports = _prepare_readiness(
+                root, protocol, v4_tagged_seeds=True)
+            lock_path = root / protocol["collection"][
+                "selection_lock_filename"]
+            lock = create_selection_lock(
+                protocol=protocol,
+                admission_path=admission,
+                discovery_path=discovery,
+                collection_report_paths=reports,
+                selection_lock_path=lock_path,
+            )
+            persisted = json.loads(lock_path.read_text(encoding="utf-8"))
+            first = persisted["replica_partition"][0]
+            for name in (
+                    "admission_crn_ids", "admission_rollout_seeds",
+                    "admission_perturbation_seeds", "discovery_crn_ids",
+                    "discovery_rollout_seeds",
+                    "discovery_perturbation_seeds", "audit_crn_ids",
+                    "audit_rollout_seeds", "audit_perturbation_seeds"):
+                self.assertTrue(all(value >= 1 << 63 for value in first[name]))
+            self.assertGreaterEqual(first["discovery_candidate_seed"], 1 << 63)
+            self.assertGreaterEqual(first["audit_candidate_seed"], 1 << 63)
+
+            with _formal_bootstrap_patch():
+                result = consume_and_evaluate_audit(
+                    protocol=protocol,
+                    selection_lock_path=lock_path,
+                    expected_selection_lock_sha256=lock[
+                        "selection_lock_sha256"],
+                    audit_paths=audit,
+                    audit_consumed_path=(
+                        root / protocol["collection"][
+                            "audit_consumed_filename"]),
+                )
+            consumed = root / protocol["collection"][
+                "audit_consumed_filename"]
+            self.assertTrue(consumed.is_file())
+            self.assertRegex(
+                result["audit_consumed_marker_sha256"], r"^[0-9a-f]{64}$")
 
     def test_control_symlinks_never_resolve_an_audit_target_premarker(self):
         with tempfile.TemporaryDirectory(prefix="qsafe-v3-") as directory:

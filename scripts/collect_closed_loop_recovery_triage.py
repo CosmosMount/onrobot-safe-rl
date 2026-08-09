@@ -236,7 +236,15 @@ def _verify_runtime_contract(
         "projection": (
             "clip_normalized_then_joint_bounds_then_slew_then_filter"),
     }
-    if observed_action_contract != target.get("action_application_contract"):
+    expected_action_contract = target.get("action_application_contract")
+    if isinstance(expected_action_contract, dict) and (
+            {"max_joint_delta", "use_action_filter"}.issubset(
+                expected_action_contract)):
+        observed_action_contract.update({
+            "max_joint_delta": None,
+            "use_action_filter": False,
+        })
+    if observed_action_contract != expected_action_contract:
         raise ValueError("resolved runtime action projection differs from v3")
 
 
@@ -376,6 +384,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-seed", required=True, type=int)
     parser.add_argument("--progress-every", type=int, default=4)
+    parser.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help=(
+            "validate policy/simulator/schema bindings without publishing a "
+            "cohort or attempt marker and without stepping the simulator"),
+    )
     args = parser.parse_args()
     if args.progress_every <= 0:
         parser.error("progress interval must be positive")
@@ -461,6 +476,13 @@ def main() -> int:
         mature_policy, env.action_applier)
     if recovery_program.manifest_protocol() != collection["candidates"]:
         raise RuntimeError("runtime K9 behavior library differs from protocol")
+    expected_library_fingerprint = mature_entry.get(
+        "recovery_library_fingerprint_sha256")
+    if expected_library_fingerprint is not None and (
+            recovery_program.fingerprint() != expected_library_fingerprint):
+        raise RuntimeError(
+            "runtime K9 mature-policy/action-projection fingerprint differs "
+            "from protocol")
 
     source_impulse = collection["source_impulse"]
     admission = collection["admission"]
@@ -503,6 +525,23 @@ def main() -> int:
         protocol_contract_sha256=protocol_contract_sha256,
     )
     _require_same_clean_commit(generator_commit, "during v3 preflight")
+    if args.preflight_only:
+        print(json.dumps({
+            "event": "closed_loop_recovery_preflight_complete",
+            "protocol_name": _PROTOCOL_NAME,
+            "source_seed": args.source_seed,
+            "policy_training_step": int(policy_entry["training_step"]),
+            "generator_commit": generator_commit,
+            "protocol_file_sha256": protocol_sha256,
+            "protocol_contract_sha256": protocol_contract_sha256,
+            "recovery_library_fingerprint_sha256": (
+                prepared.recovery_program_binding["fingerprint_sha256"]),
+            "simulator_steps_executed": 0,
+            "cohort_lock_published": False,
+            "attempt_marker_published": False,
+            "outcomes_generated": False,
+        }, indent=2, sort_keys=True))
+        return 0
     # Publish the cohort only after every deterministic policy/simulator/schema
     # preflight has passed.  A later attempt marker therefore means that the
     # next operation may genuinely generate simulator outcomes.

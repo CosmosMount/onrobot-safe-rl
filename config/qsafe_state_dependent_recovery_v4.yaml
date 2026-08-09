@@ -1,0 +1,1054 @@
+# Immutable development protocol for the fresh V4 Stage-A confirmation.
+# Stage A may authorize Stage B, but this file and its Stage-A tools never fit
+# a model, run online SAC, or authorize Phase 2.
+protocol_schema_version: 1
+protocol_name: objective1_state_dependent_recovery_qsafe_v4
+created_at: "2026-08-09T00:00:00+08:00"
+scope: conditional_development_stage_a_confirmation
+claim_eligible: false
+
+parent_iterations:
+  consumed_protocols:
+    - objective1_recovery_option_triage_v2
+    - objective1_closed_loop_recovery_triage_v3
+  consumed_source_seeds: [7601, 7602, 7603, 7801, 7802, 7811, 7812, 7821, 7822]
+  outcome_reuse: forbidden
+  v3_result: report_inconclusive_no_model_training
+  v3_result_commit: 607dee7
+
+protection:
+  denied_path_component_prefixes: [sealed, formal]
+  require_development_paths: true
+  reject_old_protocols: true
+  forbidden_legacy_machine_protocol: config/qsafe_evidence_protocol.yaml
+  assignment_before_candidate_outcomes: true
+  optional_stopping: forbidden
+  sample_top_up: forbidden
+  failed_trials_remain_consumed: true
+  require_clean_generator_commit: true
+  generator_commit_rule: clean_HEAD_must_contain_protocol_implementation_and_tests
+  audit_path_rule: lexical_commitment_check_then_marker_then_first_filesystem_probe
+  publication: atomic_no_clobber_report_last
+  stage_A_denied_report_resume:
+    entrypoint: resume-denied-report
+    prerequisite: existing_hash_bound_selection_lock_only
+    required_selection_lock_values:
+      audit_authorized: false
+      data_gate:
+        pass: false
+        discovery_informativeness:
+          pass: false
+    selection_lock_mutation: forbidden
+    report_reconstruction: canonical_from_protocol_and_existing_selection_lock_only
+    repeated_call: accept_existing_report_only_if_byte_identical_to_reconstruction
+    report_publication: atomic_no_clobber_report_last
+    audit_path_parse_or_probe: forbidden
+    audit_outcome_hash_map_load_or_open: forbidden
+
+seed_derivation:
+  algorithm: high_bit_then_domain_low15_then_14_8_18_2_6_bitpack_v1
+  domain_literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_seed\\0"
+  domain_hex: 71736166655f73746174655f646570656e64656e745f7265636f766572795f76345f7365656400
+  domain_sha256_prefix_low15: 18561
+  v4_tag_bit63: 1
+  historical_v2_v3_tag_bit63: 0
+  packed_field_order: [v4_tag, domain_prefix, source_seed, role_tag, identity, namespace, index]
+  packed_field_width_bits: [1, 15, 14, 8, 18, 2, 6]
+  production_caps_exclusive: {source_seed: 16384, role_tag: 256, identity: 262144, namespace: 4, index: 64}
+  stream_mapping:
+    source_reset_rng: {role: source_reset, identity: episode_number, namespace: 0, index: 0}
+    episode_id: {role: source_reset, identity: episode_number, namespace: 1, index: 0}
+    source_impulse_rng: {role: source_impulse, identity: episode_number_times_max_episode_steps_plus_episode_step, namespace: 0, index: 0}
+    source_action_rng: {role: source_action, identity: episode_number_times_max_episode_steps_plus_episode_step, namespace: 0, index: 0}
+    branch_crn_id: {roles: [admission, discovery, audit], identity: proposal_index, namespace: 0, index: replica_index}
+    branch_rollout_seed: {roles: [admission, discovery, audit], identity: proposal_index, namespace: 1, index: replica_index}
+    branch_perturbation_seed: {roles: [admission, discovery, audit], identity: proposal_index, namespace: 2, index: replica_index}
+    branch_candidate_seed: {roles: [admission, discovery, audit], identity: proposal_index, namespace: 3, index: 0}
+  injective_within_declared_caps: true
+  truncation_after_field_packing: forbidden
+  role_tags:
+    source_reset: 110
+    source_impulse: 111
+    source_action: 112
+    admission: 120
+    discovery: 130
+    audit: 140
+  roles_exact: true
+  disjoint_from_v2_v3_by_v4_tag_bit: true
+
+target:
+  robot: unitree_go2
+  model_mjcf: /home/xyz/code/unitree_mujoco/unitree_robots/go2/scene_empty.xml
+  model_mjcf_dependency_sha256: f914b2658761d49e19f17c89d14c1af0989e5e1012a7cdbeab9fb5885fc7a021
+  route: sac_from_scratch_policy_age_mechanism
+  command_speed_mps: 0.30
+  observation: corrected_deployable_46d_last_5_frames
+  observation_joint_q_slice: [0, 12]
+  observation_previous_q_target_slice: [34, 46]
+  action: normalized_12d_with_requested_executed_and_absolute_q_send_recorded
+  action_application_contract:
+    q_target_semantic: absolute_joint_position_sent
+    init_qpos: [0.05000000074505806, 0.699999988079071, -1.399999976158142, 0.05000000074505806, 0.699999988079071, -1.399999976158142, 0.05000000074505806, 0.699999988079071, -1.399999976158142, 0.05000000074505806, 0.699999988079071, -1.399999976158142]
+    action_offset: [0.20000000298023224, 0.4000000059604645, 0.4000000059604645, 0.20000000298023224, 0.4000000059604645, 0.4000000059604645, 0.20000000298023224, 0.4000000059604645, 0.4000000059604645, 0.20000000298023224, 0.4000000059604645, 0.4000000059604645]
+    joint_min: [-1.0499999523162842, -1.5700000524520874, -2.7200000286102295, -1.0499999523162842, -1.5700000524520874, -2.7200000286102295, -1.0499999523162842, -0.5199999809265137, -2.7200000286102295, -1.0499999523162842, -0.5199999809265137, -2.7200000286102295]
+    joint_max: [1.0499999523162842, 3.490000009536743, -0.8399999737739563, 1.0499999523162842, 3.490000009536743, -0.8399999737739563, 1.0499999523162842, 4.539999961853027, -0.8399999737739563, 1.0499999523162842, 4.539999961853027, -0.8399999737739563]
+    projection: clip_normalized_then_joint_bounds_then_slew_then_filter
+    max_joint_delta: null
+    use_action_filter: false
+  policy_hz: 50
+  low_level_hz: 500
+  horizon_policy_steps: 96
+  failure:
+    max_abs_roll_pitch_rad: 0.523599
+    min_base_height_m: 0.18
+    height_reference: base_link_body_origin_world_z
+    height_comparator: strict_less_than
+    sampling_cadence: first_failing_50Hz_post_action_boundary_after_10_low_level_substeps
+    within_policy_hold_crossings: not_observed
+    first_failure_step_semantics: first_failing_post_action_policy_boundary_1_through_H
+    tilt_comparator: greater_than_or_equal
+    fallen_orientation_rad_overridden_from: success_orientation_rad
+    semantics: simulator_fall_label_with_recorded_runtime_differences
+    runtime_orientation_comparator_difference_recorded: true
+    base_height_is_privileged_outcome_label: true
+    runtime_supervisor_base_height_predicate: absent
+    deployment_equivalence_claim: forbidden
+  statistical_unit: unique_source_trajectory_state_group
+  estimand: equal_seed_per_state_discovery_locked_recovery_effect_on_admission_positive_fixed_states
+  natural_incidence_claim: forbidden
+  cross_actor_seed_claim: forbidden
+
+policy_config:
+  path: config/go2_50hz_sqrl_paper_sac_pretrain.yaml
+  config_sha256: ebf312ef27f64326a6ef478e0f86273af9f9cbaf61dd09b632fb10868524f726
+  policy_training_seed: 42
+
+early_task_policies:
+  - training_step: 25438
+    checkpoint: saved/experiments/sqrl_paper/seed42/pretrain_sac_async_v1/step_000000025438/agent
+    source_seeds: [8401, 8402]
+    actor_sha256: e38d838be37668e1d225cd362890388c4a43d146863aa9fd12678901f9c924cd
+    actor_state_dict_sha256: a876ee6a6715db9763cf8ed4867e5fa212a7ba37140cd3ad9879b768660040c1
+    policy_fingerprint_sha256: 642ecb0b6255c3d8943a4e9cbceed32dffd7bfbbca6f90bf44b117bcddc802d1
+    checkpoint_fingerprint_sha256: f4fb74c97d733dd96da23af82f6245211734cf7a06c639354da2c1091b67401f
+  - training_step: 50030
+    checkpoint: saved/experiments/sqrl_paper/seed42/pretrain_sac_async_v1/step_000000050030/agent
+    source_seeds: [8411, 8412]
+    actor_sha256: 6fb0c32cf8307541a9295bf59b35f24b50eb127fba05356ad137d8a9f5a19d99
+    actor_state_dict_sha256: d5c68b9953eb98247a2eee74b7ade92db830421878778e1740f30e2b90a3f125
+    policy_fingerprint_sha256: 0847d79bb49cd532f37094c4dfeb69675564cd23e9d6b1d20c8406846ccb6b8c
+    checkpoint_fingerprint_sha256: f80cf0865d28b7ccbd716522f31584e5f2724d234e6dfb45070eaf1f43c8b087
+  - training_step: 100359
+    checkpoint: saved/experiments/sqrl_paper/seed42/pretrain_sac_async_v1/step_000000100359/agent
+    source_seeds: [8421, 8422]
+    actor_sha256: 92a1a63dda234c2fca529b7e824ab7e2cb83389c90fe0257e694fb986b33b8d6
+    actor_state_dict_sha256: 74c475279f7547da6b964d08268e8935713cff1182df3ef1987a8e125703e2fb
+    policy_fingerprint_sha256: a6fbf86bd698a6e3c44feb8dcd2279a6560c741c6b4ab694ef3d83fe8c5f5974
+    checkpoint_fingerprint_sha256: 4336373ae7298a3d2c835bf3288d640949aa8c1fbdf152e78f99e6e95afe9900
+
+mature_recovery_policy:
+  training_step: 500000
+  checkpoint: saved/experiments/sqrl_paper/seed42/pretrain_sac_async_v1/step_000000500000/agent
+  actor_sha256: 958e2c4345aca511723e4b9299554c9f1594617322ad7d62c0ace84319cbbed0
+  actor_state_dict_sha256: 2074a3f00152df8e96cddf380623a9eb4bb63f84538dafca59cdf509f9559409
+  policy_fingerprint_sha256: f01e7cc36b9020631171c3dfe502d7426877aee0c33debd0a5c197206efc0908
+  checkpoint_fingerprint_sha256: 2597eeb238d586bdd895e436b0e814aae23677484878da1eba5d1258b06f97cc
+  recovery_library_fingerprint_sha256: fcfb1fa541acf316f87dacf82b1fdeb9188d7a4b9df7f69544b567fb2c5d1045
+  action_semantics: deterministic_actor_mean_during_option
+  privileged_inputs: forbidden
+
+collection:
+  artifact_root: saved/qsafe_development/state_dependent_recovery_v4
+  cohort_lock_filename: cohort-lock.json
+  attempt_shard_filename_template: source-{source_seed}.attempt-started.json
+  admission_shard_filename_template: source-{source_seed}.admission.npz
+  admission_privileged_shard_filename_template: source-{source_seed}.admission.privileged.npz
+  discovery_shard_filename_template: source-{source_seed}.discovery.npz
+  discovery_privileged_shard_filename_template: source-{source_seed}.discovery.privileged.npz
+  audit_shard_filename_template: source-{source_seed}.audit.npz
+  audit_privileged_shard_filename_template: source-{source_seed}.audit.privileged.npz
+  collection_report_shard_filename_template: source-{source_seed}.collection-report.json
+  admission_deployable_filename: admission-ledger-deployable.npz
+  admission_privileged_filename: admission-ledger-privileged.npz
+  admission_merge_report_filename: admission-merge-report.json
+  discovery_filename: discovery-g384.npz
+  discovery_privileged_filename: discovery-g384-privileged.npz
+  discovery_merge_report_filename: discovery-merge-report.json
+  audit_filename: audit-g384.npz
+  audit_filename_semantics: optional_post_consumption_materialization_only
+  audit_privileged_filename: audit-g384-privileged.npz
+  selection_lock_filename: selection-lock.json
+  audit_consumed_filename: audit-consumed.json
+  triage_report_filename: state-dependent-recovery-stage-a-report.json
+  audit_analysis_input_order: [8401, 8402, 8411, 8412, 8421, 8422]
+  audit_merge_before_selection: forbidden
+  groups_per_source_seed: 64
+  total_groups: 384
+  max_groups_per_trajectory: 1
+  max_episode_steps: 100
+  max_proposals_per_source_seed: 4096
+  max_source_trajectories_per_seed: 2048
+  rejected_proposal_cooldown_policy_steps: 5
+  settle_seconds: 0.04
+  settle_policy_steps: 2
+  source_impulse:
+    interval_policy_steps: 10
+    linear_std_mps: 1.0
+    angular_std_radps: 4.0
+  branch_impulse:
+    policy_steps: [24, 48, 72]
+    linear_std_mps: 0.0
+    angular_std_radps: 0.0
+  proposal_pre_screen:
+    require_not_failed: true
+    min_tilt_rad_inclusive: 0.10
+    max_height_m_inclusive: 0.32
+    height_reference: base_link_body_origin_world_z
+    boolean_rule: tilt_at_least_min_OR_height_at_most_max
+    base_height_is_privileged_sampling_only: true
+    future_runtime_input: forbidden
+  admission:
+    replicas: 32
+    horizon_policy_steps: 96
+    nominal_first_action: deterministic_early_actor_mean
+    continuation: stochastic_same_early_actor
+    branch_disturbance: zero
+    accept_min_falls_inclusive: 6
+    accept_max_falls_inclusive: 26
+    accepted_empirical_risk_interval: [0.1875, 0.8125]
+    seed_domain: admission_v4_stage_a_disjoint
+    all_proposals_recorded: true
+    labels_used_in_effect_estimation: false
+  candidates:
+    protocol_version: qsafe.closed_loop_recovery_behaviors.v3
+    count: 9
+    nominal_index: 0
+    ordered_names: [nominal, mature_actor_L10, mature_actor_L25, mature_actor_L50, joint_brake_L10, halfway_neutral_L10, halfway_neutral_L25, ramp_neutral_L25, ramp_crouch_L25]
+    behavior_steps_array: candidate_behavior_steps
+    behavior_override_steps: [0, 10, 25, 50, 10, 10, 25, 25, 25]
+    observation_history_shape: [5, 46]
+    observation_joint_q_slice: [0, 12]
+    observation_previous_q_target_slice: [34, 46]
+    t0_nominal_semantics: deterministic_early_actor_mean
+    mature_actor_semantics: deterministic_newest_46d_frame
+    post_option_continuation: stochastic_same_early_actor
+    reselection_during_option: forbidden
+    q_neutral_per_leg_rad: [0.05, 0.70, -1.40]
+    q_crouch_per_leg_rad: [0.05, 0.90, -1.60]
+    halfway_neutral_formula: 0.5_times_latest_q_plus_0.5_times_q_neutral
+    ramp_max_delta_rad_per_joint_per_policy_step: 0.04
+    target_to_action: runtime_qpos_to_action
+    projection: unchanged_runtime_ActionApplier
+    kp: 60.0
+    kd: 5.0
+    max_joint_delta: null
+    use_action_filter: false
+    tie_priority: [nominal, mature_actor_L10, mature_actor_L25, mature_actor_L50, joint_brake_L10, halfway_neutral_L10, halfway_neutral_L25, ramp_neutral_L25, ramp_crouch_L25]
+  replica_partition:
+    schema_version: qsafe.physically_separate_replica_partition.v4_stage_a
+    assignment_timing: before_candidate_outcomes
+    discovery_indices: {start_inclusive: 0, stop_exclusive: 64}
+    audit_indices: {start_inclusive: 64, stop_exclusive: 128}
+    discovery_replicas: 64
+    audit_replicas: 64
+    exhaustive: true
+    disjoint_seed_domains: true
+    physical_files: true
+  total_candidate_replicas: 128
+  total_candidate_branch_rollouts: 442368
+  max_candidate_policy_steps: 42467328
+  collection_order: complete_all_six_source_seed_shards_before_discovery_analysis
+
+firewall:
+  selection_uses: [admission_ledger, discovery]
+  selection_forbidden: [audit, consumed_v2_outcomes, consumed_v3_outcomes]
+  primary_selection: per_state_all_exact_discovery_minima_uniform_expectation
+  candidate_column_order_effect_on_ties: forbidden
+  selection_lock_no_clobber: true
+  selected_global_candidate: diagnostic_only_minimum_equal_group_equal_seed_discovery_risk
+  global_exact_tie_break: locked_candidate_order
+  per_group_ties: uniform_expectation_all_discovery_minima
+  audit_requires_exact_selection_lock_hash: true
+  audit_consumed_marker_created_before_outcome_read: true
+  audit_shards_opened_only_after_consumed_marker: true
+  interrupted_audit_remains_consumed: true
+  audit_runner_up_policy: forbidden
+  denied_report_crash_recovery:
+    entrypoint: resume-denied-report
+    reads: [canonical_protocol, existing_hash_bound_selection_lock]
+    requires_false: [audit_authorized, data_gate_pass, discovery_informativeness_pass]
+    writes: canonical_stage_A_failure_report_only
+    repeated_call_requires_byte_identical_existing_report: true
+    selection_lock_rewrite: forbidden
+    audit_path_parse_resolve_stat_hash_map_load_open: forbidden
+
+statistics:
+  group_weighting: equal_groups_within_seed_then_equal_six_source_seeds
+  policy_age_strata:
+    "25438": [8401, 8402]
+    "50030": [8411, 8412]
+    "100359": [8421, 8422]
+  bootstrap:
+    kind: hierarchical_policy_age_seed_then_trajectory_group
+    replicates: 50000
+    seed: 20260810
+    rng_bit_generator: numpy_PCG64
+    chunk_size: 512
+    draw_order: chunk_then_sorted_age_then_slot_seed_vector_C_then_group_matrix_C_order
+    quantile_method: linear
+    confidence: one_sided_0.95
+    resample_policy_age_strata: false
+    resample_source_seeds_within_stratum: true
+    resample_complete_groups_within_seed: true
+    resample_candidates: false
+    resample_replicas: false
+  reported_effect: audit_nominal_risk_minus_uniform_audit_risk_over_discovery_minima
+  audit_labels: raw_unshrunk_binary_falls
+  pair_tie_score: 0.5
+  pair_agreement:
+    candidate_scope: all_K9_unordered_pairs
+    pairs_per_group: 36
+    tie_condition: discovery_or_audit_pair_risk_equal
+    tie_score: 0.5
+    non_tie_score: one_if_risk_difference_signs_agree_else_zero
+    within_group_aggregation: mean_over_36_pairs
+    cohort_aggregation: equal_groups_within_seed_then_equal_six_source_seeds
+    bootstrap_unit: complete_group_score
+  natural_frequency_weighting: forbidden
+
+triage_gates:
+  data:
+    independent_groups_exact: 384
+    unique_source_trajectories_exact: 384
+    groups_per_required_source_seed_exact: 64
+    required_source_seeds: [8401, 8402, 8411, 8412, 8421, 8422]
+    candidates_per_group_exact: 9
+    discovery_replicas_exact: 64
+    audit_replicas_exact: 64
+    horizon_policy_steps_exact: 96
+    admission_replicas_exact: 32
+    admission_falls_inclusive: [6, 26]
+    min_discovery_nominal_risk: 0.15
+    max_discovery_nominal_risk: 0.75
+    min_each_policy_age_discovery_nominal_risk: 0.10
+    max_each_policy_age_discovery_nominal_risk: 0.90
+    discovery_informativeness_checked_before_audit_open: true
+    zero_duplicate_state_fingerprints: true
+    zero_duplicate_trajectory_fingerprints: true
+  stage_A_primary:
+    rule: per_state_all_exact_discovery_minima_uniform_expectation
+    min_audit_absolute_reduction: 0.10
+    min_one_sided_95_lcb_reduction: 0.07
+    min_discovery_to_audit_pair_agreement: 0.70
+    min_pair_agreement_one_sided_95_lcb: 0.65
+    require_each_policy_age_positive: true
+    min_positive_source_seeds: 6
+    override_by_fixed_candidate: forbidden
+    override_by_oracle_or_reanalysis: forbidden
+  failure:
+    decision: no_model_training
+    audit_reuse: forbidden
+    top_up: forbidden
+  pass:
+    decision: authorize_stage_B_only
+
+stage_A:
+  status_before_audit: preregistered_not_run
+  actor_training_seed: 42
+  source_seeds: [8401, 8402, 8411, 8412, 8421, 8422]
+  groups: 384
+  candidates: 9
+  admission_replicas: 32
+  discovery_replicas: 64
+  audit_replicas: 64
+  horizon_policy_steps: 96
+  result_may_authorize: stage_B_model_fit_only
+
+stage_B:
+  starts_only_if: stage_A_pass_true
+  feature_contract:
+    schema_version: qsafe.recovery_program_features.v1
+    common_nominal_application_width: 36
+    recovery_program_width: 46
+    model_action_width: 82
+    recovery_program_fields: requested12_executed12_qtarget12_behavior_onehot9_behavior_steps_over_H1
+    candidate_names: [nominal, mature_actor_L10, mature_actor_L25, mature_actor_L50, joint_brake_L10, halfway_neutral_L10, halfway_neutral_L25, ramp_neutral_L25, ramp_crouch_L25]
+    behavior_steps: [0, 10, 25, 50, 10, 10, 25, 25, 25]
+    horizon_denominator: 96
+    candidate_mask_contract: all_K9_preview_candidates_valid
+    recovery_library_fingerprint_sha256: fcfb1fa541acf316f87dacf82b1fdeb9188d7a4b9df7f69544b567fb2c5d1045
+    fallback_to_36d: forbidden
+  actor_training_seeds:
+    fit: [43, 44, 45, 46]
+    probability_calibration: [47, 48]
+    uncertainty_calibration: [49, 50]
+    selector_calibration: [51, 52]
+    model_test: [53, 54, 55, 56]
+  source_seeds:
+    fit: [8501, 8502, 8503, 8504, 8511, 8512, 8513, 8514, 8521, 8522, 8523, 8524]
+    probability_calibration: [8601, 8602, 8611, 8612, 8621, 8622]
+    uncertainty_calibration: [8631, 8632, 8641, 8642, 8651, 8652]
+    selector_calibration: [8661, 8662, 8671, 8672, 8681, 8682]
+    model_test: [8701, 8702, 8703, 8704, 8711, 8712, 8713, 8714, 8721, 8722, 8723, 8724]
+  actor_source_assignment:
+    rule: nth_source_seed_in_each_age_block_belongs_to_nth_actor_training_seed
+    actor_checkpoint_steps: [25000, 50000, 100000]
+    by_role:
+      fit:
+        "43": [8501, 8511, 8521]
+        "44": [8502, 8512, 8522]
+        "45": [8503, 8513, 8523]
+        "46": [8504, 8514, 8524]
+      probability_calibration:
+        "47": [8601, 8611, 8621]
+        "48": [8602, 8612, 8622]
+      uncertainty_calibration:
+        "49": [8631, 8641, 8651]
+        "50": [8632, 8642, 8652]
+      selector_calibration:
+        "51": [8661, 8671, 8681]
+        "52": [8662, 8672, 8682]
+      model_test:
+        "53": [8701, 8711, 8721]
+        "54": [8702, 8712, 8722]
+        "55": [8703, 8713, 8723]
+        "56": [8704, 8714, 8724]
+  groups:
+    fit: 1536
+    probability_calibration: 384
+    uncertainty_calibration: 384
+    selector_calibration: 384
+    model_test: 768
+  role_collection_contract:
+    role_order: [fit, probability_calibration, uncertainty_calibration, selector_calibration, model_test]
+    groups_per_source_seed:
+      fit: 128
+      probability_calibration: 64
+      uncertainty_calibration: 64
+      selector_calibration: 64
+      model_test: 64
+    admission_replicas_exact:
+      fit: 32
+      probability_calibration: 32
+      uncertainty_calibration: 32
+      selector_calibration: 32
+      model_test: 32
+    label_replicas_exact:
+      fit: 32
+      probability_calibration: 32
+      uncertainty_calibration: 32
+      selector_calibration: 32
+      model_test: 64
+    admission_falls_inclusive: [6, 26]
+    assignment_timing: before_any_candidate_outcome
+    admission_and_label_replica_independence:
+      physical_files_separate: true
+      seed_domains_separate: true
+      crn_ids_disjoint: true
+      rollout_seeds_disjoint: true
+      perturbation_seeds_disjoint: true
+      candidate_seeds_disjoint: true
+      admission_outcomes_used_as_labels: false
+    replica_seed_domains:
+      fit:
+        admission_literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_b_fit_admission\\0"
+        label_literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_b_fit_label\\0"
+      probability_calibration:
+        admission_literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_b_probability_calibration_admission\\0"
+        label_literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_b_probability_calibration_label\\0"
+      uncertainty_calibration:
+        admission_literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_b_uncertainty_calibration_admission\\0"
+        label_literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_b_uncertainty_calibration_label\\0"
+      selector_calibration:
+        admission_literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_b_selector_calibration_admission\\0"
+        label_literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_b_selector_calibration_label\\0"
+      model_test:
+        admission_literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_b_model_test_admission\\0"
+        label_literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_b_model_test_label\\0"
+      all_ten_literals_pairwise_distinct: true
+    five_role_pairwise_disjointness:
+      dimensions: [policy_training_seed, actor_checkpoint_sha256, actor_state_dict_sha256, policy_fingerprint_sha256, checkpoint_fingerprint_sha256, state_fingerprint_sha256, trajectory_fingerprint_sha256, crn_id, rollout_seed, perturbation_seed, candidate_seed]
+      all_ten_role_pairs_checked: true
+      zero_collisions_required: true
+      proof_report: stage-b-split-disjointness-report.json
+    one_shot_report_last: true
+    no_role_top_up: true
+  normalization_contract:
+    source_role: fit_only
+    source_array: stage-b/fit/labels-r32-deployable.npz
+    fit_group_ids_only: true
+    candidate_or_replica_outcome_weighting: forbidden
+    caller_supplied_statistics: forbidden
+    computed_before_model_test_consumption: true
+    frozen_before_probability_calibration: true
+    provenance_fields: [schema_version, source_role, source_array_sha256, source_group_ids_sha256, observation_mean_f4_sha256, observation_std_f4_sha256, privileged_features_absent, report_sha256]
+    privileged_features_absent: true
+  artifacts:
+    artifact_root_relative: stage-b
+    role_path_schema:
+      schema_version: qsafe.stage_b_role_evidence_paths.v1
+      required_per_role: [attempt_marker, source_admission_shards, source_label_shards, source_privileged_label_shards, admission_array, label_array, privileged_label_array, step_log, collection_manifest, completion_marker, report]
+      fit:
+        attempt_marker: stage-b/fit/attempt-started.json
+        source_admission_shards: stage-b/fit/source-{source_seed}.admission-r32.npz
+        source_label_shards: stage-b/fit/source-{source_seed}.labels-r32.npz
+        source_privileged_label_shards: stage-b/fit/source-{source_seed}.labels-r32.privileged.npz
+        admission_array: stage-b/fit/admission-r32.npz
+        label_array: stage-b/fit/labels-r32-deployable.npz
+        privileged_label_array: stage-b/fit/labels-r32-privileged.npz
+        step_log: stage-b/fit/steps.jsonl
+        collection_manifest: stage-b/fit/collection-manifest.json
+        completion_marker: stage-b/fit/completed.json
+        report: stage-b/fit/report.json
+      probability_calibration:
+        attempt_marker: stage-b/probability-calibration/attempt-started.json
+        source_admission_shards: stage-b/probability-calibration/source-{source_seed}.admission-r32.npz
+        source_label_shards: stage-b/probability-calibration/source-{source_seed}.labels-r32.npz
+        source_privileged_label_shards: stage-b/probability-calibration/source-{source_seed}.labels-r32.privileged.npz
+        admission_array: stage-b/probability-calibration/admission-r32.npz
+        label_array: stage-b/probability-calibration/labels-r32-deployable.npz
+        privileged_label_array: stage-b/probability-calibration/labels-r32-privileged.npz
+        step_log: stage-b/probability-calibration/steps.jsonl
+        collection_manifest: stage-b/probability-calibration/collection-manifest.json
+        completion_marker: stage-b/probability-calibration/completed.json
+        report: stage-b/probability-calibration/report.json
+      uncertainty_calibration:
+        attempt_marker: stage-b/uncertainty-calibration/attempt-started.json
+        source_admission_shards: stage-b/uncertainty-calibration/source-{source_seed}.admission-r32.npz
+        source_label_shards: stage-b/uncertainty-calibration/source-{source_seed}.labels-r32.npz
+        source_privileged_label_shards: stage-b/uncertainty-calibration/source-{source_seed}.labels-r32.privileged.npz
+        admission_array: stage-b/uncertainty-calibration/admission-r32.npz
+        label_array: stage-b/uncertainty-calibration/labels-r32-deployable.npz
+        privileged_label_array: stage-b/uncertainty-calibration/labels-r32-privileged.npz
+        step_log: stage-b/uncertainty-calibration/steps.jsonl
+        collection_manifest: stage-b/uncertainty-calibration/collection-manifest.json
+        completion_marker: stage-b/uncertainty-calibration/completed.json
+        report: stage-b/uncertainty-calibration/report.json
+      selector_calibration:
+        attempt_marker: stage-b/selector-calibration/attempt-started.json
+        source_admission_shards: stage-b/selector-calibration/source-{source_seed}.admission-r32.npz
+        source_label_shards: stage-b/selector-calibration/source-{source_seed}.labels-r32.npz
+        source_privileged_label_shards: stage-b/selector-calibration/source-{source_seed}.labels-r32.privileged.npz
+        admission_array: stage-b/selector-calibration/admission-r32.npz
+        label_array: stage-b/selector-calibration/labels-r32-deployable.npz
+        privileged_label_array: stage-b/selector-calibration/labels-r32-privileged.npz
+        step_log: stage-b/selector-calibration/steps.jsonl
+        collection_manifest: stage-b/selector-calibration/collection-manifest.json
+        completion_marker: stage-b/selector-calibration/completed.json
+        report: stage-b/selector-calibration/report.json
+      model_test:
+        attempt_marker: stage-b/model-test/attempt-started.json
+        source_admission_shards: stage-b/model-test/source-{source_seed}.admission-r32.npz
+        source_label_shards: stage-b/model-test/source-{source_seed}.labels-r64.npz
+        source_privileged_label_shards: stage-b/model-test/source-{source_seed}.labels-r64.privileged.npz
+        admission_array: stage-b/model-test/admission-r32.npz
+        label_array: stage-b/model-test/labels-r64-deployable.npz
+        privileged_label_array: stage-b/model-test/labels-r64-privileged.npz
+        step_log: stage-b/model-test/steps.jsonl
+        collection_manifest: stage-b/model-test/collection-manifest.json
+        completion_marker: stage-b/model-test/completed.json
+        report: stage-b/model-test/report.json
+    derived_paths:
+      actor_bank_manifest: stage-b/actor-bank-manifest.json
+      split_disjointness_report: stage-b/stage-b-split-disjointness-report.json
+      normalization_report: stage-b/normalization-fit-only-report.json
+      trained_qsafe_artifact: stage-b/qsafe-artifact
+      probability_calibration_report: stage-b/probability-calibration-report.json
+      uncertainty_calibration_report: stage-b/uncertainty-calibration-report.json
+      selector_search_report: stage-b/selector-search-report.json
+      frozen_selector_bundle: stage-b/recovery-selector-bundle.json
+      matched_random_placebo_bundle: stage-b/matched-random-placebo-bundle.json
+      model_test_commitment_marker: stage-b/model-test-committed.json
+      model_test_consumed_marker: stage-b/model-test-consumed.json
+      stage_report: state-dependent-recovery-stage-b-report.json
+    recovery_artifact_authorization:
+      expected_manifest_sha256_source: accepted_stage_B_compiler_report
+      artifact_self_declared_hash_is_trust_root: false
+      runtime_expected_manifest_sha256_required: true
+      authorized_hash_bound_to_live_identity: true
+    every_file_bound_by_sha256_in_completion_marker: true
+    reports_published_last_no_clobber: true
+  model:
+    ensemble_members: 5
+    hidden_widths: [128, 128, 128]
+    epochs: 100
+    batch_size: 64
+    optimizer: AdamW
+    learning_rate: 0.0003
+    weight_decay: 0.00001
+    gradient_clip: 5.0
+    seed: 20260810
+    member_seed_formula: 20260810_plus_1009_times_member_index_zero_based
+    device: cpu
+    torch_num_threads: 1
+    torch_deterministic_algorithms: true
+    optimizer_betas: [0.9, 0.999]
+    optimizer_epsilon: 0.00000001
+    optimizer_amsgrad: false
+    optimizer_foreach: false
+    optimizer_fused: false
+  loss:
+    absolute_risk_weight: 1.0
+    state_risk_weight: 0.5
+    relative_risk_weight: 1.0
+    ranking_weight: 0.5
+    ttf_weight: 0.1
+    max_tilt_weight: 0.1
+    min_height_weight: 0.1
+  model_gate:
+    min_pair_accuracy: 0.60
+    min_pair_accuracy_lcb: 0.55
+    min_strong_pair_accuracy: 0.62
+    strong_pair_gap: 0.25
+    min_top1_audit_reduction: 0.05
+    min_top1_audit_reduction_lcb: 0.03
+    min_frozen_selector_audit_reduction: 0.03
+    require_frozen_selector_audit_reduction_lcb_strictly_positive: true
+    max_frozen_selector_intervention_rate: 0.35
+    require_all_ages_positive: true
+    require_all_actor_training_seeds_positive: true
+    require_all_source_seeds_positive: true
+    min_oracle_gap_capture: 0.25
+    max_ece: 0.08
+  calibration:
+    probability_temperature_steps: 100
+    probability_temperature_learning_rate: 0.05
+    log_temperature_clamp: [-4.0, 4.0]
+    probability_temperature_optimizer: Adam
+    probability_temperature_optimizer_betas: [0.9, 0.999]
+    probability_temperature_optimizer_epsilon: 0.00000001
+    probability_temperature_optimizer_foreach: false
+    probability_temperature_optimizer_fused: false
+    model_test_bootstrap:
+      replicates: 50000
+      seed: 20260812
+      rng_bit_generator: numpy_PCG64
+      quantile_method: linear
+      outer_unit: actor_training_seed
+      inner_unit: complete_trajectory_group
+    split_conformal:
+      uncertainty_source_seeds: [8631, 8632, 8641, 8642, 8651, 8652]
+      risk_upper_familywise_alpha: 0.05
+      benefit_lower_familywise_alpha: 0.05
+      nonnominal_options: 8
+      risk_upper_per_option_alpha: 0.00625
+      benefit_lower_per_option_alpha: 0.00625
+      cross_family_joint_error_correction: none_no_joint_coverage_claim
+      joint_sixteen_bound_coverage_claim: forbidden
+      selector_intersection_joint_coverage_claim: forbidden
+      rng: none_deterministic_stable_order
+      risk_score: empirical_risk_k_minus_predicted_risk_k
+      benefit_score: predicted_benefit_k_minus_empirical_benefit_k
+      nominal_trigger_score: predicted_nominal_risk_minus_empirical_nominal_risk
+      rank_rule: one_based_min_n_ceil_n_plus_1_times_1_minus_alpha_over_8
+      nominal_trigger_alpha: 0.05
+      nominal_trigger_rank_rule: one_based_min_n_ceil_n_plus_1_times_1_minus_alpha
+      risk_clip: [0.0, 1.0]
+      benefit_clip: [-1.0, 1.0]
+    selector_search:
+      selector_source_seeds: [8661, 8662, 8671, 8672, 8681, 8682]
+      nominal_risk_lcb_thresholds: [0.10, 0.20, 0.30, 0.40, 0.50]
+      minimum_benefit_lcb_thresholds: [0.00, 0.02, 0.05, 0.08, 0.12]
+      maximum_candidate_risk_ucb_thresholds: [0.25, 0.40, 0.55, 0.70]
+      grid_points_exact: 100
+      max_ensemble_probability_std: 0.20
+      ensemble_probability_std_ddof: 0
+      max_first_requested_action_rms_delta: 0.50
+      max_first_qtarget_rms_delta: 0.25
+      bootstrap_replicates: 50000
+      bootstrap_seed: 20260811
+      simultaneous_band: max_statistic_across_complete_grid
+      feasible_min_reduction: 0.03
+      feasible_lcb_strictly_positive: true
+      feasible_max_intervention_rate: 0.35
+      choice_order: largest_simultaneous_lcb_then_lower_intervention_rate_then_machine_grid_order
+      candidate_choice_order: [lowest_risk_ucb, largest_benefit_lcb, locked_candidate_index]
+      candidate_comparators:
+        nominal_risk_lcb_trigger: greater_than_or_equal
+        minimum_benefit_lcb: strictly_greater_than
+        maximum_candidate_risk_ucb: less_than_or_equal
+        maximum_ensemble_probability_std: less_than_or_equal
+        maximum_first_requested_action_rms_delta: less_than_or_equal
+        maximum_first_qtarget_rms_delta: less_than_or_equal
+      empty_eligible_set: deterministic_nominal_abstain
+      candidate_mask_contract: all_K9_preview_candidates_valid
+      task_q_gate: forbidden
+      frozen_before_model_test: true
+    frozen_selector_bundle:
+      schema_version: qsafe.recovery_selector_bundle.v1
+      includes: [signed_conformal_offsets, selector_config, probability_calibration_report_sha256, uncertainty_calibration_report_sha256, selector_search_report_sha256, candidate_choice_semantics, ensemble_std_ddof]
+      exact_top_level_fields: [schema_version, offsets, selector_config, calibration_and_search_report_sha256, candidate_choice_semantics, ensemble_std_ddof, bundle_sha256]
+      exact_offset_fields: [nominal_lower, risk_upper, benefit_lower, calibration_report_sha256]
+      exact_report_hash_fields: [probability_calibration, uncertainty_calibration, selector_search]
+      canonical_sha256_required: true
+      artifact_provenance_binding_required: true
+      runtime_caller_override: forbidden
+  model_training_triggered_by_stage_A_tool: false
+
+persistent_option_runtime:
+  schema_version: qsafe.persistent_recovery_option_runtime.v1
+  states: [idle, option, spent_until_reset, terminal]
+  transitions:
+    - [episode_reset, idle]
+    - [idle_and_accepted_trigger, option_locked_behavior_exact_L]
+    - [option_completes_without_fall, spent_until_reset]
+    - [option_fall, terminal]
+    - [spent_until_reset, sac_actor_until_terminal_or_reset]
+  max_option_starts_per_episode: 1
+  max_options_per_H96_branch: 1
+  reselection: forbidden
+  early_shortening: forbidden
+  extension: forbidden
+  nested_intervention: forbidden
+  reset_is_only_return_to_idle: true
+  selection_input: frozen_decision_proof_only
+  naked_candidate_index_input: forbidden
+  first_step_application_must_equal_inference_preview: true
+  action_projection_must_equal_recovery_library_manifest: true
+  rejected_sac_proposal_is_replay_action: false
+  replay_action: shield_selected_requested_executed_and_qtarget
+  controller_issued_replay_proof_required: true
+  controller_issued_runtime_step_proof_required: true
+  replay_and_step_live_digest_required_before_insert: true
+  step_replay_cross_field_validation: exact
+  actor_counter_snapshot_and_proposal_identity_in_transition_log: true
+  stage_D_collector_adapter_required_before_first_online_outcome: true
+  counter_based_actor_shadow:
+    stateful_rng_provider: forbidden
+    algorithm: sha256_payload_digest_as_uint256_little_endian_to_numpy_PCG64
+    common_domain_literal_ascii_escaped: "qsafe.recovery_actor_shadow.v1\\0"
+    stage_C_tag_literal_ascii_escaped: "stage_c\\0"
+    stage_C_key_order: [state_hash_sha256_raw32, replica_u64le, absolute_step_u64le, stream_kind_u16le_length_then_ascii, draw_index_u64le]
+    stage_D_tag_literal_ascii_escaped: "stage_d\\0"
+    stage_D_key_order: [training_seed_u64le, absolute_exposure_step_u64le, stream_kind_u16le_length_then_ascii, draw_index_u64le]
+    integer_range: unsigned_64_bit
+    stream_kind_regex: "^[a-z][a-z0-9_]{0,63}$"
+    stream_kind_exact: nominal_actor
+    draw_index_exact: 0
+    pcg64_seed_integer_endianness: little
+    actor_noise_draw: numpy_Generator_standard_normal_shape12_dtype_float32
+    actor_provider_contract: deterministic_external_noise_only_equal_inputs_bit_identical
+    static_provider_manifest_and_fingerprint_revalidated_each_consume: true
+    actor_snapshot_schema_version: qsafe.actor_snapshot.v1
+    actor_snapshot_exact_fields: [schema_version, actor_state_sha256, actor_weight_version, actor_update_hash_chain_sha256]
+    actor_snapshot_revalidated_before_between_and_after_equal_input_calls: true
+    stage_C_snapshot_constant_after_first_proposal: true
+    stage_D_weight_version_monotonic: true
+    stage_D_equal_version_requires_identical_snapshot: true
+    stage_D_version_advance_requires_new_state_and_update_chain: true
+    proposal_binds_snapshot_manifest_and_fingerprint: true
+    proposal_audit_binds_counter_payload_seed_noise_action_provider_and_snapshot: true
+    stage_C_golden_seed_sha256: 125aa845f4dfcadb71bd0ebb16fc23a77a81909db3977268c1aef6c09dd87e34
+    stage_D_golden_seed_sha256: 06b437c25e80d0193c61fff7c3c03b29b8886e563519ef414b1de89b948f5f26
+    stage_D_golden_noise_f4_sha256: 5b1492577f16cf89821842b250d420101c30d21870daa376b90f93cb4cc55703
+    one_actor_draw_per_absolute_step: true
+
+matched_random_placebo:
+  fitted_role: selector_calibration_only_after_qsafe_selector_frozen
+  reads_qsafe_option_ranking: false
+  own_current_state_only: true
+  same_trigger_support_slew_and_state_machine: true
+  nominal_risk_bins: 10
+  durations: [10, 25, 50]
+  first_action_distance_quantiles: 4
+  option_sampling: uniform_within_eligible_cell
+  empty_cell: deterministic_abstain_no_fallback
+  rng_domain_literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_placebo\\0"
+  fit_objective_order: [absolute_intervention_rate_error, duration_histogram_total_variation, first_action_distance_ecdf_distance]
+  tie_break: lexicographic_table_order
+  max_intervention_rate_mismatch: 0.02
+  max_duration_total_variation: 0.05
+  max_action_distance_ks: 0.10
+  outcome_based_reweighting: forbidden
+
+stage_C:
+  starts_only_if: stage_B_pass_true
+  actor_training_seeds: [57, 58, 59, 60]
+  source_seeds: [8801, 8802, 8803, 8804, 8811, 8812, 8813, 8814, 8821, 8822, 8823, 8824]
+  groups_per_source_seed: 100
+  total_groups: 1200
+  arms: [nominal, qsafe, placebo]
+  arm_semantics:
+    nominal: frozen_stage_C_sac_actor_only
+    qsafe: frozen_stage_C_sac_actor_plus_frozen_qsafe_selector
+    placebo: frozen_stage_C_sac_actor_plus_frozen_matched_random_kernel
+  actor_source_assignment:
+    rule: nth_source_seed_in_each_age_block_belongs_to_nth_actor_training_seed
+    actor_checkpoint_steps: [25000, 50000, 100000]
+    mapping:
+      "57": [8801, 8811, 8821]
+      "58": [8802, 8812, 8822]
+      "59": [8803, 8813, 8823]
+      "60": [8804, 8814, 8824]
+  actor_provider_identity:
+    mode: fixed_checkpoint_per_actor_seed_and_age
+    manifest_schema_version: qsafe.stage_c_frozen_actor_bank.v1
+    required_identity_fields: [actor_training_seed, checkpoint_step, source_seed, checkpoint_path, actor_sha256, actor_state_dict_sha256, policy_fingerprint_sha256, checkpoint_fingerprint_sha256, policy_config_sha256, generator_commit]
+    frozen_before_first_admission_outcome: true
+    provider_mutation_after_freeze: forbidden
+    proposal_proof_binds_actor_fingerprint: true
+  replica_contract:
+    admission_replicas_exact: 32
+    admission_falls_inclusive: [6, 26]
+    evaluation_replicas_per_arm_exact: 64
+    evaluation_arms_exact: 3
+    total_evaluation_branch_rollouts: 230400
+    admission_seed_domain_literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_c_admission\\0"
+    evaluation_seed_domain_literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_c_evaluation\\0"
+    admission_and_evaluation_seed_domains_disjoint: true
+    admission_and_evaluation_physical_files_separate: true
+    admission_crn_never_reused_for_evaluation: true
+    evaluation_crn_shared_across_three_arms_within_state_replica: true
+    evaluation_replica_indivisible_across_arms: true
+    assignment_before_outcomes: true
+  realized_placebo_balance:
+    recompute_from_raw_step_log: true
+    population: all_1200_complete_paired_state_groups
+    weighting: equal_actor_seed_then_equal_age_source_then_equal_state_group
+    intervention_rate_denominator: all_complete_state_groups
+    duration_histogram_conditioning: realized_interventions_only
+    first_action_distance_ecdf_conditioning: realized_interventions_only
+    first_action_distance_metric: requested_action_rms_delta_from_nominal
+    zero_realized_interventions_in_qsafe_or_placebo: fail
+    max_absolute_intervention_rate_mismatch_inclusive: 0.02
+    max_duration_histogram_total_variation_inclusive: 0.05
+    max_first_action_distance_ks_inclusive: 0.10
+    outcome_based_reweighting: forbidden
+    report_boolean_without_recomputation: forbidden
+  artifacts:
+    artifact_root_relative: stage-c
+    attempt_marker: stage-c/attempt-started.json
+    actor_bank_manifest: stage-c/frozen-actor-bank-manifest.json
+    source_admission_shards: stage-c/source-{source_seed}.admission-r32.npz
+    source_admission_privileged_shards: stage-c/source-{source_seed}.admission-r32.privileged.npz
+    admission_array: stage-c/admission-r32.npz
+    admission_privileged_array: stage-c/admission-r32-privileged.npz
+    admission_step_log: stage-c/admission-steps.jsonl
+    source_evaluation_shards: stage-c/source-{source_seed}.paired-r64.npz
+    source_evaluation_privileged_shards: stage-c/source-{source_seed}.paired-r64.privileged.npz
+    evaluation_array: stage-c/paired-arms-r64.npz
+    evaluation_privileged_array: stage-c/paired-arms-r64-privileged.npz
+    evaluation_array_shape: [1200, 3, 64]
+    evaluation_step_log: stage-c/paired-steps.jsonl
+    state_roster: stage-c/state-roster.json
+    qsafe_artifact_manifest: stage-c/qsafe-artifact-manifest.json
+    selector_bundle: stage-c/recovery-selector-bundle.json
+    placebo_bundle: stage-c/matched-random-placebo-bundle.json
+    placebo_balance_report: stage-c/realized-placebo-balance-report.json
+    completion_marker: stage-c/completed.json
+    stage_report: state-dependent-recovery-stage-c-report.json
+    every_file_bound_by_sha256_in_completion_marker: true
+    report_published_last_no_clobber: true
+  min_qsafe_reduction: 0.05
+  min_qsafe_reduction_lcb: 0.03
+  require_all_ages_positive: true
+  require_all_actor_training_seeds_positive: true
+  require_all_source_seeds_positive: true
+  require_improved_pairs_gt_worsened_pairs: true
+  require_qsafe_vs_placebo_lcb_gt_zero: true
+  arm_order: [nominal, qsafe, placebo]
+  bootstrap:
+    replicates: 50000
+    seed: 20260813
+    rng_bit_generator: numpy_PCG64
+    quantile_method: linear
+    outer_unit: actor_training_seed
+    inner_unit: complete_age_source_state_group
+    same_draws_for_qsafe_vs_nominal_and_qsafe_vs_placebo: true
+
+stage_D:
+  starts_only_if: stage_C_pass_true
+  speed_mps: 0.30
+  training_seeds: [201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224]
+  fixed_policy_steps_per_seed_arm: 500000
+  arms: [pure_sac, sac_frozen_qsafe, sac_matched_random]
+  exposures_exact: 72
+  complete_paired_arms_per_training_seed: 3
+  actor_provider_identity:
+    mode: evolving_online_sac_actor
+    manifest_schema_version: qsafe.stage_d_evolving_actor_provider.v1
+    initialization_identity_fields: [training_seed, initial_actor_sha256, initial_reward_critic_sha256, initial_target_critic_sha256, initial_optimizer_sha256, initial_reward_normalizer_sha256, policy_config_sha256, generator_commit]
+    all_three_arms_bit_identical_initialization_per_seed: true
+    evolving_identity_fields_per_policy_step: [training_seed, arm, absolute_exposure_step, actor_weight_version, actor_state_sha256, actor_update_hash_chain_sha256, nominal_proposal_sha256]
+    actor_update_hash_chain_covers_every_optimizer_update: true
+    proposal_proof_binds_current_actor_fingerprint: true
+    frozen_qsafe_selector_and_placebo_hashes_constant_across_exposure: true
+  randomized_execution_lane_assignment:
+    logical_pair: [pure_sac, sac_frozen_qsafe]
+    randomized_physical_lanes: [A, B]
+    placebo_physical_lane: C
+    assignment_timing: before_any_stage_D_simulator_step_or_outcome
+    master_seed_source: os_csprng_openssl_rand_256_before_any_stage_D_outcome
+    master_seed_hex: c35d46474a098e7f56179ac2cfca0c9072ebcb55da1756a3e3c6cbf6b0aa435e
+    master_seed_sha256: bf57f69533302e72f89498212591d64991ce8f19723171cf54330a3250b3d80c
+    domain_literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_d_lane_assignment\\0"
+    domain_hex: 71736166655f73746174655f646570656e64656e745f7265636f766572795f76345f73746167655f645f6c616e655f61737369676e6d656e7400
+    bit_derivation: sha256_domain_then_master_seed_raw32_then_training_seed_u64le_then_draw_index_u64le_zero_take_digest_byte0_lsb
+    fair_bit_model: independent_bernoulli_half_from_csprng_seeded_domain_separated_hash
+    training_seed_order: [201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224]
+    expected_assignment_bits: [1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0]
+    expected_assignment_bits_sha256: a6cdbc5aa021034aff39ff28bb8854a6d061f0e90d960b546fcfd65fa2f97024
+    bit_zero_mapping: {A: pure_sac, B: sac_frozen_qsafe}
+    bit_one_mapping: {A: sac_frozen_qsafe, B: pure_sac}
+    placebo_lane_assignment: fixed_preassigned_not_in_primary_pair_randomization
+    assignment_manifest: stage-d/execution-lane-assignment.json
+    assignment_manifest_required_fields: [schema_version, master_seed_sha256, domain_hex, training_seed_order, assignment_bits, assignment_bits_sha256, per_seed_lane_mapping, placebo_lane, created_before_first_outcome, manifest_sha256]
+    assignment_manifest_no_clobber_before_first_outcome: true
+    outcome_dependent_reassignment: forbidden
+  min_relative_fall_reduction: 0.20
+  min_falls_per_1000_step_reduction: 0.40
+  require_seed_cluster_lcb_gt_zero: true
+  require_treatment_vs_placebo_lcb_gt_zero: true
+  paired_seed_bootstrap:
+    replicates: 50000
+    seed: 20260814
+    rng_bit_generator: numpy_PCG64
+    quantile_method: linear
+    one_sided_lcb_quantile: 0.05
+    resampling_unit: complete_training_seed_three_arm_tuple
+    resample_seed_indices_shape: [50000, 24]
+    same_draws_for_all_online_metrics: true
+  exact_sign_flip:
+    paired_units: 24_training_seeds
+    assignments_exact: 16777216
+    difference_per_seed: pure_sac_falls_per_1000_minus_sac_frozen_qsafe_falls_per_1000
+    observed_statistic: arithmetic_mean_of_24_paired_differences
+    favorable_direction: larger_positive_reduction
+    null_randomization: independently_swap_pure_sac_and_sac_frozen_qsafe_labels_within_each_seed
+    randomization_source: randomized_execution_lane_assignment_24_fair_bits
+    enumeration_order: unsigned_mask_0_through_2_pow_24_minus_1_seed201_is_lsb
+    zero_differences: retained_and_both_sign_assignments_counted
+    ties_to_observed_statistic: included_in_tail
+    p_value_formula: count_randomized_statistics_greater_than_or_equal_to_observed_divided_by_16777216
+    plus_one_correction: false_full_enumeration
+    required_assumption: within_seed_treatment_label_exchangeability_under_sharp_null
+    max_one_sided_p_inclusive: 0.05
+  relative_fall_gate:
+    baseline_metric: pooled_pure_sac_falls_per_1000_fixed_exposure_steps
+    treatment_metric: pooled_sac_frozen_qsafe_falls_per_1000_fixed_exposure_steps
+    formula: baseline_minus_treatment_divided_by_baseline
+    baseline_less_than_or_equal_to_zero: gate_false
+  return_noninferiority_gate:
+    metric_per_seed_arm: 1000_times_sum_transition_reward_divided_by_500000_policy_steps
+    aggregate: arithmetic_mean_over_24_training_seeds
+    margin_fraction_of_baseline_magnitude: 0.05
+    baseline_magnitude_floor: 1.0
+    signed_safe_formula: treatment_minus_baseline_greater_than_or_equal_to_minus_0.05_times_max_abs_baseline_1
+    ratio_division: forbidden
+  velocity_gate:
+    per_step_error: absolute_body_frame_forward_velocity_minus_0.30_mps
+    metric_per_seed_arm: arithmetic_mean_over_500000_policy_steps
+    aggregate: arithmetic_mean_over_24_training_seeds
+    treatment_minus_baseline_max_inclusive_mps: 0.03
+    reset_standup_and_settle_steps: excluded
+  deadline_gate:
+    deadline_seconds: 0.02
+    miss_comparator: inference_wall_time_strictly_greater_than_deadline
+    numerator: sac_frozen_qsafe_policy_steps_with_deadline_miss
+    denominator: 24_times_500000_sac_frozen_qsafe_policy_steps
+    maximum_rate_strict: 0.001
+    nonfinite_or_missing_timing: gate_false
+  realized_placebo_balance:
+    recompute_from_raw_intervention_logs: true
+    population: all_24_complete_qsafe_and_placebo_exposures
+    weighting: equal_training_seed_then_equal_policy_step_or_realized_option
+    intervention_rate_denominator: 24_times_500000_policy_steps_per_arm
+    duration_histogram_conditioning: realized_option_starts_only
+    first_action_distance_ecdf_conditioning: realized_option_starts_only
+    first_action_distance_metric: requested_action_rms_delta_from_nominal
+    zero_realized_option_starts_in_qsafe_or_placebo: fail
+    max_absolute_intervention_rate_mismatch_inclusive: 0.02
+    max_duration_histogram_total_variation_inclusive: 0.05
+    max_first_action_distance_ks_inclusive: 0.10
+    outcome_based_reweighting: forbidden
+    report_boolean_without_recomputation: forbidden
+  artifacts:
+    artifact_root_relative: stage-d
+    global_attempt_marker: stage-d/attempt-started.json
+    execution_lane_assignment_manifest: stage-d/execution-lane-assignment.json
+    seed_arm_root_template: stage-d/seed-{training_seed}/arm-{arm}
+    per_exposure_paths:
+      attempt_marker: stage-d/seed-{training_seed}/arm-{arm}/attempt-started.json
+      initial_identity_manifest: stage-d/seed-{training_seed}/arm-{arm}/initial-identity.json
+      transition_log: stage-d/seed-{training_seed}/arm-{arm}/transitions.parquet
+      episode_log: stage-d/seed-{training_seed}/arm-{arm}/episodes.parquet
+      fall_and_exposure_array: stage-d/seed-{training_seed}/arm-{arm}/fall-exposure.npz
+      actor_update_hash_chain: stage-d/seed-{training_seed}/arm-{arm}/actor-update-hash-chain.jsonl
+      rng_stream_manifest: stage-d/seed-{training_seed}/arm-{arm}/rng-streams.json
+      intervention_step_log: stage-d/seed-{training_seed}/arm-{arm}/interventions.jsonl
+      timing_log: stage-d/seed-{training_seed}/arm-{arm}/timing.npz
+      completion_marker: stage-d/seed-{training_seed}/arm-{arm}/completed.json
+    per_seed_paired_completion_marker: stage-d/seed-{training_seed}/paired-three-arm-completed.json
+    exposure_roster: stage-d/exposure-roster-72.json
+    paired_metric_array: stage-d/paired-seed-metrics-24x3.npz
+    sign_flip_report: stage-d/exact-sign-flip-report.json
+    bootstrap_report: stage-d/paired-seed-bootstrap-report.json
+    realized_placebo_balance_report: stage-d/realized-placebo-balance-report.json
+    completion_marker: stage-d/completed-72-exposures.json
+    stage_report: state-dependent-recovery-stage-d-report.json
+    every_exposure_file_bound_by_sha256: true
+    every_exposure_completion_marker_no_clobber_report_last: true
+    stage_report_published_last_no_clobber: true
+  objective1_pass_requires: stage_A_and_stage_B_and_stage_C_and_stage_D
+
+fall_and_exposure_contract:
+  offline_branch_and_online_simulator_fall_predicate_identical: true
+  hardware_supervisor_deployment_equivalence_claim: forbidden
+  fall_predicate:
+    sampling_boundary: first_50Hz_post_action_boundary
+    min_base_body_origin_height_m_strict: 0.18
+    max_abs_roll_or_pitch_rad_inclusive: 0.523599
+    count_once_per_episode: true
+    forces_terminal_transition: true
+    other_terminations_count_falls: false
+  online_exposure:
+    policy_steps_per_seed_arm_exact: 500000
+    semantic: 50Hz_agent_issued_transitions_including_fall_causing_terminal_transition
+    excluded: [reset, stand_up, simulator_settle_substeps]
+    refractory_interval: none_terminal_reset_after_first_fall
+
+authorization_compiler:
+  schema_version: qsafe.objective1_authorization_compiler.v4
+  canonical_report_filenames:
+    stage_A: state-dependent-recovery-stage-a-report.json
+    stage_B: state-dependent-recovery-stage-b-report.json
+    stage_C: state-dependent-recovery-stage-c-report.json
+    stage_D: state-dependent-recovery-stage-d-report.json
+    output: objective1-authorization-report.json
+  canonical_paths_only: true
+  legacy_cli: forbidden
+  caller_supplied_gate_booleans: forbidden
+  naked_boolean_authorization_inputs: forbidden
+  recompute_metrics_from_immutable_arrays_and_step_logs: true
+  verify_report_last_markers_hashes_rosters_and_exposure: true
+  thresholds_and_bootstrap_from_this_protocol_only: true
+  pass_expression: stage_A_and_stage_B_and_stage_C_and_fresh_030_online
+  stage_order: [stage_A, stage_B, stage_C, stage_D]
+  first_valid_failure_short_circuit:
+    enabled: true
+    validate_current_stage_report_and_recompute_current_stage_gate: true
+    require_every_later_stage_canonical_artifact_absent: true
+    later_stage_absence_uses_protocol_inventory_only: true
+    absence_definition: os_path_lexists_false_for_every_expanded_canonical_path_and_template_instance
+    later_stage_report_or_marker_present: malformed_raise_without_publication
+    valid_failure_output:
+      objective1_pass: false
+      phase1_pass: false
+      phase2_authorized: false
+    do_not_require_later_stage_reports: true
+  canonical_artifact_inventories:
+    stage_A: collection_and_firewall_paths
+    stage_B: stage_B.artifacts
+    stage_C: stage_C.artifacts
+    stage_D: stage_D.artifacts
+  phase1_and_phase2_bits_written_together: true
+  malformed_or_missing_evidence: raise_without_publication
+
+authorization:
+  stage_A_may_authorize_stage_B: true
+  stage_B_authorized_before_audit: false
+  stage_B_training_triggered: false
+  paired_closed_loop_authorized: false
+  online_training_authorized: false
+  objective1_pass: false
+  phase2_authorized: false

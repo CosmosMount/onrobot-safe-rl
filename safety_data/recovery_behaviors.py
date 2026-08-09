@@ -327,8 +327,8 @@ class RecoveryBehaviorLibrary:
                     "mature_policy does not match the preregistered identity: "
                     f"field {key!r}")
 
-        if not isinstance(action_applier, ActionApplier):
-            raise TypeError("action_applier must be ActionApplier")
+        if type(action_applier) is not ActionApplier:
+            raise TypeError("action_applier must be the exact ActionApplier")
         if action_applier.max_joint_delta is not None:
             raise ValueError("v3 requires ActionApplier.max_joint_delta=None")
         if action_applier.action_filter is not None:
@@ -359,6 +359,11 @@ class RecoveryBehaviorLibrary:
 
         self._mature_policy = mature_policy
         self._action_applier = action_applier
+        self._action_applier_callables = (
+            ActionApplier.project,
+            ActionApplier.preview_many,
+            ActionApplier.executed_action,
+        )
         self._policy_identity = {
             key: copy.deepcopy(policy_manifest[key])
             for key in _MATURE_POLICY_IDENTITY
@@ -411,6 +416,71 @@ class RecoveryBehaviorLibrary:
     def fingerprint(self) -> str:
         return self._fingerprint
 
+    def require_live_integrity(self) -> None:
+        """Reject mutation of the frozen policy, K9 law, or projection.
+
+        Runtime callers invoke this both before and after every emitted action.
+        The check deliberately recomputes the evidence-facing surfaces instead
+        of trusting the constructor-time fingerprint alone.
+        """
+        if type(self._config) is not RecoveryBehaviorConfig or (
+                self._config.manifest_protocol()
+                != RecoveryBehaviorConfig().manifest_protocol()):
+            raise ValueError("recovery behavior configuration mutated")
+        live_policy_method = getattr(
+            self._mature_policy, "require_live_integrity", None)
+        if callable(live_policy_method):
+            live_policy_method()
+        manifest_method = getattr(self._mature_policy, "manifest", None)
+        if not callable(manifest_method):
+            raise ValueError("mature recovery policy lost its manifest")
+        current_policy = manifest_method()
+        if not isinstance(current_policy, Mapping) or any(
+                current_policy.get(name) != expected
+                for name, expected in self._policy_identity.items()):
+            raise ValueError("mature recovery policy identity mutated")
+        if type(self._action_applier) is not ActionApplier or (
+                self._action_applier.max_joint_delta is not None) or (
+                self._action_applier.action_filter is not None):
+            raise ValueError("recovery action projection mutated")
+        if self._action_applier_callables != (
+                ActionApplier.project,
+                ActionApplier.preview_many,
+                ActionApplier.executed_action) or any(
+                    name in self._action_applier.__dict__
+                    for name in ("project", "preview_many", "executed_action")):
+            raise ValueError("recovery action projection callable surface mutated")
+        current_projection: dict[str, np.ndarray] = {}
+        for name, expected in self._projection_vectors.items():
+            value = np.asarray(getattr(self._action_applier, name))
+            if value.dtype != np.dtype(np.float32) or value.shape != (12,) or (
+                    not np.array_equal(value, expected)):
+                raise ValueError(
+                    f"recovery action projection {name} mutated")
+            current_projection[name] = value
+        if self._behavior_steps.dtype.kind not in "iu" or (
+                self._behavior_steps.shape != (RECOVERY_BEHAVIOR_COUNT,)) or (
+                tuple(int(value) for value in self._behavior_steps)
+                != RECOVERY_BEHAVIOR_STEPS):
+            raise ValueError("recovery behavior durations mutated")
+        expected_manifest = {
+            "candidate_protocol": self._config.manifest_protocol(),
+            "candidate_protocol_sha256": self._config.protocol_sha256(),
+            "mature_policy_identity": copy.deepcopy(self._policy_identity),
+            "action_projection": {
+                name: value.tolist()
+                for name, value in current_projection.items()
+            } | {
+                "max_joint_delta": None,
+                "use_action_filter": False,
+            },
+            "input_boundary": "corrected_deployable_5x46_only",
+            "privileged_inputs": "forbidden",
+        }
+        if self._manifest != expected_manifest or self._fingerprint != (
+                _canonical_sha256(expected_manifest)):
+            raise ValueError("recovery behavior manifest/fingerprint mutated")
+
     def capture_branch_state(self) -> None:
         """Return the only valid state for this deliberately stateless law."""
         return None
@@ -420,8 +490,15 @@ class RecoveryBehaviorLibrary:
             raise ValueError("RecoveryBehaviorLibrary branch state must be None")
 
     def _mature_action(self, history: np.ndarray) -> np.ndarray:
+        live_policy_method = getattr(
+            self._mature_policy, "require_live_integrity", None)
+        if callable(live_policy_method):
+            live_policy_method()
         value = self._mature_policy.deterministic_action(history[-1].copy())
-        return _checked_action(value, "mature_policy action")
+        action = _checked_action(value, "mature_policy action")
+        if callable(live_policy_method):
+            live_policy_method()
+        return action
 
     def _joint_target_action(self, q_target: np.ndarray) -> np.ndarray:
         return qpos_to_action(

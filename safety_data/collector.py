@@ -346,11 +346,20 @@ class GroupedBranchAssembler:
             return value.astype(dtype, copy=False) if dtype is not None else value
 
         requested = stack("candidate_requested", np.float32)
+        episode_ids = [value.episode_id for value in identities]
+        episode_id_dtype = (
+            np.uint64 if any(
+                int(value) > np.iinfo(np.int64).max for value in episode_ids)
+            else np.int64
+        )
         arrays = {
             "group_id": identity("group_id", str),
             "state_hash": identity("state_hash", str),
             "trajectory_id": identity("trajectory_id", str),
-            "episode_id": identity("episode_id", np.int64),
+            # Historical low-63 collectors remain byte-identical int64.  V4
+            # reserves bit 63 for cross-protocol RNG disjointness and therefore
+            # requires the lossless unsigned representation.
+            "episode_id": np.asarray(episode_ids, dtype=episode_id_dtype),
             "episode_step": identity("episode_step", np.int32),
             "policy_training_seed": identity("policy_training_seed", np.int64),
             "source_seed": identity("source_seed", np.int64),
@@ -664,9 +673,18 @@ def _rng_for(*parts: int) -> np.random.Generator:
     return np.random.default_rng(_derived_seed(*parts))
 
 
-def _action_application_contract(env: Any) -> dict[str, Any]:
+def _action_application_contract(
+    env: Any,
+    *,
+    include_filter_settings: bool = False,
+) -> dict[str, Any]:
     applier = env.action_applier
-    return {
+    max_joint_delta = applier.max_joint_delta
+    if max_joint_delta is not None:
+        value = np.asarray(max_joint_delta, dtype=float)
+        max_joint_delta = (
+            float(value) if value.ndim == 0 else value.tolist())
+    contract = {
         "q_target_semantic": "absolute_joint_position_sent",
         "init_qpos": np.asarray(applier.init_qpos, dtype=float).tolist(),
         "action_offset": np.asarray(applier.action_offset, dtype=float).tolist(),
@@ -674,6 +692,12 @@ def _action_application_contract(env: Any) -> dict[str, Any]:
         "joint_max": np.asarray(applier.joint_max, dtype=float).tolist(),
         "projection": "clip_normalized_then_joint_bounds_then_slew_then_filter",
     }
+    if include_filter_settings:
+        contract.update({
+            "max_joint_delta": max_joint_delta,
+            "use_action_filter": applier.action_filter is not None,
+        })
+    return contract
 
 
 def _policy_identity(policy: Any, role: str) -> tuple[dict[str, Any], str]:

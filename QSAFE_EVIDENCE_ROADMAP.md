@@ -216,7 +216,19 @@ Train five ensemble members with group-disjoint bootstrap samples. Compare:
 
 Run nested learning curves at 360, 1k, 3k, 10k, then 30k/100k only while target-only curves still improve.
 
-### Phase 1C — closed-loop and online evidence (commit 3)
+### Historical Phase 1C/1D baseline (superseded for v4)
+
+The following was the original v1 route. It is retained as design history, not
+as current authorization: its H32/K16/36D assumptions, small-shift alternative,
+ten-seed minimum, IPW wording, and legacy compiler are incompatible with v4.
+The canonical current route is
+`QSAFE_PHASE1_STATE_DEPENDENT_RECOVERY_V4_PLAN.md` plus
+`config/qsafe_state_dependent_recovery_v4.yaml`: K9/H96, an 82D
+nominal-conditioned recovery-program descriptor, fresh actor-role splits, an
+exact 1,200-state persistent-option gate, and 24 from-zero online seeds. No v4
+tool may use the legacy protocol below.
+
+#### Phase 1C — closed-loop and online evidence (commit 3)
 
 Implement:
 
@@ -227,7 +239,7 @@ Implement:
 - return, velocity tracking, replacement, abstention, deadline and support metrics;
 - an evidence compiler that produces `phase1_pass: true|false` and explains every failed gate.
 
-### Phase 1D — execute Objective 1
+#### Phase 1D — execute Objective 1
 
 Run in increasing cost order:
 
@@ -380,4 +392,6 @@ The primary outcome is falls per fixed policy-step budget, not falls per complet
 11. Preregister and implement `objective1_recovery_option_triage_v2`. **Done: commit `a30f3ed`.**
 12. Collect exactly 384 fresh groups on source seeds 7601--7603 with K29 and R64, then apply the locked triage once. **Done: the one-shot audit found less than 0.3 pp effect for every duration and fired the no-headroom stop; see `QSAFE_PHASE1_RECOVERY_TRIAGE_RESULT.md` and commit `b177ede`.**
 13. Preregister v3 before observing any replacement-library outcome. **Done: early SAC policy ages, a closed-loop K9 library, admission sampling, physical discovery/audit isolation, and one-shot gates are fixed in `QSAFE_PHASE1_CLOSED_LOOP_RECOVERY_V3_PLAN.md` and `config/qsafe_closed_loop_recovery_triage_v3.yaml`.**
-14. Implement and test v3, then collect the six fresh source-seed shards exactly once. **Pending; model training remains forbidden until the causal-headroom audit passes.**
+14. Implement and test v3, then collect the six fresh source-seed shards exactly once. **Done at commit `7681886`; all six G64 shards completed under the clean one-shot collector.**
+15. Apply the v3 discovery lock and consume its audit once. **Done; the selected fixed global backup failed all primary gates and the locked decision is `report_inconclusive_no_model_training`. The hierarchy-blocked per-state diagnostic is exploratory only; see `QSAFE_PHASE1_CLOSED_LOOP_RECOVERY_V3_RESULT.md` and commit `607dee7`.**
+16. Preregister v4 as a fresh direct confirmation of state-dependent K9 headroom before fitting any model. **In progress; v4 has an independent K9/H96 protocol, an 82D nominal-conditioned recovery-program feature contract, physically separate actor-training/data roles, a one-option-per-episode controller, a reproducible matched-random propensity, and a 24-seed online plan. Stage A must pass before fitting; Phase 2 remains blocked.**

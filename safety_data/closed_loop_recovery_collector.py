@@ -57,6 +57,44 @@ _ROLE_TAGS = {
     "discovery": 30,
     "audit": 40,
 }
+_V3_SEED_DOMAIN = b"qsafe_closed_loop_v3_seed\0"
+_V3_ROLE_TAG_ITEMS = tuple(_ROLE_TAGS.items())
+_SHA256_LOW63_SEED_ALGORITHM = "sha256_low63_v1"
+_INJECTIVE_V4_SEED_ALGORITHM = (
+    "high_bit_then_domain_low15_then_14_8_18_2_6_bitpack_v1")
+_INJECTIVE_V4_STREAM_MAPPING = {
+    "source_reset_rng": {
+        "role": "source_reset", "identity": "episode_number",
+        "namespace": 0, "index": 0},
+    "episode_id": {
+        "role": "source_reset", "identity": "episode_number",
+        "namespace": 1, "index": 0},
+    "source_impulse_rng": {
+        "role": "source_impulse",
+        "identity": (
+            "episode_number_times_max_episode_steps_plus_episode_step"),
+        "namespace": 0, "index": 0},
+    "source_action_rng": {
+        "role": "source_action",
+        "identity": (
+            "episode_number_times_max_episode_steps_plus_episode_step"),
+        "namespace": 0, "index": 0},
+    "branch_crn_id": {
+        "roles": ["admission", "discovery", "audit"],
+        "identity": "proposal_index", "namespace": 0,
+        "index": "replica_index"},
+    "branch_rollout_seed": {
+        "roles": ["admission", "discovery", "audit"],
+        "identity": "proposal_index", "namespace": 1,
+        "index": "replica_index"},
+    "branch_perturbation_seed": {
+        "roles": ["admission", "discovery", "audit"],
+        "identity": "proposal_index", "namespace": 2,
+        "index": "replica_index"},
+    "branch_candidate_seed": {
+        "roles": ["admission", "discovery", "audit"],
+        "identity": "proposal_index", "namespace": 3, "index": 0},
+}
 
 
 def _canonical_hash(manifest: Mapping[str, Any], arrays: Mapping[str, Any]) -> str:
@@ -112,15 +150,60 @@ def _derived_seed(
     role: str,
     namespace: int,
     index: int = 0,
+    *,
+    seed_domain: bytes = _V3_SEED_DOMAIN,
+    role_tags: tuple[tuple[str, int], ...] = _V3_ROLE_TAG_ITEMS,
+    seed_algorithm: str = _SHA256_LOW63_SEED_ALGORITHM,
 ) -> int:
-    if role not in _ROLE_TAGS:
+    try:
+        tags = dict(role_tags)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("seed role tags must be unique (name, integer) pairs") from exc
+    if len(tags) != len(role_tags) or set(tags) != set(_ROLE_TAGS):
+        raise ValueError("seed role tags must bind the exact six collector roles")
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0
+           for value in tags.values()) or len(set(tags.values())) != len(tags):
+        raise ValueError("seed role tags must be unique nonnegative integers")
+    if not isinstance(seed_domain, bytes) or not seed_domain or not (
+            seed_domain.endswith(b"\0")):
+        raise ValueError("seed domain must be nonempty bytes ending in NUL")
+    if role not in tags:
         raise ValueError(f"unknown v3 RNG role {role!r}")
     values = (source_seed, identity, namespace, index)
     if any(isinstance(value, (bool, np.bool_)) or not isinstance(
             value, (int, np.integer)) or int(value) < 0 for value in values):
         raise ValueError("v3 seed inputs must be nonnegative integers")
-    digest = hashlib.sha256(b"qsafe_closed_loop_v3_seed\0")
-    digest.update(int(_ROLE_TAGS[role]).to_bytes(4, "little"))
+    if seed_algorithm == _INJECTIVE_V4_SEED_ALGORITHM:
+        source_seed_value, identity_value, namespace_value, index_value = (
+            int(value) for value in values)
+        role_tag = int(tags[role])
+        widths_and_values = (
+            (14, source_seed_value, "source_seed"),
+            (8, role_tag, "role_tag"),
+            (18, identity_value, "identity"),
+            (2, namespace_value, "namespace"),
+            (6, index_value, "index"),
+        )
+        for width, value, name in widths_and_values:
+            if value >= 1 << width:
+                raise ValueError(
+                    f"injective V4 seed {name} exceeds its {width}-bit cap")
+        # Bit 63 is reserved for V4, while every historical SHA-low63 seed has
+        # it cleared.  The low 15 bits of the full-domain digest and every
+        # remaining field are then packed without truncation.  The complete
+        # 64-bit mapping is injective within the declared production caps and
+        # disjoint from V2/V3 by construction.
+        packed = int.from_bytes(
+            hashlib.sha256(seed_domain).digest()[:2], "little") & 0x7FFF
+        for width, value, _ in widths_and_values:
+            packed = (packed << width) | value
+        if packed >= 1 << 63:
+            raise AssertionError("injective V4 seed exceeded 63 bits")
+        return (1 << 63) | packed
+    if seed_algorithm != _SHA256_LOW63_SEED_ALGORITHM:
+        raise ValueError(f"unknown seed_algorithm={seed_algorithm!r}")
+    digest = hashlib.sha256(seed_domain)
+    digest.update(int(tags[role]).to_bytes(4, "little"))
     for value in values:
         digest.update(int(value).to_bytes(16, "little", signed=False))
     return int.from_bytes(digest.digest()[:8], "little") & ((1 << 63) - 1)
@@ -137,6 +220,9 @@ def role_randomness(
     proposal_index: int,
     replicas: int,
     role: str,
+    seed_domain: bytes = _V3_SEED_DOMAIN,
+    role_tags: tuple[tuple[str, int], ...] = _V3_ROLE_TAG_ITEMS,
+    seed_algorithm: str = _SHA256_LOW63_SEED_ALGORITHM,
 ) -> tuple[ReplicaSeedBundle, GroupRandomness]:
     """Return globally disjoint admission/discovery/audit seed namespaces."""
     if role not in ("admission", "discovery", "audit"):
@@ -146,19 +232,30 @@ def role_randomness(
         raise ValueError("replicas must be a positive integer")
     count = int(replicas)
     crn_id = np.asarray([
-        _derived_seed(source_seed, proposal_index, role, 0, replica)
+        _derived_seed(
+            source_seed, proposal_index, role, 0, replica,
+            seed_domain=seed_domain, role_tags=role_tags,
+            seed_algorithm=seed_algorithm)
         for replica in range(count)
     ], dtype=np.uint64)
     rollout_seed = np.asarray([
-        _derived_seed(source_seed, proposal_index, role, 1, replica)
+        _derived_seed(
+            source_seed, proposal_index, role, 1, replica,
+            seed_domain=seed_domain, role_tags=role_tags,
+            seed_algorithm=seed_algorithm)
         for replica in range(count)
     ], dtype=np.uint64)
     perturbation_seed = np.asarray([
-        _derived_seed(source_seed, proposal_index, role, 2, replica)
+        _derived_seed(
+            source_seed, proposal_index, role, 2, replica,
+            seed_domain=seed_domain, role_tags=role_tags,
+            seed_algorithm=seed_algorithm)
         for replica in range(count)
     ], dtype=np.uint64)
     candidate_seed = _derived_seed(
-        source_seed, proposal_index, role, 3, 0)
+        source_seed, proposal_index, role, 3, 0,
+        seed_domain=seed_domain, role_tags=role_tags,
+        seed_algorithm=seed_algorithm)
     bundle = ReplicaSeedBundle(
         crn_id=crn_id,
         rollout_seed=rollout_seed,
@@ -618,6 +715,13 @@ class ClosedLoopRecoveryCollectionConfig:
     source_angular_std_radps: float = 4.0
     proposal_min_tilt_rad: float = 0.10
     proposal_max_height_m: float = 0.32
+    seed_domain: bytes = _V3_SEED_DOMAIN
+    seed_role_tags: tuple[tuple[str, int], ...] = _V3_ROLE_TAG_ITEMS
+    seed_algorithm: str = _SHA256_LOW63_SEED_ALGORITHM
+    dataset_split_prefix: str = "closed_loop_recovery_v3"
+    collection_protocol_version: str = COLLECTION_PROTOCOL_VERSION
+    trajectory_id_prefix: str = "closed-loop-v3"
+    explicit_filter_settings_in_action_contract: bool = False
 
     def __post_init__(self) -> None:
         positive = (
@@ -659,6 +763,48 @@ class ClosedLoopRecoveryCollectionConfig:
             value = float(getattr(self, name))
             if not np.isfinite(value) or value < 0.0:
                 raise ValueError(f"{name} must be finite and nonnegative")
+        # Exercise the same validation used by every generated stream while
+        # keeping the historical defaults bit-identical.
+        _derived_seed(
+            0, 0, "source_reset", 0,
+            seed_domain=self.seed_domain,
+            role_tags=self.seed_role_tags,
+            seed_algorithm=self.seed_algorithm,
+        )
+        if self.seed_algorithm == _INJECTIVE_V4_SEED_ALGORITHM:
+            if int(self.source_seed) >= 1 << 14:
+                raise ValueError(
+                    "injective V4 source_seed exceeds its 14-bit cap")
+            if any(int(tag) >= 1 << 8 for _, tag in self.seed_role_tags):
+                raise ValueError(
+                    "injective V4 role_tag exceeds its 8-bit cap")
+            if int(self.max_proposals) > 1 << 18:
+                raise ValueError(
+                    "injective V4 max_proposals exceeds proposal identity cap")
+            if int(self.max_trajectories) > 1 << 18 or (
+                    int(self.max_trajectories)
+                    * int(self.max_episode_steps) > 1 << 18):
+                raise ValueError(
+                    "injective V4 trajectory/step identity exceeds its "
+                    "18-bit cap")
+            if any(int(value) > 1 << 6 for value in (
+                    self.admission_replicas,
+                    self.discovery_replicas,
+                    self.audit_replicas)):
+                raise ValueError(
+                    "injective V4 replica count exceeds its 6-bit index cap")
+        for name in (
+                "dataset_split_prefix", "collection_protocol_version",
+                "trajectory_id_prefix"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{name} must be nonempty text")
+        if not isinstance(
+                self.explicit_filter_settings_in_action_contract,
+                (bool, np.bool_),
+        ):
+            raise ValueError(
+                "explicit_filter_settings_in_action_contract must be boolean")
 
 
 @dataclass(frozen=True)
@@ -829,8 +975,8 @@ def _common_collection_manifest(
     protocol_sha256: str,
     protocol_contract_sha256: str,
 ) -> dict[str, Any]:
-    return {
-        "version": COLLECTION_PROTOCOL_VERSION,
+    result = {
+        "version": config.collection_protocol_version,
         "role": role,
         "scope": "conditional_development_mechanism_triage_only",
         "protocol_sha256": protocol_sha256,
@@ -858,6 +1004,19 @@ def _common_collection_manifest(
         "physical_replica_role_files": True,
         "branch_disturbance": "zero",
     }
+    if config.seed_domain != _V3_SEED_DOMAIN or config.seed_role_tags != (
+            _V3_ROLE_TAG_ITEMS) or config.seed_algorithm != (
+                _SHA256_LOW63_SEED_ALGORITHM):
+        result["seed_derivation"] = {
+            "domain_hex": config.seed_domain.hex(),
+            "role_tags": {
+                name: int(value) for name, value in config.seed_role_tags},
+            "algorithm": config.seed_algorithm,
+        }
+        if config.seed_algorithm == _INJECTIVE_V4_SEED_ALGORITHM:
+            result["seed_derivation"]["stream_mapping"] = copy.deepcopy(
+                _INJECTIVE_V4_STREAM_MAPPING)
+    return result
 
 
 def _assembler(
@@ -873,7 +1032,7 @@ def _assembler(
     recovery_program_binding: Mapping[str, Any],
 ) -> GroupedBranchAssembler:
     return GroupedBranchAssembler(
-        split=f"closed_loop_recovery_v3_{role}",
+        split=f"{config.dataset_split_prefix}_{role}",
         horizon_steps=config.horizon_steps,
         generator_commit=generator_commit,
         simulator_fingerprint=env.simulator_fingerprint(),
@@ -881,7 +1040,11 @@ def _assembler(
         continuation_policy=policy_set_manifest,
         candidate_protocol=candidate_protocol,
         fall_definition=_fall_definition(env),
-        action_application_contract=_action_application_contract(env),
+        action_application_contract=_action_application_contract(
+            env,
+            include_filter_settings=(
+                config.explicit_filter_settings_in_action_contract),
+        ),
         collection_protocol=_common_collection_manifest(
             role=role, config=config, protocol_sha256=protocol_sha256,
             protocol_contract_sha256=protocol_contract_sha256),
@@ -1090,7 +1253,10 @@ def collect_preflighted_closed_loop_recovery_triage(
         env.reset_standing(
             settle_seconds=config.settle_seconds,
             rng=np.random.default_rng(_derived_seed(
-                config.source_seed, episode_number, "source_reset", 0)),
+                config.source_seed, episode_number, "source_reset", 0,
+                seed_domain=config.seed_domain,
+                role_tags=config.seed_role_tags,
+                seed_algorithm=config.seed_algorithm)),
         )
         episode_step = 0
         last_proposal_step = -config.proposal_cooldown_steps
@@ -1105,7 +1271,10 @@ def collect_preflighted_closed_loop_recovery_triage(
             impulse_rng = np.random.default_rng(_derived_seed(
                 config.source_seed,
                 episode_number * config.max_episode_steps + episode_step,
-                "source_impulse", 0))
+                "source_impulse", 0,
+                seed_domain=config.seed_domain,
+                role_tags=config.seed_role_tags,
+                seed_algorithm=config.seed_algorithm))
             env.apply_base_velocity_impulse(
                 linear_velocity_delta=impulse_rng.normal(
                     0.0, config.source_linear_std_mps, size=3),
@@ -1119,7 +1288,10 @@ def collect_preflighted_closed_loop_recovery_triage(
             np.random.default_rng(_derived_seed(
                 config.source_seed,
                 episode_number * config.max_episode_steps + episode_step,
-                "source_action", 0)),
+                "source_action", 0,
+                seed_domain=config.seed_domain,
+                role_tags=config.seed_role_tags,
+                seed_algorithm=config.seed_algorithm)),
         )
         measurement = env.measurement()
         if measurement.failure:
@@ -1140,7 +1312,7 @@ def collect_preflighted_closed_loop_recovery_triage(
                 raise RuntimeError("proposal snapshot is already a failure")
             state_hash = snapshot.compound_sha256()
             trajectory_id = (
-                f"closed-loop-v3:source-{config.source_seed}:"
+                f"{config.trajectory_id_prefix}:source-{config.source_seed}:"
                 f"trajectory-{episode_number}")
             proposal_id = f"{trajectory_id}:step-{episode_step}"
             admission_bundle, _ = role_randomness(
@@ -1148,6 +1320,9 @@ def collect_preflighted_closed_loop_recovery_triage(
                 proposal_index=proposal_index,
                 replicas=config.admission_replicas,
                 role="admission",
+                seed_domain=config.seed_domain,
+                role_tags=config.seed_role_tags,
+                seed_algorithm=config.seed_algorithm,
             )
             nominal = early_policy.deterministic_action(observation)
             admission = evaluate_nominal_admission(
@@ -1170,7 +1345,10 @@ def collect_preflighted_closed_loop_recovery_triage(
                 "state_hash": state_hash,
                 "trajectory_id": trajectory_id,
                 "episode_id": _derived_seed(
-                    config.source_seed, episode_number, "source_reset", 1),
+                    config.source_seed, episode_number, "source_reset", 1,
+                    seed_domain=config.seed_domain,
+                    role_tags=config.seed_role_tags,
+                    seed_algorithm=config.seed_algorithm),
                 "episode_step": episode_step,
                 "source_seed": config.source_seed,
                 "policy_training_step": config.policy_training_step,
@@ -1204,12 +1382,18 @@ def collect_preflighted_closed_loop_recovery_triage(
                     proposal_index=proposal_index,
                     replicas=config.discovery_replicas,
                     role="discovery",
+                    seed_domain=config.seed_domain,
+                    role_tags=config.seed_role_tags,
+                    seed_algorithm=config.seed_algorithm,
                 )
                 audit_bundle, audit_randomness = role_randomness(
                     source_seed=config.source_seed,
                     proposal_index=proposal_index,
                     replicas=config.audit_replicas,
                     role="audit",
+                    seed_domain=config.seed_domain,
+                    role_tags=config.seed_role_tags,
+                    seed_algorithm=config.seed_algorithm,
                 )
                 preassigned_audit_randomness.append(audit_randomness)
                 discovery = evaluate_same_state_group(
@@ -1249,7 +1433,10 @@ def collect_preflighted_closed_loop_recovery_triage(
                     state_hash=state_hash,
                     trajectory_id=trajectory_id,
                     episode_id=_derived_seed(
-                        config.source_seed, episode_number, "source_reset", 1),
+                        config.source_seed, episode_number, "source_reset", 1,
+                        seed_domain=config.seed_domain,
+                        role_tags=config.seed_role_tags,
+                        seed_algorithm=config.seed_algorithm),
                     episode_step=episode_step,
                     policy_training_seed=config.policy_training_seed,
                     source_seed=config.source_seed,

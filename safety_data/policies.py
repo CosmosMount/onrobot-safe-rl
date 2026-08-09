@@ -30,6 +30,7 @@ from train.config import load_app_config
 
 POLICY_MANIFEST_VERSION = "qsafe.frozen_droq.v2"
 _STEP_COMPONENT = re.compile(r"^step_(\d+)$")
+_FROZEN_DROQ_LOAD_TOKEN = object()
 
 
 def _sha256_file(path: Path) -> str:
@@ -142,11 +143,115 @@ class FrozenDroQPolicy:
         self,
         policy: DroQInferencePolicy,
         manifest: Mapping[str, Any],
+        *,
+        _load_token: object | None = None,
     ) -> None:
+        if _load_token is not _FROZEN_DROQ_LOAD_TOKEN:
+            raise ValueError(
+                "FrozenDroQPolicy must be created by load_frozen_droq_policy")
+        if type(policy) is not DroQInferencePolicy:
+            raise TypeError("frozen DroQ policy must wrap exact DroQInferencePolicy")
         self._policy = policy
         self._manifest = copy.deepcopy(dict(manifest))
         self._observation_dim = int(self._manifest["observation_dim"])
         self._action_dim = int(self._manifest["action_dim"])
+        self._load_token = _load_token
+        self._manifest_live_sha256 = _canonical_sha256(self._manifest)
+        self._policy_identity = id(policy)
+        self._actor_identity = id(policy.actor)
+        self._callable_attestation = self._current_callable_attestation()
+        self._module_attestation = self._current_module_attestation()
+        self.require_live_integrity()
+
+    def _current_callable_attestation(self) -> tuple[Any, ...]:
+        """Capture class-owned call surfaces used by frozen inference."""
+        if type(self._policy) is not DroQInferencePolicy:
+            raise ValueError("frozen DroQ inference policy type mutated")
+        actor = self._policy.actor
+        return (
+            DroQInferencePolicy.decide,
+            DroQInferencePolicy._obs,
+            DroQInferencePolicy.load_snapshot,
+            type(actor),
+            type(actor).forward,
+        )
+
+    def _current_module_attestation(self) -> tuple[Any, ...]:
+        """Bind module identity, tensors, hooks, modes, and forward methods."""
+        actor = self._policy.actor
+        entries: list[Any] = []
+        for module_name, module in actor.named_modules():
+            hook_state = tuple(
+                (name, tuple(mapping.keys()))
+                for name, mapping in (
+                    ("forward_pre", module._forward_pre_hooks),
+                    ("forward", module._forward_hooks),
+                    ("backward", module._backward_hooks),
+                )
+            )
+            tensors = tuple(
+                (
+                    name,
+                    id(value),
+                    int(value.data_ptr()),
+                    int(value._version),
+                    str(value.dtype),
+                    tuple(value.shape),
+                    str(value.device),
+                )
+                for name, value in tuple(module.named_parameters(recurse=False))
+                + tuple(module.named_buffers(recurse=False))
+            )
+            instance_call_overrides = tuple(
+                sorted(
+                    name for name in ("forward", "_call_impl")
+                    if name in module.__dict__
+                )
+            )
+            entries.append((
+                module_name,
+                type(module),
+                id(module),
+                type(module).forward,
+                bool(module.training),
+                hook_state,
+                tensors,
+                instance_call_overrides,
+            ))
+        return tuple(entries)
+
+    def require_live_integrity(self) -> None:
+        """Reject in-memory weight, config, hook, or callable mutation."""
+        if self._load_token is not _FROZEN_DROQ_LOAD_TOKEN:
+            raise ValueError("frozen DroQ policy lacks its loader attestation")
+        if id(self._policy) != self._policy_identity or (
+                id(self._policy.actor) != self._actor_identity):
+            raise ValueError("frozen DroQ policy/actor object was replaced")
+        if self._manifest_live_sha256 != _canonical_sha256(self._manifest):
+            raise ValueError("frozen DroQ policy manifest mutated after load")
+        if self._callable_attestation != self._current_callable_attestation():
+            raise ValueError("frozen DroQ callable surface mutated after load")
+        if self._module_attestation != self._current_module_attestation():
+            raise ValueError(
+                "frozen DroQ module structure, tensors, hooks, or mode mutated")
+        if any(name in self._policy.__dict__ for name in (
+                "decide", "_obs", "load_snapshot")):
+            raise ValueError("frozen DroQ inference method was overridden")
+        if self._policy.snapshot_version != 0 or (
+                self._policy.actor_steps
+                != int(self._manifest["actor_update_step"])) or (
+                self._policy.auxiliary_steps != 0):
+            raise ValueError("frozen DroQ snapshot counters mutated after load")
+        if self._policy.action_dim != self._action_dim or (
+                self._policy.actor_observation_dim
+                != int(self._manifest["actor_observation_dim"])) or (
+                str(self._policy.device) != str(self._manifest["device"])):
+            raise ValueError("frozen DroQ inference dimensions/device mutated")
+        current_state_sha256 = _state_dict_sha256(
+            self._policy.actor.state_dict())
+        if current_state_sha256 != self._manifest[
+                "actor_state_dict_sha256"]:
+            raise ValueError("frozen DroQ actor weights mutated after load")
 
     @property
     def training_step(self) -> int:
@@ -190,9 +295,12 @@ class FrozenDroQPolicy:
 
     def deterministic_action(self, observation: np.ndarray) -> np.ndarray:
         """Return the tanh of the actor mean without consuming any RNG."""
+        self.require_live_integrity()
         decision = self._policy.decide(
             self._observation(observation), training=False)
-        return self._checked_action(decision.action_requested)
+        action = self._checked_action(decision.action_requested)
+        self.require_live_integrity()
+        return action
 
     def sample_action(
         self,
@@ -207,6 +315,7 @@ class FrozenDroQPolicy:
         """
         if not isinstance(rng, np.random.Generator):
             raise TypeError("rng must be numpy.random.Generator")
+        self.require_live_integrity()
         torch_seed = int(rng.integers(0, np.iinfo(np.int64).max))
         device = self._policy.device
         cuda_devices: list[int] = []
@@ -224,7 +333,9 @@ class FrozenDroQPolicy:
                     torch.cuda.manual_seed(torch_seed)
             decision = self._policy.decide(
                 self._observation(observation), training=True)
-        return self._checked_action(decision.action_requested)
+        action = self._checked_action(decision.action_requested)
+        self.require_live_integrity()
+        return action
 
     def __call__(
         self,
@@ -386,7 +497,8 @@ def load_frozen_droq_policy(
         "device": str(inference.device),
         "load_contract": "actor_pt_network_state_dict_only",
     }
-    return FrozenDroQPolicy(inference, manifest)
+    return FrozenDroQPolicy(
+        inference, manifest, _load_token=_FROZEN_DROQ_LOAD_TOKEN)
 
 
 __all__ = [

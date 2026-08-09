@@ -62,6 +62,8 @@ class _FakeNativeEnv:
             action_offset=np.ones(12, dtype=np.float32),
             joint_min=-np.ones(12, dtype=np.float32),
             joint_max=np.ones(12, dtype=np.float32),
+            max_joint_delta=None,
+            action_filter=None,
         )
         self.cfg = SimpleNamespace(
             fallen_orientation_rad=1.0,
@@ -221,6 +223,19 @@ class NativeCollectionCandidateSupportTest(unittest.TestCase):
             "skipped_candidate_support_groups",
             assembler_mock.call_args.kwargs["collection_protocol"],
         )
+        action_contract = assembler_mock.call_args.kwargs[
+            "action_application_contract"]
+        self.assertEqual(
+            set(action_contract),
+            {
+                "q_target_semantic",
+                "init_qpos",
+                "action_offset",
+                "joint_min",
+                "joint_max",
+                "projection",
+            },
+        )
 
     def test_unrelated_candidate_protocol_error_still_fails_closed(self):
         events = []
@@ -336,6 +351,7 @@ class GroupedBranchAssemblerTest(unittest.TestCase):
             dataset["candidate_requested"][:, 0],
         )
         self.assertEqual(dataset["candidate_seed"].dtype.kind, "u")
+        self.assertEqual(dataset["episode_id"].dtype, np.dtype(np.int64))
         self.assertTrue(np.all(dataset["sampling_stratum"] == "unspecified"))
         with tempfile.TemporaryDirectory() as directory:
             deployable_path = dataset.save(Path(directory) / "native.npz")
@@ -346,6 +362,18 @@ class GroupedBranchAssemblerTest(unittest.TestCase):
                 privileged_path, deployable=restored)
         self.assertEqual(restored.group_count, self.source.group_count)
         self.assertEqual(restored_privileged.features.shape, (4, 2))
+
+    def test_finalize_preserves_v4_high_bit_episode_identifier(self):
+        group = self.group(0)
+        episode_id = (1 << 63) | 123
+        self.assembler.add(replace(
+            group,
+            identity=replace(group.identity, episode_id=episode_id),
+        ))
+        dataset, _ = self.assembler.finalize()
+        self.assertEqual(dataset["episode_id"].dtype, np.dtype(np.uint64))
+        self.assertEqual(int(dataset["episode_id"][0]), episode_id)
+        self.assertEqual(dataset.validate()["groups"], 1)
 
     def test_add_copies_mutable_evaluation_arrays(self):
         group = self.group(0)

@@ -29,11 +29,17 @@ from safety_data.schema import GroupedBranchDataset, PrivilegedBranchView
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-_LOCKED_V3_AUDIT_BASENAMES = frozenset({
+_LOCKED_AUDIT_BASENAMES = frozenset({
     *(f"source-{seed}.audit.npz"
-      for seed in (7801, 7802, 7811, 7812, 7821, 7822)),
+      for seed in (
+          7801, 7802, 7811, 7812, 7821, 7822,
+          8401, 8402, 8411, 8412, 8421, 8422,
+      )),
     *(f"source-{seed}.audit.privileged.npz"
-      for seed in (7801, 7802, 7811, 7812, 7821, 7822)),
+      for seed in (
+          7801, 7802, 7811, 7812, 7821, 7822,
+          8401, 8402, 8411, 8412, 8421, 8422,
+      )),
     "audit-g384.npz",
     "audit-g384-privileged.npz",
 })
@@ -52,10 +58,10 @@ def _lexical_absolute(path: str | os.PathLike[str]) -> Path:
     return Path(os.path.abspath(os.fspath(path)))
 
 
-def _reject_locked_v3_audit_basenames(
+def _reject_locked_audit_basenames(
     paths: Sequence[str | os.PathLike[str]],
 ) -> None:
-    """Keep the generic merger from ever opening a locked v3 audit name.
+    """Keep the generic merger from ever opening a locked audit name.
 
     This check is deliberately protocol-independent and purely lexical.  In
     particular, it runs before resolving a parent-directory symlink, reading a
@@ -65,12 +71,19 @@ def _reject_locked_v3_audit_basenames(
     offenders = [
         _lexical_absolute(path)
         for path in paths
-        if _lexical_absolute(path).name in _LOCKED_V3_AUDIT_BASENAMES
+        if _lexical_absolute(path).name in _LOCKED_AUDIT_BASENAMES
     ]
     if offenders:
         raise ValueError(
-            "locked v3 audit paths are forbidden in the generic merger: "
+            "locked audit paths are forbidden in the generic merger: "
             f"{offenders}")
+
+
+def _reject_locked_v3_audit_basenames(
+    paths: Sequence[str | os.PathLike[str]],
+) -> None:
+    """Backward-compatible alias for the V3+V4 lexical firewall."""
+    _reject_locked_audit_basenames(paths)
 
 
 def _v3_lexical_discovery_paths(
@@ -523,7 +536,7 @@ def main() -> int:
             _lexical_absolute, args.collection_reports)),
         *lexical_outputs,
     ]
-    _reject_locked_v3_audit_basenames([*supplied_artifacts, args.protocol])
+    _reject_locked_audit_basenames([*supplied_artifacts, args.protocol])
 
     # Reject a final-component symlink before ``assert_development_path`` can
     # resolve it.  Otherwise an innocently named protocol alias could point at
