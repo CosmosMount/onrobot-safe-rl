@@ -1,6 +1,6 @@
 # Q_safe fall-reduction execution roadmap
 
-Status: active, Phase 1D Iteration 5 (Objective 1 evidence execution; not yet passed)
+Status: active, Phase 1D Iteration 5 Stage B (Objective 1 not yet passed)
 Consumed Iteration-1 protocol: `config/qsafe_evidence_protocol.yaml`
 
 Consumed no-headroom triage: `config/qsafe_recovery_option_triage_v2.yaml`
@@ -404,4 +404,6 @@ The primary outcome is falls per fixed policy-step budget, not falls per complet
 14. Implement and test v3, then collect the six fresh source-seed shards exactly once. **Done at commit `7681886`; all six G64 shards completed under the clean one-shot collector.**
 15. Apply the v3 discovery lock and consume its audit once. **Done; the selected fixed global backup failed all primary gates and the locked decision is `report_inconclusive_no_model_training`. The hierarchy-blocked per-state diagnostic is exploratory only; see `QSAFE_PHASE1_CLOSED_LOOP_RECOVERY_V3_RESULT.md` and commit `607dee7`.**
 16. Preregister v4 as a fresh direct confirmation of state-dependent K9 headroom before fitting any model. **Terminated tooling-invalid without a scientific decision; all six seeds are consumed. Collection and admission completed, but a producer/consumer RNG-manifest mismatch stopped the first discovery merge before aggregation, selection, or audit access. See `QSAFE_STATE_DEPENDENT_RECOVERY_V4_TECHNICAL_FAILURE.md` and commit `439c525`.**
-17. Preregister V5 as a fresh, outcome-isolated successor after repairing the shared RNG-manifest contract. **In progress; V5 uses a new protocol/root/Stage-A domain and six new seeds while preserving the scientific design. No V4 artifact may enter V5. Stage A must pass before fitting; Phase 2 remains blocked until all Objective-1 stages pass.**
+17. Preregister V5 as a fresh, outcome-isolated successor after repairing the shared RNG-manifest contract. **Done at `1452a11`; V5 uses a new protocol/root/Stage-A domain and six new seeds while preserving the scientific design. No V4 artifact entered V5.**
+18. Execute the V5 Stage-A same-state causal-headroom gate. **Passed once on the frozen audit: absolute reduction 0.3447 with one-sided 95% LCB 0.3135; pair agreement 0.7920 with LCB 0.7817; all three age and all six source-seed effects are positive. See `QSAFE_PHASE1_STATE_DEPENDENT_RECOVERY_V5_STAGE_A_RESULT.md`. This authorizes Stage B only.**
+19. Implement and execute the frozen V5 Stage-B model/calibration/selector/placebo pipeline. **Now active. Stage C, online SAC, Objective 1, and Phase 2 remain blocked unless every Stage-B gate passes.**

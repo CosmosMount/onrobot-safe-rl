@@ -1,6 +1,6 @@
 # Objective 1 state-dependent recovery Q_safe V5 execution plan
 
-Status: **prospective preregistration; no V5 simulator outcome is authorized**
+Status: **Stage A passed; Stage B model fitting authorized; Objective 1 not yet passed**
 
 Protocol identity: `objective1_state_dependent_recovery_qsafe_v5`
 
@@ -8,7 +8,7 @@ Machine protocol: `config/qsafe_state_dependent_recovery_v5.yaml`
 
 Artifact root: `saved/qsafe_development/state_dependent_recovery_v5`
 
-Last updated: `2026-08-09` (Asia/Shanghai)
+Last updated: `2026-08-10` (Asia/Shanghai)
 
 This is the tracked recovery plan after V4 ended tooling-invalid. Its first
 objective is unchanged: produce reproducible evidence that a frozen,
@@ -331,16 +331,16 @@ is invalid.
 | Item | Required evidence | Status |
 |---|---|---|
 | V4 terminal record | commit and hashes in Section 1 | complete |
-| RNG producer-consumer repair | commit `04e040bc5179682c7c435dd15f5411445278c022` | complete; must be reverified under V5 |
-| V5 prereg/generator commit | full clean commit SHA | pending commit; must be identical in six preflights/cohort |
-| V5 plan | raw SHA-256 | compute from committed bytes before preflight and record in external execution ledger |
+| RNG producer-consumer repair | commit `04e040bc5179682c7c435dd15f5411445278c022` | complete; reverified by the clean V5 suite and six successful collectors |
+| V5 prereg/generator commit | full clean commit SHA | complete: `1452a112c35d94eed87bafb0c3f2bf73ab907324` |
+| V5 plan | raw SHA-256 | complete for preregistered bytes: `06a5df8f64c306ce515483e95fd6f5dadec99c867c6bed2ac6d81f5298ec973d` in external ledger |
 | V5 machine protocol | raw / canonical SHA-256 | `f4c3e796004d124574df3d35ef344f6a4a766d9099acb5792c1d78b8361b49b0` / `1e8667aa17ab361c323771d5deb51258644cce37bd26bed00599ca08d7545ea5` |
-| V5 RNG helper/collector/merger/auditor/tests | path/content hashes bound by generator commit | pending generator commit |
+| V5 RNG helper/collector/merger/auditor/tests | path/content hashes bound by generator commit | complete; bound by `1452a112c35d94eed87bafb0c3f2bf73ab907324` |
 | V5 recovery library | canonical fingerprint | locked to `fcfb1fa541acf316f87dacf82b1fdeb9188d7a4b9df7f69544b567fb2c5d1045` |
-| V5 six preflights | seed, commit, protocol hashes, zero simulator steps, no created root | pending |
-| V5 cohort lock | SHA-256 and publication time before first simulator step | pending |
-| Six collection reports | attempt/report hashes and exact counts | pending |
-| Admission/discovery/selection/audit | input/output hashes and report-last markers in exact order | pending |
+| V5 six preflights | seed, commit, protocol hashes, zero simulator steps, no created root | complete; all six exit 0 on the exact generator commit |
+| V5 cohort lock | SHA-256 and publication time before first simulator step | complete: `495360ceece0573ba168cb10676441771bc6a7ab0208e1583f5b679e95f9fd12` |
+| Six collection reports | attempt/report hashes and exact counts | complete: G384, 8,946 proposals, 52,696 source steps, 1,818 trajectories |
+| Admission/discovery/selection/audit | input/output hashes and report-last markers in exact order | complete; Stage-A report `e7ea56546bf8006cfc4d8ade4f5b2c26dbfcbc132e0568e054a98c2be3174b2e` passes |
 
 Each machine artifact must bind the generator commit, protocol hashes,
 predecessor hashes, and exact source/actor roster required by its schema. The
@@ -372,14 +372,14 @@ but do not replace the fresh V5 preregistration/result boundaries above.
 - [x] Preserve the V4 tooling-invalid terminal record and consume all six V4
   seeds.
 - [x] Land an outcome-blind shared RNG-manifest repair foundation.
-- [ ] Commit V5 identity/root/domains, fresh Stage-A seeds, producer-consumer
+- [x] Commit V5 identity/root/domains, fresh Stage-A seeds, producer-consumer
   tests, and this plan on one clean preregistration commit.
-- [ ] Pass the full suite and focused RNG round-trip suite on that exact commit.
-- [ ] Pass six outcome-free preflights without creating the V5 root.
-- [ ] Collect six fresh Stage-A sources exactly once and complete all reports.
-- [ ] Run admission merge, discovery merge, selection lock, and (only if
+- [x] Pass the full suite and focused RNG round-trip suite on that exact commit.
+- [x] Pass six outcome-free preflights without creating the V5 root.
+- [x] Collect six fresh Stage-A sources exactly once and complete all reports.
+- [x] Run admission merge, discovery merge, selection lock, and (only if
   authorized) the one-shot audit in the exact order in Section 4.3.
-- [ ] Commit the Stage-A disposition; stop on any failure.
+- [x] Commit the passing Stage-A disposition and authorize Stage B only.
 - [ ] If Stage A passes, execute and commit Stage B.
 - [ ] If Stage B passes, execute and commit Stage C.
 - [ ] If Stage C passes, execute and commit Stage D and compile Objective 1.
