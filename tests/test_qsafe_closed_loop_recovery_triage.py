@@ -28,6 +28,7 @@ from safety_data.closed_loop_recovery_triage import (
     validate_collection_readiness,
 )
 from safety_data.schema import GroupedBranchDataset, SCHEMA_VERSION
+from safety_data.paths import workflow_evidence_read_scope
 
 
 PROTOCOL_PATH = Path("config/qsafe_closed_loop_recovery_triage_v3.yaml")
@@ -682,8 +683,16 @@ def _write_merge_completion_reports(
         protocol=protocol,
         collection_report_paths=collection_reports,
     )
-    admission = AdmissionLedger.load(admission_path)
-    discovery = GroupedBranchDataset.load(discovery_path)
+    with workflow_evidence_read_scope(
+            workflow="objective1_closed_loop_recovery_triage_v3",
+            role="admission",
+            path=admission_path):
+        admission = AdmissionLedger.load(admission_path)
+    with workflow_evidence_read_scope(
+            workflow="objective1_closed_loop_recovery_triage_v3",
+            role="discovery",
+            path=discovery_path):
+        discovery = GroupedBranchDataset.load(discovery_path)
     admission_validation = admission.validate()
     discovery_validation = discovery.validate()
     admission_inputs = []
@@ -1109,7 +1118,11 @@ class ClosedLoopRecoverySelectionLockTest(_ScaledV3TestCase):
             root = Path(directory)
             protocol = _protocol(root)
             admission_path = _write_admission(root, protocol)
-            admission = AdmissionLedger.load(admission_path)
+            with workflow_evidence_read_scope(
+                    workflow="objective1_closed_loop_recovery_triage_v3",
+                    role="admission",
+                    path=admission_path):
+                admission = AdmissionLedger.load(admission_path)
             admission.manifest["shards"][0]["content_sha256"] = _fingerprint(
                 "different-admission-leaf")
             staging = admission.save(root / "tampered-admission-staging.npz")

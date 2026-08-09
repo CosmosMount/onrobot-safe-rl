@@ -7,33 +7,64 @@ import unittest
 from unittest import mock
 
 from safety_data import closed_loop_recovery_collector as collector
-from safety_data import state_dependent_recovery_v4 as v4
-import scripts.merge_state_dependent_recovery_v4 as merge_v4
+from safety_data import state_dependent_recovery_v5 as v5
+from safety_data.schema import GroupedBranchDataset
+import scripts.merge_state_dependent_recovery_v5 as merge_v5
+from tests.test_safety_data import synthetic_dataset
 
 
-_VERSION = "qsafe.state_dependent_recovery.collection.v4_stage_a"
-_SPLIT = "state_dependent_recovery_v4_stage_a_discovery"
+_VERSION = "qsafe.state_dependent_recovery.collection.v5_stage_a"
+_SPLIT = "state_dependent_recovery_v5_stage_a_discovery"
 
 
 def _discovery_manifest() -> dict:
     return {
         "collection_protocol": {
             "version": _VERSION,
-            "seed_derivation": v4.expected_v4_seed_manifest(),
+            "role": "discovery",
+            "seed_derivation": v5.expected_v5_seed_manifest(),
         },
         "split": _SPLIT,
     }
 
 
-class StateDependentRecoveryV4RngManifestTest(unittest.TestCase):
+class StateDependentRecoveryV5RngManifestTest(unittest.TestCase):
+    def test_collector_manifest_survives_real_dataset_serialization_for_merger(self):
+        config = collector.ClosedLoopRecoveryCollectionConfig(
+            source_seed=8901,
+            policy_training_step=25_438,
+            seed_domain=v5.SEED_DOMAIN,
+            seed_role_tags=v5.SEED_ROLE_TAGS,
+            seed_algorithm=v5.SEED_ALGORITHM,
+            dataset_split_prefix="state_dependent_recovery_v5_stage_a",
+            collection_protocol_version=_VERSION,
+        )
+        dataset, _ = synthetic_dataset(split=_SPLIT)
+        dataset.manifest["collection_protocol"] = (
+            collector._common_collection_manifest(
+                role="discovery",
+                config=config,
+                protocol_sha256="a" * 64,
+                protocol_contract_sha256="b" * 64,
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = dataset.save(Path(directory) / "synthetic-discovery.npz")
+            loaded = GroupedBranchDataset.load(path)
+        merge_v5._require_exact_v5_discovery_rng_split(loaded.manifest)
+        self.assertEqual(
+            loaded.manifest["collection_protocol"]["seed_derivation"],
+            v5.expected_v5_seed_manifest(),
+        )
+
     def test_writer_canonical_and_merge_use_one_exact_four_field_manifest(self):
         config = collector.ClosedLoopRecoveryCollectionConfig(
-            source_seed=8401,
+            source_seed=8901,
             policy_training_step=25_438,
-            seed_domain=v4.SEED_DOMAIN,
-            seed_role_tags=v4.SEED_ROLE_TAGS,
-            seed_algorithm=v4.SEED_ALGORITHM,
-            dataset_split_prefix="state_dependent_recovery_v4_stage_a",
+            seed_domain=v5.SEED_DOMAIN,
+            seed_role_tags=v5.SEED_ROLE_TAGS,
+            seed_algorithm=v5.SEED_ALGORITHM,
+            dataset_split_prefix="state_dependent_recovery_v5_stage_a",
             collection_protocol_version=_VERSION,
         )
         common_builder = collector.seed_derivation_manifest
@@ -47,23 +78,23 @@ class StateDependentRecoveryV4RngManifestTest(unittest.TestCase):
                 protocol_contract_sha256="b" * 64,
             )["seed_derivation"]
         writer_builder.assert_called_once_with(
-            seed_domain=v4.SEED_DOMAIN,
-            seed_role_tags=v4.SEED_ROLE_TAGS,
-            seed_algorithm=v4.SEED_ALGORITHM,
+            seed_domain=v5.SEED_DOMAIN,
+            seed_role_tags=v5.SEED_ROLE_TAGS,
+            seed_algorithm=v5.SEED_ALGORITHM,
         )
         common = collector.seed_derivation_manifest(
-            seed_domain=v4.SEED_DOMAIN,
-            seed_role_tags=v4.SEED_ROLE_TAGS,
-            seed_algorithm=v4.SEED_ALGORITHM,
+            seed_domain=v5.SEED_DOMAIN,
+            seed_role_tags=v5.SEED_ROLE_TAGS,
+            seed_algorithm=v5.SEED_ALGORITHM,
         )
         with mock.patch.object(
-                v4, "seed_derivation_manifest",
+                v5, "seed_derivation_manifest",
                 wraps=common_builder) as expected_builder:
-            canonical = v4.expected_v4_seed_manifest()
+            canonical = v5.expected_v5_seed_manifest()
         expected_builder.assert_called_once_with(
-            seed_domain=v4.SEED_DOMAIN,
-            seed_role_tags=v4.SEED_ROLE_TAGS,
-            seed_algorithm=v4.SEED_ALGORITHM,
+            seed_domain=v5.SEED_DOMAIN,
+            seed_role_tags=v5.SEED_ROLE_TAGS,
+            seed_algorithm=v5.SEED_ALGORITHM,
         )
 
         self.assertEqual(
@@ -73,22 +104,22 @@ class StateDependentRecoveryV4RngManifestTest(unittest.TestCase):
         self.assertEqual(written, common)
         self.assertEqual(common, canonical)
         self.assertIs(
-            v4.seed_derivation_manifest,
+            v5.seed_derivation_manifest,
             collector.seed_derivation_manifest,
         )
         self.assertIs(
-            merge_v4.expected_v4_seed_manifest,
-            v4.expected_v4_seed_manifest,
+            merge_v5.validate_v5_outcome_manifest,
+            v5.validate_v5_outcome_manifest,
         )
         with mock.patch.object(
-                merge_v4, "expected_v4_seed_manifest",
-                wraps=v4.expected_v4_seed_manifest) as merge_expected:
-            merge_v4._require_exact_v4_discovery_rng_split(
-                _discovery_manifest())
-        merge_expected.assert_called_once_with()
+                merge_v5, "validate_v5_outcome_manifest",
+                wraps=v5.validate_v5_outcome_manifest) as merge_validator:
+            manifest = _discovery_manifest()
+            merge_v5._require_exact_v5_discovery_rng_split(manifest)
+        merge_validator.assert_called_once_with(manifest, "discovery")
 
         canonical["role_tags"]["audit"] = -1
-        self.assertNotEqual(canonical, v4.expected_v4_seed_manifest())
+        self.assertNotEqual(canonical, v5.expected_v5_seed_manifest())
 
         noninjective = collector.seed_derivation_manifest(
             seed_domain=b"generic_seed_domain\0",
@@ -138,14 +169,27 @@ class StateDependentRecoveryV4RngManifestTest(unittest.TestCase):
         }
         for name, manifest in cases.items():
             if "version" in name:
-                expected = "V4 collection version"
+                expected = "V5 collection version"
             elif "split" in name:
-                expected = "exact V4 split"
+                expected = "exact V5 split"
             else:
-                expected = "exact V4 RNG manifest"
+                expected = "exact V5 RNG manifest"
             with self.subTest(name=name), self.assertRaisesRegex(
                     ValueError, expected):
-                merge_v4._require_exact_v4_discovery_rng_split(manifest)
+                merge_v5._require_exact_v5_discovery_rng_split(manifest)
+
+        audit = _discovery_manifest()
+        audit["collection_protocol"]["role"] = "audit"
+        audit["split"] = "state_dependent_recovery_v5_stage_a_audit"
+        v5.validate_v5_outcome_manifest(audit, "audit")
+        audit["collection_protocol"]["seed_derivation"].pop("algorithm")
+        with self.assertRaisesRegex(ValueError, "exact V5 RNG manifest"):
+            v5.validate_v5_outcome_manifest(audit, "audit")
+
+        wrong_role = _discovery_manifest()
+        wrong_role["collection_protocol"]["role"] = "audit"
+        with self.assertRaisesRegex(ValueError, "collection role"):
+            merge_v5._require_exact_v5_discovery_rng_split(wrong_role)
 
     def test_merge_proceeds_past_valid_rng_predicate_and_never_publishes_invalid(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -154,9 +198,10 @@ class StateDependentRecoveryV4RngManifestTest(unittest.TestCase):
                 "discovery": root / "merged.npz",
                 "discovery_privileged": root / "merged-privileged.npz",
                 "discovery_report": root / "merge-report.json",
-                "discovery_leaves": [root / "leaf.npz"],
+                "discovery_leaves": [
+                    root / "source-8901.discovery.npz"],
                 "discovery_privileged_leaves": [
-                    root / "leaf-privileged.npz"],
+                    root / "source-8901.discovery.privileged.npz"],
             }
             protocol = {"collection": {
                 "discovery_filename": paths["discovery"].name,
@@ -183,18 +228,18 @@ class StateDependentRecoveryV4RngManifestTest(unittest.TestCase):
                 )
                 publication = mock.Mock()
                 with mock.patch.object(
-                        merge_v4, "_canonical_non_audit",
+                        merge_v5, "_canonical_non_audit",
                         side_effect=lambda path, **kwargs: path), \
                         mock.patch.object(
-                            merge_v4.GroupedBranchDataset, "load",
+                            merge_v5.GroupedBranchDataset, "load",
                             return_value=dataset), \
                         mock.patch.object(
-                            merge_v4.PrivilegedBranchView, "load",
+                            merge_v5.PrivilegedBranchView, "load",
                             return_value=types.SimpleNamespace()), \
                         mock.patch.object(
-                            merge_v4, "_publish_no_clobber", publication):
+                            merge_v5, "_publish_no_clobber", publication):
                     with self.assertRaises(ValueError) as raised:
-                        merge_v4._merge_discovery(
+                        merge_v5._merge_discovery(
                             protocol=protocol,
                             paths=paths,
                             readiness=readiness,
@@ -210,7 +255,7 @@ class StateDependentRecoveryV4RngManifestTest(unittest.TestCase):
             invalid["collection_protocol"]["seed_derivation"][
                 "algorithm"] += "_drift"
             invalid_error = run(invalid)
-            self.assertIn("exact V4 RNG manifest", str(invalid_error))
+            self.assertIn("exact V5 RNG manifest", str(invalid_error))
 
 
 if __name__ == "__main__":

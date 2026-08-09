@@ -25,7 +25,7 @@ from pathlib import Path
 import re
 import stat
 import tempfile
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -33,6 +33,7 @@ from safety_data.closed_loop_recovery_collector import AdmissionLedger
 from safety_data.paths import (
     ProtectedEvidencePathError,
     require_v3_audit_consumed_or_safe_input,
+    workflow_evidence_read_scope,
 )
 from safety_data.schema import GroupedBranchDataset
 
@@ -1028,7 +1029,11 @@ def _load_admission(path: Path, spec: Mapping[str, Any]) -> dict[str, Any]:
     path = _authorize_evidence_path(path, "merged admission artifact")
     _require_regular_nonsymlink(path, "merged admission artifact")
     try:
-        ledger = AdmissionLedger.load(path)
+        with workflow_evidence_read_scope(
+                workflow=str(spec["protocol"]["protocol_name"]),
+                role="admission",
+                path=path):
+            ledger = AdmissionLedger.load(path)
         validation = ledger.validate()
     except Exception as exc:
         raise ClosedLoopRecoveryTriageError(
@@ -1147,19 +1152,26 @@ def _load_outcome_npz(
     *,
     expected_groups: int | None = None,
     expected_source_seed: int | None = None,
+    manifest_validator: Callable[[Mapping[str, Any], str], None] | None = None,
 ) -> dict[str, Any]:
     if role not in ("discovery", "audit"):
         raise ClosedLoopRecoveryTriageError("outcome role must be discovery/audit")
     path = _authorize_evidence_path(path, f"{role} outcome artifact")
     _require_regular_nonsymlink(path, f"{role} outcome artifact")
     try:
-        dataset = GroupedBranchDataset.load(path)
+        with workflow_evidence_read_scope(
+                workflow=str(spec["protocol"]["protocol_name"]),
+                role=role,
+                path=path):
+            dataset = GroupedBranchDataset.load(path)
         validation = dataset.validate()
     except Exception as exc:
         raise ClosedLoopRecoveryTriageError(
             f"could not load collector {role} GroupedBranchDataset") from exc
     arrays = dataset.arrays
     manifest = dataset.manifest
+    if manifest_validator is not None:
+        manifest_validator(manifest, role)
     _validate_artifact_fall_definition(manifest, spec, role)
     _validate_outcome_runtime_manifest(manifest, spec, role)
     collection_protocol = _mapping(
@@ -3034,6 +3046,8 @@ def _pair_agreement_groups(
 def _load_audit_shards_after_consumption(
     paths: Sequence[Path],
     spec: Mapping[str, Any],
+    *,
+    manifest_validator: Callable[[Mapping[str, Any], str], None] | None = None,
 ) -> dict[str, Any]:
     """Load and splice six already-consumed physical audit outcome shards."""
     shards = [
@@ -3043,6 +3057,7 @@ def _load_audit_shards_after_consumption(
             spec,
             expected_groups=spec["groups_per_seed"],
             expected_source_seed=int(seed),
+            manifest_validator=manifest_validator,
         )
         for path, seed in zip(paths, spec["required_seeds"], strict=True)
     ]

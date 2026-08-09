@@ -12,8 +12,8 @@ import numpy as np
 import yaml
 
 from safety_data.closed_loop_recovery_collector import canonical_protocol_sha256
-import safety_data.state_dependent_recovery_v4 as v4
-import scripts.merge_state_dependent_recovery_v4 as merge_v4
+import safety_data.state_dependent_recovery_v5 as v5
+import scripts.merge_state_dependent_recovery_v5 as merge_v5
 
 
 _CLEAN_COMMIT = "d" * 40
@@ -21,7 +21,7 @@ _PROTOCOL_FILE_SHA256 = "a" * 64
 
 
 def _spec_and_protocol(root: Path):
-    protocol = yaml.safe_load(v4.PROTOCOL_PATH.read_text(encoding="utf-8"))
+    protocol = yaml.safe_load(v5.PROTOCOL_PATH.read_text(encoding="utf-8"))
     protocol = copy.deepcopy(protocol)
     protocol["collection"]["artifact_root"] = str(root)
     seed_age = {
@@ -35,12 +35,12 @@ def _spec_and_protocol(root: Path):
         "protocol_contract_sha256": canonical_protocol_sha256(protocol),
         "data_gate": protocol["triage_gates"]["data"],
         "seed_age": seed_age,
-        "age_strata": v4.AGE_STRATA,
+        "age_strata": v5.AGE_STRATA,
         # A one-group-per-source miniature preserves every structural relation
         # while keeping the recovery-reader unit fixture small.
-        "groups": len(v4.SOURCE_SEEDS),
+        "groups": len(v5.SOURCE_SEEDS),
         "groups_per_seed": 1,
-        "required_seeds": tuple(v4.SOURCE_SEEDS),
+        "required_seeds": tuple(v5.SOURCE_SEEDS),
         "admission_replicas": 32,
         "discovery_replicas": 64,
         "audit_replicas": 64,
@@ -76,7 +76,7 @@ def _audit_denied_lock(spec):
             "admission_falls": 6,
             "discovery_candidate_risk": list(risk_row),
             "discovery_minimizer_indices": [0],
-            "discovery_minimizer_names": [v4.CANDIDATE_NAMES[0]],
+            "discovery_minimizer_names": [v5.CANDIDATE_NAMES[0]],
             "uniform_weights": [1.0],
         })
         replica_partition.append({
@@ -100,9 +100,9 @@ def _audit_denied_lock(spec):
             "audit_candidate_seed": seed_vector(1)[0],
         })
 
-    role_commitments = {role: [] for role in v4._READINESS_ROLES}
+    role_commitments = {role: [] for role in v5._READINESS_ROLES}
     for ordinal, source_seed in enumerate(spec["required_seeds"]):
-        for role in v4._READINESS_ROLES:
+        for role in v5._READINESS_ROLES:
             role_commitments[role].append({
                 "ordinal": ordinal,
                 "source_seed": source_seed,
@@ -121,7 +121,7 @@ def _audit_denied_lock(spec):
                 "content_sha256": role_commitments[role][ordinal][
                     "content_sha256"],
             }
-            for role in v4._READINESS_ROLES
+            for role in v5._READINESS_ROLES
         }
         validations = {
             "admission": {
@@ -183,12 +183,12 @@ def _audit_denied_lock(spec):
             "validations": validations,
         })
     readiness_manifest = {
-        "schema_version": v4._v3.COLLECTION_READINESS_SCHEMA_VERSION,
-        "protocol_name": v4.PROTOCOL_NAME,
+        "schema_version": v5._v3.COLLECTION_READINESS_SCHEMA_VERSION,
+        "protocol_name": v5.PROTOCOL_NAME,
         "protocol_contract_sha256": spec["protocol_contract_sha256"],
         "protocol_file_sha256": _PROTOCOL_FILE_SHA256,
         "generator_commit": _CLEAN_COMMIT,
-        "artifact_root": str(v4._artifact_root(protocol)),
+        "artifact_root": str(v5._artifact_root(protocol)),
         "required_source_seeds": list(spec["required_seeds"]),
         "source_records": source_records,
         "role_commitments": role_commitments,
@@ -201,7 +201,7 @@ def _audit_denied_lock(spec):
         "schema_version": (
             "qsafe.closed_loop_recovery_triage.merge_readiness.v1"),
         "protocol_contract_sha256": spec["protocol_contract_sha256"],
-        "collection_readiness_sha256": v4._v3.canonical_sha256(
+        "collection_readiness_sha256": v5._v3.canonical_sha256(
             readiness_manifest),
         "admission_merge_report": {
             "path": "opaque-admission-merge-report",
@@ -218,22 +218,22 @@ def _audit_denied_lock(spec):
     }
     source_seed_array = np.asarray(spec["required_seeds"], dtype=np.int64)
     nominal_risk = np.zeros(spec["groups"], dtype=np.float64)
-    informativeness = v4._v3._discovery_informativeness(
+    informativeness = v5._v3._discovery_informativeness(
         nominal_risk, source_seed_array, spec)
     global_table = [{
         "candidate_index": index,
-        "candidate_name": v4.CANDIDATE_NAMES[index],
+        "candidate_name": v5.CANDIDATE_NAMES[index],
         "equal_seed_discovery_risk": risk_row[index],
     } for index in range(1, 9)]
     return {
-        "schema_version": v4._v3.SELECTION_LOCK_SCHEMA_VERSION,
-        "protocol_name": v4.PROTOCOL_NAME,
+        "schema_version": v5._v3.SELECTION_LOCK_SCHEMA_VERSION,
+        "protocol_name": v5.PROTOCOL_NAME,
         "protocol_contract_sha256": spec["protocol_contract_sha256"],
         "protocol_file_sha256": _PROTOCOL_FILE_SHA256,
         "generator_commit": _CLEAN_COMMIT,
-        "candidate_library_sha256": v4._v3.canonical_sha256(
+        "candidate_library_sha256": v5._v3.canonical_sha256(
             collection["candidates"]),
-        "policy_bundle_sha256": v4._v3.canonical_sha256({
+        "policy_bundle_sha256": v5._v3.canonical_sha256({
             "policy_config": protocol["policy_config"],
             "early_task_policies": protocol["early_task_policies"],
             "mature_recovery_policy": protocol["mature_recovery_policy"],
@@ -252,17 +252,17 @@ def _audit_denied_lock(spec):
                 "content_sha256": discovery_content_sha256,
             },
         },
-        "candidate_order": list(v4.CANDIDATE_NAMES),
+        "candidate_order": list(v5.CANDIDATE_NAMES),
         "selected_global_candidate": {
             "candidate_index": 1,
-            "candidate_name": v4.CANDIDATE_NAMES[1],
+            "candidate_name": v5.CANDIDATE_NAMES[1],
             "selection_scope": "eight_nonnominal_candidates",
             "exact_tie_break": "locked_candidate_order",
             "discovery_candidate_table": global_table,
         },
         "bootstrap": protocol["statistics"]["bootstrap"],
         "triage_gates": protocol["triage_gates"],
-        "selection_semantics": copy.deepcopy(v4.SELECTION_SEMANTICS),
+        "selection_semantics": copy.deepcopy(v5.SELECTION_SEMANTICS),
         "audit_identifier": "c" * 64,
         "audit_authorized": False,
         "audit_runner_up_policy": "forbidden",
@@ -272,7 +272,7 @@ def _audit_denied_lock(spec):
             "unique_state_fingerprints": spec["groups"],
             "unique_trajectory_fingerprints": spec["groups"],
             "groups_per_source_seed": spec["groups_per_seed"],
-            "required_source_seeds": list(v4.SOURCE_SEEDS),
+            "required_source_seeds": list(v5.SOURCE_SEEDS),
             "candidates": 9,
             "admission_replicas": 32,
             "discovery_replicas": 64,
@@ -284,23 +284,23 @@ def _audit_denied_lock(spec):
             "pass": False,
         },
         "group_selection": group_selection,
-        "group_selection_sha256": v4._v3.canonical_sha256(group_selection),
+        "group_selection_sha256": v5._v3.canonical_sha256(group_selection),
         "replica_partition": replica_partition,
-        "replica_partition_sha256": v4._v3.canonical_sha256(
+        "replica_partition_sha256": v5._v3.canonical_sha256(
             replica_partition),
-        "collection_readiness_sha256": v4._v3.canonical_sha256(
+        "collection_readiness_sha256": v5._v3.canonical_sha256(
             readiness_manifest),
         "collection_readiness_manifest": readiness_manifest,
-        "merge_readiness_sha256": v4._v3.canonical_sha256(merge_manifest),
+        "merge_readiness_sha256": v5._v3.canonical_sha256(merge_manifest),
         "merge_readiness_manifest": merge_manifest,
         "expected_audit_shards": copy.deepcopy(role_commitments["audit"]),
     }
 
 
-class StateDependentRecoveryV4ResumeTest(unittest.TestCase):
+class StateDependentRecoveryV5ResumeTest(unittest.TestCase):
     def _write_lock(self, root: Path, lock):
         path = root / "selection-lock.json"
-        payload = v4._v3._canonical_json_bytes(lock)
+        payload = v5._v3._canonical_json_bytes(lock)
         path.write_bytes(payload)
         return path, hashlib.sha256(payload).hexdigest()
 
@@ -312,30 +312,30 @@ class StateDependentRecoveryV4ResumeTest(unittest.TestCase):
                 root, _audit_denied_lock(spec))
             artifact_path = lambda value, **kwargs: Path(value)
             with mock.patch.object(
-                    v4, "_validate_protocol", return_value=spec), \
+                    v5, "_validate_protocol", return_value=spec), \
                     mock.patch.object(
-                        v4, "_require_clean_head_protocol_binding",
+                        v5, "_require_clean_head_protocol_binding",
                         return_value=(_CLEAN_COMMIT, _PROTOCOL_FILE_SHA256)), \
                     mock.patch.object(
-                        v4._v3, "_artifact_path", side_effect=artifact_path), \
+                        v5._v3, "_artifact_path", side_effect=artifact_path), \
                     mock.patch.object(
-                        v4, "_locked_audit_paths_before_consumption",
+                        v5, "_locked_audit_paths_before_consumption",
                         side_effect=AssertionError("audit path derived")), \
                     mock.patch.object(
-                        v4._v3, "_expected_audit_shard_paths",
+                        v5._v3, "_expected_audit_shard_paths",
                         side_effect=AssertionError("audit path constructed")), \
                     mock.patch.object(
-                        v4._v3, "_canonical_embedded_path",
+                        v5._v3, "_canonical_embedded_path",
                         side_effect=AssertionError("embedded path parsed")), \
                     mock.patch.object(
-                        v4._v3, "_load_audit_shards_after_consumption",
+                        v5._v3, "_load_audit_shards_after_consumption",
                         side_effect=AssertionError("audit outcome opened")):
-                first = v4.resume_state_dependent_discovery_failure_report(
+                first = v5.resume_state_dependent_discovery_failure_report(
                     protocol=protocol,
                     selection_lock_path=lock_path,
                     expected_selection_lock_sha256=lock_sha256,
                 )
-                second = v4.resume_state_dependent_discovery_failure_report(
+                second = v5.resume_state_dependent_discovery_failure_report(
                     protocol=protocol,
                     selection_lock_path=lock_path,
                     expected_selection_lock_sha256=lock_sha256,
@@ -357,12 +357,12 @@ class StateDependentRecoveryV4ResumeTest(unittest.TestCase):
 
     def test_reader_rejects_self_rehashed_schema_and_semantic_tampering(self):
         def rehash_readiness(lock):
-            readiness_sha256 = v4._v3.canonical_sha256(
+            readiness_sha256 = v5._v3.canonical_sha256(
                 lock["collection_readiness_manifest"])
             lock["collection_readiness_sha256"] = readiness_sha256
             lock["merge_readiness_manifest"][
                 "collection_readiness_sha256"] = readiness_sha256
-            lock["merge_readiness_sha256"] = v4._v3.canonical_sha256(
+            lock["merge_readiness_sha256"] = v5._v3.canonical_sha256(
                 lock["merge_readiness_manifest"])
 
         def missing_readiness_field(lock):
@@ -373,14 +373,14 @@ class StateDependentRecoveryV4ResumeTest(unittest.TestCase):
         def wrong_global_selection(lock):
             lock["selected_global_candidate"]["candidate_index"] = 2
             lock["selected_global_candidate"]["candidate_name"] = (
-                v4.CANDIDATE_NAMES[2])
+                v5.CANDIDATE_NAMES[2])
 
         def wrong_per_state_selection(lock):
             group = lock["group_selection"][0]
             group["discovery_minimizer_indices"] = [1]
-            group["discovery_minimizer_names"] = [v4.CANDIDATE_NAMES[1]]
+            group["discovery_minimizer_names"] = [v5.CANDIDATE_NAMES[1]]
             group["uniform_weights"] = [1.0]
-            lock["group_selection_sha256"] = v4._v3.canonical_sha256(
+            lock["group_selection_sha256"] = v5._v3.canonical_sha256(
                 lock["group_selection"])
 
         def forged_informativeness(lock):
@@ -393,12 +393,12 @@ class StateDependentRecoveryV4ResumeTest(unittest.TestCase):
         def duplicate_replica_seed(lock):
             record = lock["replica_partition"][0]
             record["audit_crn_ids"][1] = record["audit_crn_ids"][0]
-            lock["replica_partition_sha256"] = v4._v3.canonical_sha256(
+            lock["replica_partition_sha256"] = v5._v3.canonical_sha256(
                 lock["replica_partition"])
 
-        def missing_v4_seed_tag(lock):
+        def missing_v5_seed_tag(lock):
             lock["replica_partition"][0]["audit_candidate_seed"] = 7
-            lock["replica_partition_sha256"] = v4._v3.canonical_sha256(
+            lock["replica_partition_sha256"] = v5._v3.canonical_sha256(
                 lock["replica_partition"])
 
         def missing_top_level_field(lock):
@@ -416,7 +416,7 @@ class StateDependentRecoveryV4ResumeTest(unittest.TestCase):
             ("informativeness", forged_informativeness,
              "informativeness record"),
             ("replica_seed", duplicate_replica_seed, "audit_crn_ids"),
-            ("seed_tag", missing_v4_seed_tag, "at least"),
+            ("seed_tag", missing_v5_seed_tag, "at least"),
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -427,8 +427,8 @@ class StateDependentRecoveryV4ResumeTest(unittest.TestCase):
                     mutate(lock)
                     lock_path, lock_sha256 = self._write_lock(root, lock)
                     with self.assertRaisesRegex(
-                            v4.StateDependentRecoveryV4Error, message):
-                        v4._read_audit_denied_selection_lock(
+                            v5.StateDependentRecoveryV5Error, message):
+                        v5._read_audit_denied_selection_lock(
                             lock_path,
                             expected_sha256=lock_sha256,
                             spec=spec,
@@ -445,22 +445,22 @@ class StateDependentRecoveryV4ResumeTest(unittest.TestCase):
                 root, _audit_denied_lock(spec))
             artifact_path = lambda value, **kwargs: Path(value)
             patches = (
-                mock.patch.object(v4, "_validate_protocol", return_value=spec),
+                mock.patch.object(v5, "_validate_protocol", return_value=spec),
                 mock.patch.object(
-                    v4, "_require_clean_head_protocol_binding",
+                    v5, "_require_clean_head_protocol_binding",
                     return_value=(_CLEAN_COMMIT, _PROTOCOL_FILE_SHA256)),
                 mock.patch.object(
-                    v4._v3, "_artifact_path", side_effect=artifact_path),
+                    v5._v3, "_artifact_path", side_effect=artifact_path),
             )
             with patches[0], patches[1], patches[2]:
                 with self.assertRaisesRegex(
-                        v4.StateDependentRecoveryV4Error, "file hash differs"):
-                    v4.resume_state_dependent_discovery_failure_report(
+                        v5.StateDependentRecoveryV5Error, "file hash differs"):
+                    v5.resume_state_dependent_discovery_failure_report(
                         protocol=protocol,
                         selection_lock_path=lock_path,
                         expected_selection_lock_sha256="0" * 64,
                     )
-                result = v4.resume_state_dependent_discovery_failure_report(
+                result = v5.resume_state_dependent_discovery_failure_report(
                     protocol=protocol,
                     selection_lock_path=lock_path,
                     expected_selection_lock_sha256=lock_sha256,
@@ -468,9 +468,9 @@ class StateDependentRecoveryV4ResumeTest(unittest.TestCase):
                 Path(result["stage_A_failure_report"]).write_text(
                     "{}\n", encoding="utf-8")
                 with self.assertRaisesRegex(
-                        v4.StateDependentRecoveryV4Error,
+                        v5.StateDependentRecoveryV5Error,
                         "existing .* differs"):
-                    v4.resume_state_dependent_discovery_failure_report(
+                    v5.resume_state_dependent_discovery_failure_report(
                         protocol=protocol,
                         selection_lock_path=lock_path,
                         expected_selection_lock_sha256=lock_sha256,
@@ -485,23 +485,23 @@ class StateDependentRecoveryV4ResumeTest(unittest.TestCase):
             lock_path, lock_sha256 = self._write_lock(root, lock)
             artifact_path = lambda value, **kwargs: Path(value)
             with mock.patch.object(
-                    v4, "_validate_protocol", return_value=spec), \
+                    v5, "_validate_protocol", return_value=spec), \
                     mock.patch.object(
-                        v4, "_require_clean_head_protocol_binding",
+                        v5, "_require_clean_head_protocol_binding",
                         return_value=(_CLEAN_COMMIT, _PROTOCOL_FILE_SHA256)), \
                     mock.patch.object(
-                        v4._v3, "_artifact_path", side_effect=artifact_path):
+                        v5._v3, "_artifact_path", side_effect=artifact_path):
                 with self.assertRaisesRegex(
-                        v4.StateDependentRecoveryV4Error,
+                        v5.StateDependentRecoveryV5Error,
                         "audit_authorized mismatch"):
-                    v4.resume_state_dependent_discovery_failure_report(
+                    v5.resume_state_dependent_discovery_failure_report(
                         protocol=protocol,
                         selection_lock_path=lock_path,
                         expected_selection_lock_sha256=lock_sha256,
                     )
 
     def test_resume_cli_bypasses_collection_readiness_and_audit_paths(self):
-        protocol = {"protocol_name": v4.PROTOCOL_NAME}
+        protocol = {"protocol_name": v5.PROTOCOL_NAME}
         rendered = {
             "selection_lock_sha256": "b" * 64,
             "decision": "no_model_training",
@@ -511,29 +511,29 @@ class StateDependentRecoveryV4ResumeTest(unittest.TestCase):
         }
         with mock.patch(
                 "sys.argv",
-                ["merge_state_dependent_recovery_v4.py",
+                ["merge_state_dependent_recovery_v5.py",
                  "resume-denied-report", "--selection-lock-sha256",
                  "b" * 64]), \
                 mock.patch.object(
-                    merge_v4,
-                    "load_state_dependent_recovery_v4_protocol",
+                    merge_v5,
+                    "load_state_dependent_recovery_v5_protocol",
                     return_value=protocol), \
                 mock.patch.object(
-                    merge_v4, "_paths",
+                    merge_v5, "_paths",
                     return_value={"selection_lock": Path("selection-lock.json")}), \
                 mock.patch.object(
-                    merge_v4,
+                    merge_v5,
                     "resume_state_dependent_discovery_failure_report",
                     return_value=rendered) as resume, \
                 mock.patch.object(
-                    merge_v4,
+                    merge_v5,
                     "validate_state_dependent_collection_readiness",
                     side_effect=AssertionError("collection readiness opened")), \
                 mock.patch.object(
-                    merge_v4, "_create_lock",
+                    merge_v5, "_create_lock",
                     side_effect=AssertionError("lock/audit route reached")), \
                 mock.patch("builtins.print") as output:
-            self.assertEqual(merge_v4.main(), 0)
+            self.assertEqual(merge_v5.main(), 0)
         resume.assert_called_once_with(
             protocol=protocol,
             selection_lock_path=Path("selection-lock.json"),

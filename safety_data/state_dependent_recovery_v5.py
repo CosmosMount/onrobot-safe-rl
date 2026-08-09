@@ -1,6 +1,6 @@
-"""One-shot V4 Stage-A state-dependent recovery confirmation.
+"""One-shot V5 Stage-A state-dependent recovery confirmation.
 
-The V4 primary rule is the uniform expectation over every exact per-state
+The V5 primary rule is the uniform expectation over every exact per-state
 discovery minimizer.  Discovery may be inspected once to create a selection
 lock; audit paths are compared lexically with that lock, an irreversible
 marker is published, and only then may an audit shard be touched.  A passing
@@ -34,24 +34,34 @@ from safety_data.closed_loop_recovery_collector import (
     seed_derivation_manifest,
 )
 import safety_data.closed_loop_recovery_triage as _v3
+from safety_data.paths import workflow_evidence_read_scope
 from safety_data.recovery_behaviors import RecoveryBehaviorConfig
 from safety_data.schema import GroupedBranchDataset
 
 
-PROTOCOL_NAME = "objective1_state_dependent_recovery_qsafe_v4"
+PROTOCOL_NAME = "objective1_state_dependent_recovery_qsafe_v5"
 PROTOCOL_PATH = (
     Path(__file__).resolve().parents[1]
-    / "config" / "qsafe_state_dependent_recovery_v4.yaml"
+    / "config" / "qsafe_state_dependent_recovery_v5.yaml"
 )
 PROTOCOL_CONTRACT_SHA256 = (
-    "101484a5df78b22941a8988f9936c7fb40b4569ed5c555273843484275dcc977"
+    "1e8667aa17ab361c323771d5deb51258644cce37bd26bed00599ca08d7545ea5"
+)
+PROTOCOL_FILE_SHA256 = (
+    "f4c3e796004d124574df3d35ef344f6a4a766d9099acb5792c1d78b8361b49b0"
+)
+FROZEN_V4_SCIENCE_CONTRACT_SHA256 = (
+    "c5a911f716ab8e0880f11eb1f81facd05126a797c18ac2511885fc2ea9e9df6a"
 )
 AUDIT_CONSUMED_SCHEMA_VERSION = (
-    "qsafe.state_dependent_recovery_v4.audit_consumed.v1"
+    "qsafe.state_dependent_recovery_v5.audit_consumed.v1"
 )
-REPORT_SCHEMA_VERSION = "qsafe.state_dependent_recovery_v4.stage_a_report.v1"
+REPORT_SCHEMA_VERSION = "qsafe.state_dependent_recovery_v5.stage_a_report.v1"
+COLLECTION_PROTOCOL_VERSION = (
+    "qsafe.state_dependent_recovery.collection.v5_stage_a")
+DATASET_SPLIT_PREFIX = "state_dependent_recovery_v5_stage_a"
 SELECTION_SEMANTICS = {
-    "schema_version": "qsafe.state_dependent_recovery_v4.selection.v1",
+    "schema_version": "qsafe.state_dependent_recovery_v5.selection.v1",
     "primary_selection": (
         "per_state_all_exact_discovery_minima_uniform_expectation"),
     "per_state_tie_rule": "uniform_expectation_all_exact_minima",
@@ -63,16 +73,16 @@ SELECTION_SEMANTICS = {
 _CANDIDATE_PROTOCOL = RecoveryBehaviorConfig().manifest_protocol()
 CANDIDATE_NAMES = tuple(_CANDIDATE_PROTOCOL["ordered_names"])
 BEHAVIOR_STEPS = tuple(_CANDIDATE_PROTOCOL["behavior_override_steps"])
-SOURCE_SEEDS = (8401, 8402, 8411, 8412, 8421, 8422)
+SOURCE_SEEDS = (8901, 8902, 8911, 8912, 8921, 8922)
 AGE_STRATA = {
-    25_438: (8401, 8402),
-    50_030: (8411, 8412),
-    100_359: (8421, 8422),
+    25_438: (8901, 8902),
+    50_030: (8911, 8912),
+    100_359: (8921, 8922),
 }
-SEED_DOMAIN = b"qsafe_state_dependent_recovery_v4_seed\0"
+SEED_DOMAIN = b"qsafe_state_dependent_recovery_v5_seed\0"
 SEED_ALGORITHM = (
     "high_bit_then_domain_low15_then_14_8_18_2_6_bitpack_v1")
-SEED_DOMAIN_PREFIX_LOW15 = 18_561
+SEED_DOMAIN_PREFIX_LOW15 = 12_835
 SEED_ROLE_TAGS = (
     ("source_reset", 110),
     ("source_impulse", 111),
@@ -88,8 +98,8 @@ _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _V3_VALIDATOR_PATCH_LOCK = threading.RLock()
 
 
-class StateDependentRecoveryV4Error(ValueError):
-    """The immutable V4 protocol, firewall, or primary gate failed closed."""
+class StateDependentRecoveryV5Error(ValueError):
+    """The immutable V5 protocol, firewall, or primary gate failed closed."""
 
 
 class _UniqueKeySafeLoader(yaml.SafeLoader):
@@ -108,11 +118,11 @@ def _construct_unique_yaml_mapping(
         try:
             duplicate = key in result
         except TypeError as exc:
-            raise StateDependentRecoveryV4Error(
-                "canonical V4 YAML contains an unhashable mapping key") from exc
+            raise StateDependentRecoveryV5Error(
+                "canonical V5 YAML contains an unhashable mapping key") from exc
         if duplicate:
-            raise StateDependentRecoveryV4Error(
-                f"canonical V4 YAML contains duplicate key {key!r}")
+            raise StateDependentRecoveryV5Error(
+                f"canonical V5 YAML contains duplicate key {key!r}")
         result[key] = loader.construct_object(value_node, deep=deep)
     return result
 
@@ -125,19 +135,19 @@ _UniqueKeySafeLoader.add_constructor(
 
 def _mapping(value: object, name: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise StateDependentRecoveryV4Error(f"{name} must be a mapping")
+        raise StateDependentRecoveryV5Error(f"{name} must be a mapping")
     return value
 
 
 def _finite(value: object, name: str) -> float:
     if isinstance(value, (bool, np.bool_)):
-        raise StateDependentRecoveryV4Error(f"{name} must be finite")
+        raise StateDependentRecoveryV5Error(f"{name} must be finite")
     try:
         result = float(value)
     except (TypeError, ValueError) as exc:
-        raise StateDependentRecoveryV4Error(f"{name} must be finite") from exc
+        raise StateDependentRecoveryV5Error(f"{name} must be finite") from exc
     if not math.isfinite(result):
-        raise StateDependentRecoveryV4Error(f"{name} must be finite")
+        raise StateDependentRecoveryV5Error(f"{name} must be finite")
     return result
 
 
@@ -146,20 +156,44 @@ def _json_copy(value: Any, name: str) -> Any:
         return json.loads(json.dumps(
             value, allow_nan=False, ensure_ascii=True, sort_keys=True))
     except (TypeError, ValueError) as exc:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             f"{name} must be canonical JSON data") from exc
+
+
+def _frozen_science_contract(protocol: Mapping[str, Any]) -> dict[str, Any]:
+    """Remove only the preregistered V4-to-V5 identity-change allowlist."""
+    frozen = _json_copy(protocol, "scientific protocol")
+    for key in ("protocol_name", "created_at", "parent_iterations"):
+        frozen.pop(key)
+    seed = frozen["seed_derivation"]
+    for key in (
+            "domain_literal_ascii_escaped", "domain_hex",
+            "domain_sha256_prefix_low15", "disjoint_from_v4_by_domain_prefix"):
+        seed.pop(key, None)
+    for policy in frozen["early_task_policies"]:
+        policy.pop("source_seeds")
+    collection = frozen["collection"]
+    collection.pop("artifact_root")
+    collection.pop("audit_analysis_input_order")
+    collection["admission"].pop("seed_domain")
+    collection["replica_partition"].pop("schema_version")
+    frozen["firewall"].pop("selection_forbidden")
+    frozen["statistics"].pop("policy_age_strata")
+    frozen["triage_gates"]["data"].pop("required_source_seeds")
+    frozen["stage_A"].pop("source_seeds")
+    return frozen
 
 
 def _require_equal(actual: object, expected: object, name: str) -> None:
     if actual != expected:
-        raise StateDependentRecoveryV4Error(f"{name} has drifted")
+        raise StateDependentRecoveryV5Error(f"{name} has drifted")
 
 
 def _reject_protected_components(path: Path, name: str) -> None:
     for component in path.parts:
         folded = component.casefold()
         if any(folded.startswith(prefix) for prefix in _DENIED_PREFIXES):
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 f"{name} contains a denied path component")
 
 
@@ -192,30 +226,38 @@ def _require_clean_head_protocol_binding() -> tuple[str, str]:
             capture_output=True,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise StateDependentRecoveryV4Error(
-            "could not establish the current clean V4 generator commit") from exc
+        raise StateDependentRecoveryV5Error(
+            "could not establish the current clean V5 generator commit") from exc
     if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit) is None or (
             status.stdout):
-        raise StateDependentRecoveryV4Error(
-            "V4 evidence operations require the current clean git HEAD")
+        raise StateDependentRecoveryV5Error(
+            "V5 evidence operations require the current clean git HEAD")
 
+    protocol_bytes = _read_canonical_protocol_bytes()
+    return commit, hashlib.sha256(protocol_bytes).hexdigest()
+
+
+def _read_canonical_protocol_bytes() -> bytes:
+    """Read the one regular canonical protocol inode and verify raw bytes."""
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    digest = hashlib.sha256()
     try:
         descriptor = os.open(PROTOCOL_PATH, flags)
         with os.fdopen(descriptor, "rb") as stream:
             metadata = os.fstat(stream.fileno())
             if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-                raise StateDependentRecoveryV4Error(
-                    "canonical V4 protocol must be a singly linked regular file")
-            for block in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(block)
-    except StateDependentRecoveryV4Error:
+                raise StateDependentRecoveryV5Error(
+                    "canonical V5 protocol must be a singly linked regular file")
+            raw = stream.read()
+    except StateDependentRecoveryV5Error:
         raise
     except OSError as exc:
-        raise StateDependentRecoveryV4Error(
-            "canonical V4 protocol raw bytes are unreadable") from exc
-    return commit, digest.hexdigest()
+        raise StateDependentRecoveryV5Error(
+            "canonical V5 protocol raw bytes are unreadable") from exc
+    observed = hashlib.sha256(raw).hexdigest()
+    if observed != PROTOCOL_FILE_SHA256:
+        raise StateDependentRecoveryV5Error(
+            "canonical V5 protocol raw SHA-256 has drifted")
+    return raw
 
 
 def _require_unchanged_clean_binding(
@@ -225,28 +267,29 @@ def _require_unchanged_clean_binding(
 ) -> None:
     observed = _require_clean_head_protocol_binding()
     if observed != (expected_commit, expected_protocol_file_sha256):
-        raise StateDependentRecoveryV4Error(
-            f"V4 clean HEAD/protocol binding changed {phase}")
+        raise StateDependentRecoveryV5Error(
+            f"V5 clean HEAD/protocol binding changed {phase}")
 
 
-def load_state_dependent_recovery_v4_protocol(
+def load_state_dependent_recovery_v5_protocol(
     path: str | os.PathLike[str] = PROTOCOL_PATH,
 ) -> dict[str, Any]:
-    """Load and validate the one canonical V4 protocol file."""
+    """Load and validate the one canonical V5 protocol file."""
     supplied = _absolute_repo_path(path)
     _reject_protected_components(supplied, "protocol path")
     if supplied != PROTOCOL_PATH:
-        raise StateDependentRecoveryV4Error(
-            "V4 requires the canonical protocol path")
+        raise StateDependentRecoveryV5Error(
+            "V5 requires the canonical protocol path")
     try:
+        raw = _read_canonical_protocol_bytes()
         protocol = yaml.load(
-            supplied.read_text(encoding="utf-8"),
+            raw.decode("utf-8"),
             Loader=_UniqueKeySafeLoader,
         )
-    except OSError as exc:
-        raise StateDependentRecoveryV4Error(
-            "canonical V4 protocol is unreadable") from exc
-    validate_state_dependent_recovery_v4_protocol(protocol)
+    except (OSError, UnicodeDecodeError) as exc:
+        raise StateDependentRecoveryV5Error(
+            "canonical V5 protocol is unreadable") from exc
+    validate_state_dependent_recovery_v5_protocol(protocol)
     return dict(protocol)
 
 
@@ -265,15 +308,33 @@ def _validate_protocol(
     _require_equal(protocol.get("claim_eligible"), False, "claim_eligible")
     contract_sha256 = canonical_protocol_sha256(protocol)
     if enforce_canonical_hash and contract_sha256 != PROTOCOL_CONTRACT_SHA256:
-        raise StateDependentRecoveryV4Error(
-            "parsed protocol differs from the complete canonical V4 contract")
+        raise StateDependentRecoveryV5Error(
+            "parsed protocol differs from the complete canonical V5 contract")
+    frozen_science_sha256 = canonical_protocol_sha256(
+        _frozen_science_contract(protocol))
+    if frozen_science_sha256 != FROZEN_V4_SCIENCE_CONTRACT_SHA256:
+        raise StateDependentRecoveryV5Error(
+            "V5 scientific settings differ from the frozen V4 contract")
 
     parent = _mapping(protocol.get("parent_iterations"), "parent_iterations")
+    _require_equal(parent.get("consumed_protocols"), [
+        "objective1_recovery_option_triage_v2",
+        "objective1_closed_loop_recovery_triage_v3",
+        "objective1_state_dependent_recovery_qsafe_v4",
+    ], "parent_iterations.consumed_protocols")
     _require_equal(parent.get("consumed_source_seeds"), [
-        7601, 7602, 7603, 7801, 7802, 7811, 7812, 7821, 7822],
+        7601, 7602, 7603, 7801, 7802, 7811, 7812, 7821, 7822,
+        8401, 8402, 8411, 8412, 8421, 8422,
+    ],
         "parent_iterations.consumed_source_seeds")
     _require_equal(parent.get("outcome_reuse"), "forbidden",
                    "parent_iterations.outcome_reuse")
+    for name, expected in {
+        "v4_result": "tooling_invalid_no_scientific_decision",
+        "v4_result_commit": "439c525",
+        "v4_artifact_reuse": "forbidden",
+    }.items():
+        _require_equal(parent.get(name), expected, f"parent_iterations.{name}")
 
     protection = _mapping(protocol.get("protection"), "protection")
     for name, expected in {
@@ -311,14 +372,14 @@ def _validate_protocol(
     denied = protection.get("denied_path_component_prefixes")
     if not isinstance(denied, list) or not set(_DENIED_PREFIXES).issubset(
             {str(value).casefold() for value in denied}):
-        raise StateDependentRecoveryV4Error(
-            "V4 must deny formal* and sealed* path components")
+        raise StateDependentRecoveryV5Error(
+            "V5 must deny formal* and sealed* path components")
 
     seed_contract = _mapping(protocol.get("seed_derivation"), "seed_derivation")
     expected_seed_contract = {
         "algorithm": SEED_ALGORITHM,
         "domain_literal_ascii_escaped": (
-            "qsafe_state_dependent_recovery_v4_seed\\0"),
+            "qsafe_state_dependent_recovery_v5_seed\\0"),
         "domain_hex": SEED_DOMAIN.hex(),
         "domain_sha256_prefix_low15": SEED_DOMAIN_PREFIX_LOW15,
         "v4_tag_bit63": 1,
@@ -373,6 +434,7 @@ def _validate_protocol(
         "role_tags": dict(SEED_ROLE_TAGS),
         "roles_exact": True,
         "disjoint_from_v2_v3_by_v4_tag_bit": True,
+        "disjoint_from_v4_by_domain_prefix": True,
     }
     _require_equal(dict(seed_contract), expected_seed_contract,
                    "seed_derivation")
@@ -397,8 +459,8 @@ def _validate_protocol(
             "q_target_semantic", "init_qpos", "action_offset", "joint_min",
             "joint_max", "projection", "max_joint_delta",
             "use_action_filter"}:
-        raise StateDependentRecoveryV4Error(
-            "target.action_application_contract must have the exact V4 keyset")
+        raise StateDependentRecoveryV5Error(
+            "target.action_application_contract must have the exact V5 keyset")
     _require_equal(
         action_contract.get("q_target_semantic"),
         "absolute_joint_position_sent",
@@ -422,7 +484,7 @@ def _validate_protocol(
         if not isinstance(values, list) or len(values) != 12 or any(
                 isinstance(value, bool) or not isinstance(value, (int, float)) or
                 not np.isfinite(float(value)) for value in values):
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 f"target.action_application_contract.{field} must be a finite "
                 "12-vector")
 
@@ -431,7 +493,7 @@ def _validate_protocol(
                    "policy_config.policy_training_seed")
     early = protocol.get("early_task_policies")
     if not isinstance(early, list) or len(early) != 3:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "early_task_policies must contain the exact three seed-42 ages")
     expected_ages = (25_438, 50_030, 100_359)
     seed_age: dict[int, int] = {}
@@ -446,7 +508,7 @@ def _validate_protocol(
                 "actor_sha256", "actor_state_dict_sha256",
                 "policy_fingerprint_sha256", "checkpoint_fingerprint_sha256"):
             if _HEX64.fullmatch(str(item.get(field, ""))) is None:
-                raise StateDependentRecoveryV4Error(
+                raise StateDependentRecoveryV5Error(
                     f"early_task_policy.{field} is not SHA-256")
         seed_age.update({int(seed): age for seed in seeds})
     mature = _mapping(protocol.get("mature_recovery_policy"),
@@ -461,7 +523,7 @@ def _validate_protocol(
 
     collection = _mapping(protocol.get("collection"), "collection")
     expected_collection_scalars = {
-        "artifact_root": "saved/qsafe_development/state_dependent_recovery_v4",
+        "artifact_root": "saved/qsafe_development/state_dependent_recovery_v5",
         "groups_per_source_seed": 64,
         "total_groups": 384,
         "max_groups_per_trajectory": 1,
@@ -518,7 +580,7 @@ def _validate_protocol(
     partition = _mapping(collection.get("replica_partition"),
                          "collection.replica_partition")
     partition_expected = {
-        "schema_version": "qsafe.physically_separate_replica_partition.v4_stage_a",
+        "schema_version": "qsafe.physically_separate_replica_partition.v5_stage_a",
         "assignment_timing": "before_candidate_outcomes",
         "discovery_indices": {"start_inclusive": 0, "stop_exclusive": 64},
         "audit_indices": {"start_inclusive": 64, "stop_exclusive": 128},
@@ -535,7 +597,8 @@ def _validate_protocol(
     for name, expected in {
         "selection_uses": ["admission_ledger", "discovery"],
         "selection_forbidden": [
-            "audit", "consumed_v2_outcomes", "consumed_v3_outcomes"],
+            "audit", "consumed_v2_outcomes", "consumed_v3_outcomes",
+            "consumed_v4_outcomes"],
         "primary_selection": (
             "per_state_all_exact_discovery_minima_uniform_expectation"),
         "candidate_column_order_effect_on_ties": "forbidden",
@@ -1519,10 +1582,10 @@ def _validate_protocol(
     }
 
 
-def validate_state_dependent_recovery_v4_protocol(
+def validate_state_dependent_recovery_v5_protocol(
     protocol: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Validate the exact V4 A/B/C/D protocol without touching artifacts."""
+    """Validate the exact V5 A/B/C/D protocol without touching artifacts."""
     spec = _validate_protocol(protocol)
     return {
         "protocol_name": PROTOCOL_NAME,
@@ -1554,16 +1617,47 @@ def validate_state_dependent_collection_readiness(
         result = _v3._collection_readiness(
             collection_report_paths, protocol=protocol, spec=spec)
     except _v3.ClosedLoopRecoveryTriageError as exc:
-        raise StateDependentRecoveryV4Error(str(exc)) from exc
+        raise StateDependentRecoveryV5Error(str(exc)) from exc
     return _json_copy(result, "collection readiness")
 
 
-def expected_v4_seed_manifest() -> dict[str, Any]:
-    """Return a fresh copy of the exact four-field V4 RNG manifest."""
+def expected_v5_seed_manifest() -> dict[str, Any]:
+    """Return a fresh copy of the exact four-field V5 RNG manifest."""
     return seed_derivation_manifest(
         seed_domain=SEED_DOMAIN,
         seed_role_tags=SEED_ROLE_TAGS,
         seed_algorithm=SEED_ALGORITHM,
+    )
+
+
+def validate_v5_outcome_manifest(
+    manifest: Mapping[str, Any],
+    role: str,
+) -> None:
+    """Validate the exact V5 version, RNG manifest, role, and split."""
+    if role not in ("discovery", "audit"):
+        raise StateDependentRecoveryV5Error(
+            "V5 outcome manifest role must be discovery or audit")
+    collection_protocol = _mapping(
+        manifest.get("collection_protocol"),
+        f"{role}.collection_protocol",
+    )
+    _require_equal(
+        collection_protocol.get("role"), role,
+        f"{role} collection role",
+    )
+    _require_equal(
+        collection_protocol.get("version"), COLLECTION_PROTOCOL_VERSION,
+        f"{role} V5 collection version",
+    )
+    _require_equal(
+        collection_protocol.get("seed_derivation"),
+        expected_v5_seed_manifest(),
+        f"{role} exact V5 RNG manifest",
+    )
+    _require_equal(
+        manifest.get("split"), f"{DATASET_SPLIT_PREFIX}_{role}",
+        f"{role} exact V5 split",
     )
 
 
@@ -1579,19 +1673,19 @@ def _validate_admission_seed_leaf(
     validation = ledger.validate()
     if ledger.path is None or _v3._sha256_file(ledger.path) != file_sha256 or (
             validation["content_sha256"] != content_sha256):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "admission leaf differs from its report-last commitment")
     if ledger.manifest.get("protocol_sha256") != protocol_file_sha256 or (
             ledger.manifest.get("protocol_contract_sha256") !=
             protocol_contract_sha256) or ledger.manifest.get(
                 "source_seed") != source_seed:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "admission leaf protocol/source identity drifted")
     proposals = int(validation["proposals"])
     proposal_index = np.asarray(ledger["proposal_index"])
     if proposal_index.shape != (proposals,) or not np.array_equal(
             proposal_index, np.arange(proposals, dtype=proposal_index.dtype)):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "admission proposal indices are not the original local order")
     for index in range(proposals):
         bundle, _ = role_randomness(
@@ -1609,12 +1703,12 @@ def _validate_admission_seed_leaf(
             ("admission_perturbation_seed", bundle.perturbation_seed),
         ):
             if not np.array_equal(np.asarray(ledger[name])[index], expected):
-                raise StateDependentRecoveryV4Error(
-                    f"admission {name} does not use the V4 seed domain")
+                raise StateDependentRecoveryV5Error(
+                    f"admission {name} does not use the V5 seed domain")
     accepted = np.asarray(ledger["accepted"], dtype=bool)
     positions = np.flatnonzero(accepted)
     if len(positions) != 64:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "admission leaf does not contain exactly 64 accepted positions")
     return positions
 
@@ -1640,14 +1734,16 @@ def _validate_discovery_seed_contract_before_lock(
             discovery=None,
         )
     except _v3.ClosedLoopRecoveryTriageError as exc:
-        raise StateDependentRecoveryV4Error(str(exc)) from exc
+        raise StateDependentRecoveryV5Error(str(exc)) from exc
 
     local_positions: dict[int, np.ndarray] = {}
     admission_commitments = readiness["role_commitments"]["admission"]
     for seed, commitment in zip(SOURCE_SEEDS, admission_commitments, strict=True):
         path = Path(str(commitment["path"]))
         _reject_protected_components(path, "admission leaf")
-        ledger = AdmissionLedger.load(path)
+        with workflow_evidence_read_scope(
+                workflow=PROTOCOL_NAME, role="admission", path=path):
+            ledger = AdmissionLedger.load(path)
         local_positions[seed] = _validate_admission_seed_leaf(
             ledger,
             source_seed=seed,
@@ -1657,26 +1753,18 @@ def _validate_discovery_seed_contract_before_lock(
             protocol_contract_sha256=str(spec["protocol_contract_sha256"]),
         )
 
-    discovery = GroupedBranchDataset.load(discovery_path)
-    collection_protocol = _mapping(
-        discovery.manifest.get("collection_protocol"),
-        "discovery.collection_protocol",
-    )
-    _require_equal(collection_protocol.get("version"),
-                   "qsafe.state_dependent_recovery.collection.v4_stage_a",
-                   "discovery collection version")
-    _require_equal(collection_protocol.get("seed_derivation"),
-                   expected_v4_seed_manifest(),
-                   "discovery seed-derivation manifest")
-    _require_equal(discovery.manifest.get("split"),
-                   "state_dependent_recovery_v4_stage_a_discovery",
-                   "discovery split")
+    with workflow_evidence_read_scope(
+            workflow=PROTOCOL_NAME,
+            role="discovery",
+            path=discovery_path):
+        discovery = GroupedBranchDataset.load(discovery_path)
+    validate_v5_outcome_manifest(discovery.manifest, "discovery")
     recovery_binding = _mapping(
         discovery.manifest.get("recovery_program"),
         "discovery.recovery_program",
     )
     if set(recovery_binding) != {"manifest", "fingerprint_sha256"}:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "discovery recovery-program binding fields are not exact")
     recovery_manifest = _mapping(
         recovery_binding.get("manifest"),
@@ -1685,7 +1773,7 @@ def _validate_discovery_seed_contract_before_lock(
     recovery_fingerprint = str(recovery_binding.get("fingerprint_sha256", ""))
     if recovery_fingerprint != canonical_protocol_sha256(recovery_manifest) or (
             recovery_manifest.get("candidate_protocol") != _CANDIDATE_PROTOCOL):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "discovery recovery-program manifest/fingerprint is invalid")
     _require_equal(
         recovery_fingerprint,
@@ -1695,12 +1783,12 @@ def _validate_discovery_seed_contract_before_lock(
     )
     source_seed = np.asarray(discovery["source_seed"], dtype=np.int64)
     if source_seed.shape != (384,):
-        raise StateDependentRecoveryV4Error("discovery has the wrong group count")
+        raise StateDependentRecoveryV5Error("discovery has the wrong group count")
     row = 0
     for seed in SOURCE_SEEDS:
         for proposal_index in local_positions[seed]:
             if int(source_seed[row]) != seed:
-                raise StateDependentRecoveryV4Error(
+                raise StateDependentRecoveryV5Error(
                     "discovery source order differs from accepted admission")
             _, observed_discovery = role_randomness(
                 source_seed=seed,
@@ -1734,17 +1822,17 @@ def _validate_discovery_seed_contract_before_lock(
             ):
                 value = np.asarray(discovery[name])[row]
                 if not np.array_equal(value, expected):
-                    raise StateDependentRecoveryV4Error(
-                        f"discovery {name} does not use the exact V4 seed domain")
+                    raise StateDependentRecoveryV5Error(
+                        f"discovery {name} does not use the exact V5 seed domain")
             row += 1
     if row != 384:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "accepted admission positions do not exhaust discovery rows")
 
 
 @contextmanager
 def _patched_v3_protocol_validator() -> Iterator[None]:
-    """Reuse reviewed V3 artifact parsing with the exact V4 spec injected."""
+    """Reuse reviewed V3 artifact parsing with the exact V5 spec injected."""
     with _V3_VALIDATOR_PATCH_LOCK:
         original = _v3._validate_protocol
         _v3._validate_protocol = _validate_protocol
@@ -1777,12 +1865,12 @@ def _publish_discovery_failure_report(
     )
     if lock.get("audit_authorized") is not False or data_gate.get(
             "pass") is not False or informativeness.get("pass") is not False:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "failure report requires an audit-denied informativeness lock")
     if lock.get("generator_commit") != clean_commit or lock.get(
             "protocol_file_sha256") != protocol_file_sha256 or lock.get(
                 "selection_semantics") != SELECTION_SEMANTICS:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "failure lock differs from clean protocol/selection semantics")
     report_path = _artifact_root(protocol) / str(
         collection["triage_report_filename"])
@@ -1794,7 +1882,7 @@ def _publish_discovery_failure_report(
             name="stage_A_failure_report_path",
         )
     except _v3.ClosedLoopRecoveryTriageError as exc:
-        raise StateDependentRecoveryV4Error(str(exc)) from exc
+        raise StateDependentRecoveryV5Error(str(exc)) from exc
     report = {
         "schema_version": REPORT_SCHEMA_VERSION,
         "protocol_name": PROTOCOL_NAME,
@@ -1826,7 +1914,7 @@ def _publish_discovery_failure_report(
         "analysis_worktree_clean": True,
         "authorization_note": (
             "Discovery failed its preregistered informativeness gate; audit "
-            "remained unopened and V4 stops before model training."),
+            "remained unopened and V5 stops before model training."),
     }
     expected_payload = _v3._canonical_json_bytes(report)
     try:
@@ -1837,12 +1925,12 @@ def _publish_discovery_failure_report(
         # no audit path is derived, parsed, or probed here.
         try:
             observed_payload = _v3._read_regular_bytes_once(
-                report_file, "existing V4 Stage-A failure report")
+                report_file, "existing V5 Stage-A failure report")
         except _v3.ClosedLoopRecoveryTriageError:
-            raise StateDependentRecoveryV4Error(str(publish_exc)) from publish_exc
+            raise StateDependentRecoveryV5Error(str(publish_exc)) from publish_exc
         if observed_payload != expected_payload:
-            raise StateDependentRecoveryV4Error(
-                "existing V4 Stage-A failure report differs from the "
+            raise StateDependentRecoveryV5Error(
+                "existing V5 Stage-A failure report differs from the "
                 "canonical audit-denied decision") from publish_exc
         report_sha256 = hashlib.sha256(observed_payload).hexdigest()
     return report_file, report_sha256, report
@@ -1924,13 +2012,13 @@ def _lock_exact_fields(
     name: str,
 ) -> None:
     if set(value) != set(expected):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             f"audit-denied selection lock {name} has extra or missing fields")
 
 
 def _lock_hash(value: object, name: str) -> str:
     if not isinstance(value, str) or _HEX64.fullmatch(value) is None:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             f"audit-denied selection lock {name} must be lowercase SHA-256")
     return value
 
@@ -1938,26 +2026,26 @@ def _lock_hash(value: object, name: str) -> str:
 def _lock_integer(value: object, name: str, *, minimum: int = 0) -> int:
     if isinstance(value, (bool, np.bool_)) or not isinstance(
             value, (int, np.integer)):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             f"audit-denied selection lock {name} must be an integer")
     result = int(value)
     if result < minimum:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             f"audit-denied selection lock {name} must be at least {minimum}")
     return result
 
 
-def _lock_v4_seed(value: object, name: str) -> int:
+def _lock_v5_seed(value: object, name: str) -> int:
     result = _lock_integer(value, name, minimum=1 << 63)
     if result >= 1 << 64:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             f"audit-denied selection lock {name} exceeds uint64")
     return result
 
 
 def _lock_text(value: object, name: str) -> str:
     if not isinstance(value, str) or not value:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             f"audit-denied selection lock {name} must be nonempty text")
     return value
 
@@ -1994,7 +2082,7 @@ def _validate_audit_denied_readiness_and_inputs(
     if admission_input.get("filename") != collection[
             "admission_deployable_filename"] or discovery_input.get(
                 "filename") != collection["discovery_filename"]:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock input artifact filename mismatch")
     for role, artifact in (
         ("admission", admission_input),
@@ -2031,17 +2119,17 @@ def _validate_audit_denied_readiness_and_inputs(
                                         "generator_commit"] or readiness.get(
                                             "required_source_seeds") != list(
                                                 spec["required_seeds"]):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock readiness identity mismatch")
     if readiness.get("artifact_root") != str(_artifact_root(protocol)):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock readiness artifact root mismatch")
     readiness_sha256 = _lock_hash(
         lock.get("collection_readiness_sha256"),
         "collection_readiness_sha256",
     )
     if readiness_sha256 != _v3.canonical_sha256(readiness):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock collection readiness digest mismatch")
 
     roles = _mapping(
@@ -2055,7 +2143,7 @@ def _validate_audit_denied_readiness_and_inputs(
         raw_records = roles.get(role)
         if not isinstance(raw_records, list) or len(raw_records) != len(
                 spec["required_seeds"]):
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 "audit-denied selection lock readiness role count mismatch")
         checked: list[Mapping[str, Any]] = []
         for ordinal, (raw, seed) in enumerate(zip(
@@ -2073,7 +2161,7 @@ def _validate_audit_denied_readiness_and_inputs(
                         "role policy_training_step",
                         minimum=1,
                     ) != spec["seed_age"][seed]:
-                raise StateDependentRecoveryV4Error(
+                raise StateDependentRecoveryV5Error(
                     "audit-denied selection lock readiness role order mismatch")
             # Deliberately opaque: no lexical parse, normalization, resolution,
             # stat, or open is permitted for any role path in resume mode.
@@ -2088,7 +2176,7 @@ def _validate_audit_denied_readiness_and_inputs(
     source_records = readiness.get("source_records")
     if not isinstance(source_records, list) or len(source_records) != len(
             spec["required_seeds"]):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock readiness source record count mismatch")
     proposal_count = 0
     validation_fields = {
@@ -2124,7 +2212,7 @@ def _validate_audit_denied_readiness_and_inputs(
                                 "protocol_contract_sha256"] or source.get(
                                     "generator_commit") != lock[
                                         "generator_commit"]:
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 "audit-denied selection lock readiness source identity mismatch")
         _lock_text(source.get("collection_report_path"),
                    "readiness.collection_report_path")
@@ -2166,7 +2254,7 @@ def _validate_audit_denied_readiness_and_inputs(
                 "file_sha256": commitment["file_sha256"],
                 "content_sha256": commitment["content_sha256"],
             }:
-                raise StateDependentRecoveryV4Error(
+                raise StateDependentRecoveryV5Error(
                     "audit-denied selection lock readiness output commitment "
                     "mismatch")
             validation = _mapping(
@@ -2179,7 +2267,7 @@ def _validate_audit_denied_readiness_and_inputs(
             )
             if validation.get("content_sha256") != output[
                     "content_sha256"]:
-                raise StateDependentRecoveryV4Error(
+                raise StateDependentRecoveryV5Error(
                     "audit-denied selection lock validation/content mismatch")
             if role == "admission":
                 proposals = _lock_integer(
@@ -2190,7 +2278,7 @@ def _validate_audit_denied_readiness_and_inputs(
                 if accepted != spec["groups_per_seed"] or proposals < accepted or (
                         proposals > int(collection[
                             "max_proposals_per_source_seed"])):
-                    raise StateDependentRecoveryV4Error(
+                    raise StateDependentRecoveryV5Error(
                         "audit-denied selection lock admission validation mismatch")
                 proposal_count += proposals
             elif role == "admission_privileged":
@@ -2203,7 +2291,7 @@ def _validate_audit_denied_readiness_and_inputs(
                     "admission proposals",
                     minimum=1,
                 ):
-                    raise StateDependentRecoveryV4Error(
+                    raise StateDependentRecoveryV5Error(
                         "audit-denied selection lock privileged proposal mismatch")
             elif role in ("discovery", "audit"):
                 expected_replicas = (
@@ -2217,19 +2305,19 @@ def _validate_audit_denied_readiness_and_inputs(
                 }
                 if any(validation.get(name) != expected
                        for name, expected in expected_values.items()):
-                    raise StateDependentRecoveryV4Error(
+                    raise StateDependentRecoveryV5Error(
                         "audit-denied selection lock role validation mismatch")
             elif validation.get("groups") != spec["groups_per_seed"]:
-                raise StateDependentRecoveryV4Error(
+                raise StateDependentRecoveryV5Error(
                     "audit-denied selection lock privileged group mismatch")
 
     if admission_input.get("proposal_count") != proposal_count:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock admission proposal identity mismatch")
     expected_audit = lock.get("expected_audit_shards")
     if not isinstance(expected_audit, list) or expected_audit != role_records[
             "audit"]:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock audit commitment mismatch")
 
     merge = _mapping(
@@ -2246,12 +2334,12 @@ def _validate_audit_denied_readiness_and_inputs(
                 merge.get("protocol_contract_sha256") != spec[
                     "protocol_contract_sha256"]) or merge.get(
                         "collection_readiness_sha256") != readiness_sha256:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock merge readiness identity mismatch")
     merge_sha256 = _lock_hash(
         lock.get("merge_readiness_sha256"), "merge_readiness_sha256")
     if merge_sha256 != _v3.canonical_sha256(merge):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock merge readiness digest mismatch")
     for role, field in (
         ("admission", "admission_merge_report"),
@@ -2270,7 +2358,7 @@ def _validate_audit_denied_readiness_and_inputs(
                 "file_sha256"] or record.get(
                     "output_content_sha256") != inputs[role][
                         "content_sha256"]:
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 "audit-denied selection lock merge/input artifact mismatch")
 
 
@@ -2283,12 +2371,12 @@ def _validate_audit_denied_selection_records(
     partitions = lock.get("replica_partition")
     if not isinstance(groups, list) or len(groups) != spec["groups"] or not (
             isinstance(partitions, list) and len(partitions) == spec["groups"]):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock group/replica length mismatch")
     if lock.get("group_selection_sha256") != _v3.canonical_sha256(groups) or (
             lock.get("replica_partition_sha256") !=
             _v3.canonical_sha256(partitions)):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock group/replica commitment mismatch")
 
     risks = np.empty(
@@ -2329,12 +2417,12 @@ def _validate_audit_denied_selection_records(
                            f"replica_partition[{index}]")
         if group.get("group_index") != index or partition.get(
                 "group_index") != index:
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 "audit-denied selection lock group order mismatch")
         group_id = _lock_text(group.get("group_id"),
                               f"group_selection[{index}].group_id")
         if partition.get("group_id") != group_id:
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 "audit-denied selection lock group/replica identity mismatch")
         state_hash = _lock_hash(
             group.get("state_hash"), f"group_selection[{index}].state_hash")
@@ -2348,45 +2436,45 @@ def _validate_audit_denied_selection_records(
         )
         if seed not in spec["required_seeds"] or group.get(
                 "policy_age") != spec["seed_age"][seed]:
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 "audit-denied selection lock source seed/policy age mismatch")
         admission_falls = _lock_integer(
             group.get("admission_falls"),
             f"group_selection[{index}].admission_falls",
         )
         if not admission_lower <= admission_falls <= admission_upper:
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 "audit-denied selection lock admission falls out of bounds")
         try:
             row = np.asarray(
                 group.get("discovery_candidate_risk"), dtype=np.float64)
         except (TypeError, ValueError, OverflowError) as exc:
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 "audit-denied selection lock discovery risks are invalid") from exc
         if row.shape != (len(CANDIDATE_NAMES),) or not np.all(
                 np.isfinite(row)) or np.any(row < 0.0) or np.any(row > 1.0) or (
                     not np.all(
                         row * spec["discovery_replicas"] == np.rint(
                             row * spec["discovery_replicas"]))):
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 "audit-denied selection lock discovery risks are invalid")
         raw_winners = group.get("discovery_minimizer_indices")
         if not isinstance(raw_winners, list) or any(
                 isinstance(value, bool) or not isinstance(value, int)
                 for value in raw_winners):
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 "audit-denied selection lock minimizer indices are invalid")
         winners = np.asarray(raw_winners, dtype=np.int64)
         expected_winners = np.flatnonzero(row == np.min(row))
         if not np.array_equal(winners, expected_winners) or group.get(
                 "discovery_minimizer_names") != [
                     CANDIDATE_NAMES[value] for value in expected_winners]:
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 "audit-denied selection lock per-state minimizers mismatch")
         expected_weights = [1.0 / len(expected_winners)] * len(
             expected_winners)
         if group.get("uniform_weights") != expected_weights:
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 "audit-denied selection lock per-state weights mismatch")
 
         for field, count in vector_lengths.items():
@@ -2396,11 +2484,11 @@ def _validate_audit_denied_selection_records(
                     or value < 1 << 63 or value >= 1 << 64
                     for value in raw_values) or len(
                         set(raw_values)) != count:
-                raise StateDependentRecoveryV4Error(
+                raise StateDependentRecoveryV5Error(
                     f"audit-denied selection lock {field} is invalid")
             seed_domains[field].extend(raw_values)
         for field in ("discovery_candidate_seed", "audit_candidate_seed"):
-            seed_domains[field].append(_lock_v4_seed(
+            seed_domains[field].append(_lock_v5_seed(
                 partition.get(field), f"replica_partition.{field}"))
 
         risks[index] = row
@@ -2411,22 +2499,22 @@ def _validate_audit_denied_selection_records(
 
     if any(len(set(values)) != spec["groups"] for values in (
             group_ids, state_hashes, trajectory_ids)):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock group identities are not unique")
     if set(map(int, source_seed)) != set(spec["required_seeds"]) or any(
             np.count_nonzero(source_seed == seed) != spec["groups_per_seed"]
             for seed in spec["required_seeds"]):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock source-seed composition mismatch")
     for field, values in seed_domains.items():
         if len(set(values)) != len(values):
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 f"audit-denied selection lock {field} is not globally unique")
     domains = [set(values) for values in seed_domains.values()]
     if any(domains[left].intersection(domains[right])
            for left in range(len(domains))
            for right in range(left + 1, len(domains))):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock seed domains overlap")
 
     global_scores = []
@@ -2459,14 +2547,14 @@ def _validate_audit_denied_selection_records(
                         global_choice.get("exact_tie_break") !=
                         "locked_candidate_order") or global_choice.get(
                             "discovery_candidate_table") != expected_global_table:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock global selection mismatch")
 
     informativeness = _v3._discovery_informativeness(
         risks[:, 0], source_seed, spec)
     if informativeness.get("pass") is not False or data_gate.get(
             "discovery_informativeness") != informativeness:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock informativeness record mismatch")
 
 
@@ -2480,23 +2568,23 @@ def _read_audit_denied_selection_lock(
 ) -> dict[str, Any]:
     """Read one failure lock without using the audit-authorized V3 reader."""
     if _HEX64.fullmatch(expected_sha256) is None:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "expected_selection_lock_sha256 must be lowercase SHA-256")
     try:
         payload = _v3._read_regular_bytes_once(
-            path, "V4 audit-denied selection lock")
+            path, "V5 audit-denied selection lock")
     except _v3.ClosedLoopRecoveryTriageError as exc:
-        raise StateDependentRecoveryV4Error(str(exc)) from exc
+        raise StateDependentRecoveryV5Error(str(exc)) from exc
     if hashlib.sha256(payload).hexdigest() != expected_sha256:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "selection-lock file hash differs from the required hash")
     try:
         lock = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "could not parse audit-denied selection lock") from exc
     if not isinstance(lock, dict) or payload != _v3._canonical_json_bytes(lock):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock is not canonical JSON")
     _lock_exact_fields(lock, _AUDIT_DENIED_LOCK_FIELDS, "top-level mapping")
 
@@ -2524,20 +2612,20 @@ def _read_audit_denied_selection_lock(
     }
     for name, expected in expected_identity.items():
         if lock.get(name) != expected:
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 f"audit-denied selection lock {name} mismatch")
     if _HEX64.fullmatch(str(lock.get("audit_identifier", ""))) is None:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock has an invalid audit identifier")
     created_at = lock.get("created_at_utc")
     try:
         created = datetime.fromisoformat(created_at) if isinstance(
             created_at, str) else None
     except ValueError as exc:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock created_at_utc is invalid") from exc
     if created is None or created.utcoffset() != timezone.utc.utcoffset(None):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock created_at_utc is not UTC")
 
     data_gate = _mapping(lock.get("data_gate"), "selection_lock.data_gate")
@@ -2572,14 +2660,14 @@ def _read_audit_denied_selection_lock(
     }
     for name, expected in expected_gate_values.items():
         if data_gate.get(name) != expected:
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 f"audit-denied selection lock data_gate.{name} mismatch")
     informativeness = _mapping(
         data_gate.get("discovery_informativeness"),
         "selection_lock.discovery_informativeness",
     )
     if informativeness.get("pass") is not False:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit-denied selection lock is not an informativeness failure")
     _validate_audit_denied_readiness_and_inputs(lock, spec)
     _validate_audit_denied_selection_records(lock, spec, data_gate)
@@ -2613,7 +2701,7 @@ def resume_state_dependent_discovery_failure_report(
             name="selection_lock_path",
         )
     except _v3.ClosedLoopRecoveryTriageError as exc:
-        raise StateDependentRecoveryV4Error(str(exc)) from exc
+        raise StateDependentRecoveryV5Error(str(exc)) from exc
     lock = _read_audit_denied_selection_lock(
         lock_file,
         expected_sha256=expected_selection_lock_sha256,
@@ -2681,10 +2769,10 @@ def create_state_dependent_selection_lock(
         readiness = _v3._collection_readiness(
             collection_report_paths, protocol=protocol, spec=spec)
         if readiness.get("generator_commit") != clean_commit:
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 "collection readiness differs from the current clean HEAD")
         if readiness.get("protocol_file_sha256") != protocol_file_sha256:
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 "collection readiness differs from the canonical protocol file")
         _validate_discovery_seed_contract_before_lock(
             protocol=protocol,
@@ -2703,19 +2791,19 @@ def create_state_dependent_selection_lock(
                 selection_semantics=SELECTION_SEMANTICS,
             )
     except (_v3.ClosedLoopRecoveryTriageError, OSError, ValueError) as exc:
-        if isinstance(exc, StateDependentRecoveryV4Error):
+        if isinstance(exc, StateDependentRecoveryV5Error):
             raise
-        raise StateDependentRecoveryV4Error(str(exc)) from exc
+        raise StateDependentRecoveryV5Error(str(exc)) from exc
     _require_unchanged_clean_binding(
         clean_commit, protocol_file_sha256, "during selection-lock creation")
     if result.get("selection_semantics") != SELECTION_SEMANTICS:
-        raise StateDependentRecoveryV4Error(
-            "persisted selection lock lacks the exact V4 primary semantics")
+        raise StateDependentRecoveryV5Error(
+            "persisted selection lock lacks the exact V5 primary semantics")
     result["primary_selection"] = SELECTION_SEMANTICS["primary_selection"]
     result["selected_global_candidate_is_diagnostic_only"] = True
     audit_authorized = result.get("audit_authorized")
     if not isinstance(audit_authorized, bool):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "persisted selection lock lacks a boolean audit authorization")
     if not audit_authorized:
         report_file, report_sha256, _ = _publish_discovery_failure_report(
@@ -2740,11 +2828,11 @@ def _locked_audit_paths_before_consumption(
 ) -> list[Path]:
     """Validate audit spellings and commitments without any filesystem call."""
     if isinstance(values, (str, bytes, os.PathLike)):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit_paths must be the ordered six-path sequence")
     supplied = list(values)
     if len(supplied) != 6:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit_paths must contain exactly six physical shards")
     root = _artifact_root(protocol)
     expected = [
@@ -2758,12 +2846,12 @@ def _locked_audit_paths_before_consumption(
         path = _absolute_repo_path(raw)
         _reject_protected_components(path, f"audit_paths[{ordinal}]")
         if path != canonical:
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 "audit shard paths must follow the canonical source order")
         normalized.append(path)
     commitments = lock.get("expected_audit_shards")
     if not isinstance(commitments, list) or len(commitments) != 6:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "selection lock lacks exhaustive audit commitments")
     for ordinal, (path, seed, raw) in enumerate(zip(
             normalized, SOURCE_SEEDS, commitments, strict=True)):
@@ -2773,7 +2861,7 @@ def _locked_audit_paths_before_consumption(
                     record.get("path", ""))) != path or any(
                         _HEX64.fullmatch(str(record.get(field, ""))) is None
                         for field in ("file_sha256", "content_sha256")):
-            raise StateDependentRecoveryV4Error(
+            raise StateDependentRecoveryV5Error(
                 "audit path/order/hash commitment differs from selection lock")
     return normalized
 
@@ -2793,16 +2881,16 @@ def _evaluate_stage_a_risks(
                 not np.all(np.isfinite(audit))) or np.any(discovery < 0.0) or (
                     np.any(discovery > 1.0)) or np.any(audit < 0.0) or np.any(
                         audit > 1.0):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "Stage-A risks must be finite G384/K9 probabilities")
     if any(np.count_nonzero(seeds == seed) != 64 for seed in SOURCE_SEEDS):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "Stage-A risks require 64 groups for each locked source seed")
     winners = [
         np.flatnonzero(row == np.min(row)) for row in discovery
     ]
     if any(len(indices) == 0 for indices in winners):
-        raise StateDependentRecoveryV4Error("discovery minimizer set is empty")
+        raise StateDependentRecoveryV5Error("discovery minimizer set is empty")
     conditional_risk = np.asarray([
         float(np.mean(audit[group, indices], dtype=np.float64))
         for group, indices in enumerate(winners)
@@ -2890,12 +2978,12 @@ def evaluate_state_dependent_stage_a(
     discovery = np.asarray(discovery_fall)
     audit = np.asarray(audit_fall)
     if discovery.shape != (384, 9, 64) or audit.shape != (384, 9, 64):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "Stage-A fall arrays must have exact shape [384,9,64]")
     if discovery.dtype.kind not in "biu" or audit.dtype.kind not in "biu" or (
             not np.all(np.isin(discovery, (0, 1, False, True)))) or not np.all(
                 np.isin(audit, (0, 1, False, True))):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "Stage-A fall arrays must contain only binary outcomes")
     return _evaluate_stage_a_risks(
         discovery_risk=np.mean(discovery, axis=2, dtype=np.float64),
@@ -2915,16 +3003,16 @@ def consume_and_evaluate_state_dependent_audit(
     expected_generator_commit: str,
     expected_protocol_file_sha256: str,
 ) -> dict[str, Any]:
-    """Publish the marker, open audit once, and compute the V4 primary gate."""
+    """Publish the marker, open audit once, and compute the V5 primary gate."""
     spec = _validate_protocol(protocol)
     clean_commit, protocol_file_sha256 = (
         _require_clean_head_protocol_binding())
     if expected_generator_commit != clean_commit:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "expected generator commit differs from the current clean HEAD")
     if expected_protocol_file_sha256 != protocol_file_sha256:
-        raise StateDependentRecoveryV4Error(
-            "expected protocol hash differs from the canonical raw V4 protocol")
+        raise StateDependentRecoveryV5Error(
+            "expected protocol hash differs from the canonical raw V5 protocol")
     collection = spec["collection"]
     try:
         lock_file = _v3._artifact_path(
@@ -2936,16 +3024,16 @@ def consume_and_evaluate_state_dependent_audit(
         lock = _v3._read_selection_lock(
             lock_file, expected_selection_lock_sha256, spec)
     except _v3.ClosedLoopRecoveryTriageError as exc:
-        raise StateDependentRecoveryV4Error(str(exc)) from exc
+        raise StateDependentRecoveryV5Error(str(exc)) from exc
     if lock.get("generator_commit") != expected_generator_commit:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "selection lock differs from the clean generator commit")
     if lock.get("protocol_file_sha256") != expected_protocol_file_sha256:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "selection lock differs from the canonical protocol file")
     if lock.get("selection_semantics") != SELECTION_SEMANTICS:
-        raise StateDependentRecoveryV4Error(
-            "selection lock does not bind the exact V4 primary semantics")
+        raise StateDependentRecoveryV5Error(
+            "selection lock does not bind the exact V5 primary semantics")
 
     # Pure lexical/JSON checks only.  No audit path is probed above or inside
     # this helper.  The next filesystem operation on an audit shard is below
@@ -2960,10 +3048,10 @@ def consume_and_evaluate_state_dependent_audit(
             name="audit_consumed_path",
         )
     except _v3.ClosedLoopRecoveryTriageError as exc:
-        raise StateDependentRecoveryV4Error(str(exc)) from exc
+        raise StateDependentRecoveryV5Error(str(exc)) from exc
     if os.path.lexists(os.fspath(consumed_file)):
-        raise StateDependentRecoveryV4Error(
-            "V4 audit has already been consumed or reserved")
+        raise StateDependentRecoveryV5Error(
+            "V5 audit has already been consumed or reserved")
     _require_unchanged_clean_binding(
         clean_commit, protocol_file_sha256, "before irreversible audit consumption")
     marker = {
@@ -2978,9 +3066,13 @@ def consume_and_evaluate_state_dependent_audit(
     }
     try:
         marker_sha256 = _v3._atomic_no_clobber_json(consumed_file, marker)
-        audit = _v3._load_audit_shards_after_consumption(audit_files, spec)
+        audit = _v3._load_audit_shards_after_consumption(
+            audit_files,
+            spec,
+            manifest_validator=validate_v5_outcome_manifest,
+        )
     except _v3.ClosedLoopRecoveryTriageError as exc:
-        raise StateDependentRecoveryV4Error(str(exc)) from exc
+        raise StateDependentRecoveryV5Error(str(exc)) from exc
 
     validated = lock["_validated"]
     if audit["file_sha256"] != [
@@ -2988,14 +3080,14 @@ def consume_and_evaluate_state_dependent_audit(
     ] or audit["content_sha256"] != [
             record["content_sha256"] for record in lock["expected_audit_shards"]
     ]:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit shards differ from report-last selection commitments")
     if audit["generator_commit"] != lock["generator_commit"] or audit[
             "protocol_file_sha256"] != lock["protocol_file_sha256"]:
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit generator/protocol identity differs from selection lock")
     if not _v3._same_identities(validated, audit):
-        raise StateDependentRecoveryV4Error(
+        raise StateDependentRecoveryV5Error(
             "audit group identities/order differ from selection lock")
     for observed, expected in (
         ("crn_id", "audit_crn_id"),
@@ -3004,8 +3096,8 @@ def consume_and_evaluate_state_dependent_audit(
         ("candidate_seed", "audit_candidate_seed"),
     ):
         if not np.array_equal(audit[observed], validated[expected]):
-            raise StateDependentRecoveryV4Error(
-                f"audit {observed} differs from preassigned V4 seeds")
+            raise StateDependentRecoveryV5Error(
+                f"audit {observed} differs from preassigned V5 seeds")
 
     primary = _evaluate_stage_a_risks(
         discovery_risk=validated["discovery_risk"],
@@ -3041,7 +3133,7 @@ def consume_and_evaluate_state_dependent_audit(
             "horizon_policy_steps": 96,
             "discovery_informativeness": lock["data_gate"][
                 "discovery_informativeness"],
-            "v4_seed_domain_bound_before_lock": True,
+            "v5_seed_domain_bound_before_lock": True,
         },
         "bootstrap": {
             **_json_copy(
@@ -3069,14 +3161,14 @@ def consume_and_evaluate_state_dependent_audit(
     return report
 
 
-def v4_seed(
+def v5_seed(
     source_seed: int,
     identity: int,
     role: str,
     namespace: int,
     index: int = 0,
 ) -> int:
-    """Expose the immutable V4 derivation for collectors and tests."""
+    """Expose the immutable V5 derivation for collectors and tests."""
     return _derived_seed(
         source_seed,
         identity,
@@ -3094,7 +3186,11 @@ __all__ = [
     "AUDIT_CONSUMED_SCHEMA_VERSION",
     "BEHAVIOR_STEPS",
     "CANDIDATE_NAMES",
+    "COLLECTION_PROTOCOL_VERSION",
+    "DATASET_SPLIT_PREFIX",
+    "FROZEN_V4_SCIENCE_CONTRACT_SHA256",
     "PROTOCOL_CONTRACT_SHA256",
+    "PROTOCOL_FILE_SHA256",
     "PROTOCOL_NAME",
     "PROTOCOL_PATH",
     "REPORT_SCHEMA_VERSION",
@@ -3104,14 +3200,15 @@ __all__ = [
     "SEED_DOMAIN_PREFIX_LOW15",
     "SEED_ROLE_TAGS",
     "SOURCE_SEEDS",
-    "StateDependentRecoveryV4Error",
+    "StateDependentRecoveryV5Error",
     "consume_and_evaluate_state_dependent_audit",
     "create_state_dependent_selection_lock",
     "evaluate_state_dependent_stage_a",
-    "expected_v4_seed_manifest",
-    "load_state_dependent_recovery_v4_protocol",
+    "expected_v5_seed_manifest",
+    "load_state_dependent_recovery_v5_protocol",
     "resume_state_dependent_discovery_failure_report",
-    "v4_seed",
+    "v5_seed",
+    "validate_v5_outcome_manifest",
     "validate_state_dependent_collection_readiness",
-    "validate_state_dependent_recovery_v4_protocol",
+    "validate_state_dependent_recovery_v5_protocol",
 ]

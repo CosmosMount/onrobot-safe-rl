@@ -1,11 +1,18 @@
 # Q_safe fall-reduction execution roadmap
 
-Status: active, Phase 1D Iteration 3 (Objective 1 evidence execution; not yet passed)
+Status: active, Phase 1D Iteration 5 (Objective 1 evidence execution; not yet passed)
 Consumed Iteration-1 protocol: `config/qsafe_evidence_protocol.yaml`
 
 Consumed no-headroom triage: `config/qsafe_recovery_option_triage_v2.yaml`
 
-Active preregistration: `config/qsafe_closed_loop_recovery_triage_v3.yaml`
+Consumed V3 preregistration: `config/qsafe_closed_loop_recovery_triage_v3.yaml`
+
+Terminal tooling-invalid V4 record:
+`QSAFE_STATE_DEPENDENT_RECOVERY_V4_TECHNICAL_FAILURE.md`
+
+Active preregistration: `config/qsafe_state_dependent_recovery_v5.yaml`
+
+Active execution plan: `QSAFE_PHASE1_STATE_DEPENDENT_RECOVERY_V5_PLAN.md`
 
 Branch: `codex/qsafe-evidence-pipeline`
 
@@ -216,17 +223,19 @@ Train five ensemble members with group-disjoint bootstrap samples. Compare:
 
 Run nested learning curves at 360, 1k, 3k, 10k, then 30k/100k only while target-only curves still improve.
 
-### Historical Phase 1C/1D baseline (superseded for v4)
+### Historical Phase 1C/1D baseline (superseded for V5)
 
 The following was the original v1 route. It is retained as design history, not
 as current authorization: its H32/K16/36D assumptions, small-shift alternative,
-ten-seed minimum, IPW wording, and legacy compiler are incompatible with v4.
-The canonical current route is
-`QSAFE_PHASE1_STATE_DEPENDENT_RECOVERY_V4_PLAN.md` plus
-`config/qsafe_state_dependent_recovery_v4.yaml`: K9/H96, an 82D
+ten-seed minimum, IPW wording, and legacy compiler are incompatible with V5.
+V4 ended tooling-invalid before discovery aggregation and remains available
+only through its terminal record and historical commits. The canonical current
+route is `QSAFE_PHASE1_STATE_DEPENDENT_RECOVERY_V5_PLAN.md` plus
+`config/qsafe_state_dependent_recovery_v5.yaml`: K9/H96, an 82D
 nominal-conditioned recovery-program descriptor, fresh actor-role splits, an
 exact 1,200-state persistent-option gate, and 24 from-zero online seeds. No v4
-tool may use the legacy protocol below.
+or V5 tool may use the legacy protocol below, and no V5 tool may consume a V4
+outcome artifact.
 
 #### Phase 1C — closed-loop and online evidence (commit 3)
 
@@ -394,4 +403,5 @@ The primary outcome is falls per fixed policy-step budget, not falls per complet
 13. Preregister v3 before observing any replacement-library outcome. **Done: early SAC policy ages, a closed-loop K9 library, admission sampling, physical discovery/audit isolation, and one-shot gates are fixed in `QSAFE_PHASE1_CLOSED_LOOP_RECOVERY_V3_PLAN.md` and `config/qsafe_closed_loop_recovery_triage_v3.yaml`.**
 14. Implement and test v3, then collect the six fresh source-seed shards exactly once. **Done at commit `7681886`; all six G64 shards completed under the clean one-shot collector.**
 15. Apply the v3 discovery lock and consume its audit once. **Done; the selected fixed global backup failed all primary gates and the locked decision is `report_inconclusive_no_model_training`. The hierarchy-blocked per-state diagnostic is exploratory only; see `QSAFE_PHASE1_CLOSED_LOOP_RECOVERY_V3_RESULT.md` and commit `607dee7`.**
-16. Preregister v4 as a fresh direct confirmation of state-dependent K9 headroom before fitting any model. **In progress; v4 has an independent K9/H96 protocol, an 82D nominal-conditioned recovery-program feature contract, physically separate actor-training/data roles, a one-option-per-episode controller, a reproducible matched-random propensity, and a 24-seed online plan. Stage A must pass before fitting; Phase 2 remains blocked.**
+16. Preregister v4 as a fresh direct confirmation of state-dependent K9 headroom before fitting any model. **Terminated tooling-invalid without a scientific decision; all six seeds are consumed. Collection and admission completed, but a producer/consumer RNG-manifest mismatch stopped the first discovery merge before aggregation, selection, or audit access. See `QSAFE_STATE_DEPENDENT_RECOVERY_V4_TECHNICAL_FAILURE.md` and commit `439c525`.**
+17. Preregister V5 as a fresh, outcome-isolated successor after repairing the shared RNG-manifest contract. **In progress; V5 uses a new protocol/root/Stage-A domain and six new seeds while preserving the scientific design. No V4 artifact may enter V5. Stage A must pass before fitting; Phase 2 remains blocked until all Objective-1 stages pass.**

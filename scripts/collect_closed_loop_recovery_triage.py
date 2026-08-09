@@ -381,7 +381,7 @@ def _require_same_clean_commit(expected: str, phase: str) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--source-seed", required=True, type=int)
     parser.add_argument("--progress-every", type=int, default=4)
     parser.add_argument(

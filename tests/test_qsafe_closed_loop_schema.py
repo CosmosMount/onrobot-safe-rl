@@ -9,6 +9,7 @@ from unittest import mock
 
 import numpy as np
 
+from safety_data.paths import workflow_evidence_read_scope
 from safety_data.schema import (
     CLOSED_LOOP_RECOVERY_BEHAVIOR_STEPS,
     CLOSED_LOOP_RECOVERY_CANDIDATE_KINDS,
@@ -111,9 +112,13 @@ class ClosedLoopRecoverySchemaTest(unittest.TestCase):
             staging = closed_loop_dataset().save(root / "staging.npz")
             audit = root / "source-7801.audit.npz"
             staging.rename(audit)
-            with self.assertRaisesRegex(
-                    DatasetValidationError, "audit-consumed.*missing"):
-                type(closed_loop_dataset()).load(audit)
+            with workflow_evidence_read_scope(
+                    workflow="objective1_closed_loop_recovery_triage_v3",
+                    role="audit",
+                    path=audit):
+                with self.assertRaisesRegex(
+                        DatasetValidationError, "audit-consumed.*missing"):
+                    type(closed_loop_dataset()).load(audit)
 
             alias = root / "innocent-looking.npz"
             alias.symlink_to(audit)
@@ -133,8 +138,13 @@ class ClosedLoopRecoverySchemaTest(unittest.TestCase):
             }
             (root / "audit-consumed.json").write_text(
                 json.dumps(forged), encoding="utf-8")
-            with self.assertRaisesRegex(DatasetValidationError, "selection lock"):
-                type(closed_loop_dataset()).load(audit)
+            with workflow_evidence_read_scope(
+                    workflow="objective1_closed_loop_recovery_triage_v3",
+                    role="audit",
+                    path=audit):
+                with self.assertRaisesRegex(
+                        DatasetValidationError, "selection lock"):
+                    type(closed_loop_dataset()).load(audit)
 
     def test_audit_basename_as_ancestor_is_rejected_before_lstat(self):
         with tempfile.TemporaryDirectory() as directory:

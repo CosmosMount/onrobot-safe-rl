@@ -1,9 +1,9 @@
-# Immutable development protocol for the fresh V4 Stage-A confirmation.
+# Immutable development protocol for the fresh V5 Stage-A confirmation.
 # Stage A may authorize Stage B, but this file and its Stage-A tools never fit
 # a model, run online SAC, or authorize Phase 2.
 protocol_schema_version: 1
-protocol_name: objective1_state_dependent_recovery_qsafe_v4
-created_at: "2026-08-09T00:00:00+08:00"
+protocol_name: objective1_state_dependent_recovery_qsafe_v5
+created_at: "2026-08-09T23:11:37+08:00"
 scope: conditional_development_stage_a_confirmation
 claim_eligible: false
 
@@ -11,10 +11,14 @@ parent_iterations:
   consumed_protocols:
     - objective1_recovery_option_triage_v2
     - objective1_closed_loop_recovery_triage_v3
-  consumed_source_seeds: [7601, 7602, 7603, 7801, 7802, 7811, 7812, 7821, 7822]
+    - objective1_state_dependent_recovery_qsafe_v4
+  consumed_source_seeds: [7601, 7602, 7603, 7801, 7802, 7811, 7812, 7821, 7822, 8401, 8402, 8411, 8412, 8421, 8422]
   outcome_reuse: forbidden
   v3_result: report_inconclusive_no_model_training
   v3_result_commit: 607dee7
+  v4_result: tooling_invalid_no_scientific_decision
+  v4_result_commit: 439c525
+  v4_artifact_reuse: forbidden
 
 protection:
   denied_path_component_prefixes: [sealed, formal]
@@ -47,9 +51,9 @@ protection:
 
 seed_derivation:
   algorithm: high_bit_then_domain_low15_then_14_8_18_2_6_bitpack_v1
-  domain_literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_seed\\0"
-  domain_hex: 71736166655f73746174655f646570656e64656e745f7265636f766572795f76345f7365656400
-  domain_sha256_prefix_low15: 18561
+  domain_literal_ascii_escaped: "qsafe_state_dependent_recovery_v5_seed\\0"
+  domain_hex: 71736166655f73746174655f646570656e64656e745f7265636f766572795f76355f7365656400
+  domain_sha256_prefix_low15: 12835
   v4_tag_bit63: 1
   historical_v2_v3_tag_bit63: 0
   packed_field_order: [v4_tag, domain_prefix, source_seed, role_tag, identity, namespace, index]
@@ -75,6 +79,7 @@ seed_derivation:
     audit: 140
   roles_exact: true
   disjoint_from_v2_v3_by_v4_tag_bit: true
+  disjoint_from_v4_by_domain_prefix: true
 
 target:
   robot: unitree_go2
@@ -126,21 +131,21 @@ policy_config:
 early_task_policies:
   - training_step: 25438
     checkpoint: saved/experiments/sqrl_paper/seed42/pretrain_sac_async_v1/step_000000025438/agent
-    source_seeds: [8401, 8402]
+    source_seeds: [8901, 8902]
     actor_sha256: e38d838be37668e1d225cd362890388c4a43d146863aa9fd12678901f9c924cd
     actor_state_dict_sha256: a876ee6a6715db9763cf8ed4867e5fa212a7ba37140cd3ad9879b768660040c1
     policy_fingerprint_sha256: 642ecb0b6255c3d8943a4e9cbceed32dffd7bfbbca6f90bf44b117bcddc802d1
     checkpoint_fingerprint_sha256: f4fb74c97d733dd96da23af82f6245211734cf7a06c639354da2c1091b67401f
   - training_step: 50030
     checkpoint: saved/experiments/sqrl_paper/seed42/pretrain_sac_async_v1/step_000000050030/agent
-    source_seeds: [8411, 8412]
+    source_seeds: [8911, 8912]
     actor_sha256: 6fb0c32cf8307541a9295bf59b35f24b50eb127fba05356ad137d8a9f5a19d99
     actor_state_dict_sha256: d5c68b9953eb98247a2eee74b7ade92db830421878778e1740f30e2b90a3f125
     policy_fingerprint_sha256: 0847d79bb49cd532f37094c4dfeb69675564cd23e9d6b1d20c8406846ccb6b8c
     checkpoint_fingerprint_sha256: f80cf0865d28b7ccbd716522f31584e5f2724d234e6dfb45070eaf1f43c8b087
   - training_step: 100359
     checkpoint: saved/experiments/sqrl_paper/seed42/pretrain_sac_async_v1/step_000000100359/agent
-    source_seeds: [8421, 8422]
+    source_seeds: [8921, 8922]
     actor_sha256: 92a1a63dda234c2fca529b7e824ab7e2cb83389c90fe0257e694fb986b33b8d6
     actor_state_dict_sha256: 74c475279f7547da6b964d08268e8935713cff1182df3ef1987a8e125703e2fb
     policy_fingerprint_sha256: a6fbf86bd698a6e3c44feb8dcd2279a6560c741c6b4ab694ef3d83fe8c5f5974
@@ -158,7 +163,7 @@ mature_recovery_policy:
   privileged_inputs: forbidden
 
 collection:
-  artifact_root: saved/qsafe_development/state_dependent_recovery_v4
+  artifact_root: saved/qsafe_development/state_dependent_recovery_v5
   cohort_lock_filename: cohort-lock.json
   attempt_shard_filename_template: source-{source_seed}.attempt-started.json
   admission_shard_filename_template: source-{source_seed}.admission.npz
@@ -180,7 +185,7 @@ collection:
   selection_lock_filename: selection-lock.json
   audit_consumed_filename: audit-consumed.json
   triage_report_filename: state-dependent-recovery-stage-a-report.json
-  audit_analysis_input_order: [8401, 8402, 8411, 8412, 8421, 8422]
+  audit_analysis_input_order: [8901, 8902, 8911, 8912, 8921, 8922]
   audit_merge_before_selection: forbidden
   groups_per_source_seed: 64
   total_groups: 384
@@ -216,7 +221,7 @@ collection:
     accept_min_falls_inclusive: 6
     accept_max_falls_inclusive: 26
     accepted_empirical_risk_interval: [0.1875, 0.8125]
-    seed_domain: admission_v4_stage_a_disjoint
+    seed_domain: admission_v5_stage_a_disjoint
     all_proposals_recorded: true
     labels_used_in_effect_estimation: false
   candidates:
@@ -245,7 +250,7 @@ collection:
     use_action_filter: false
     tie_priority: [nominal, mature_actor_L10, mature_actor_L25, mature_actor_L50, joint_brake_L10, halfway_neutral_L10, halfway_neutral_L25, ramp_neutral_L25, ramp_crouch_L25]
   replica_partition:
-    schema_version: qsafe.physically_separate_replica_partition.v4_stage_a
+    schema_version: qsafe.physically_separate_replica_partition.v5_stage_a
     assignment_timing: before_candidate_outcomes
     discovery_indices: {start_inclusive: 0, stop_exclusive: 64}
     audit_indices: {start_inclusive: 64, stop_exclusive: 128}
@@ -261,7 +266,7 @@ collection:
 
 firewall:
   selection_uses: [admission_ledger, discovery]
-  selection_forbidden: [audit, consumed_v2_outcomes, consumed_v3_outcomes]
+  selection_forbidden: [audit, consumed_v2_outcomes, consumed_v3_outcomes, consumed_v4_outcomes]
   primary_selection: per_state_all_exact_discovery_minima_uniform_expectation
   candidate_column_order_effect_on_ties: forbidden
   selection_lock_no_clobber: true
@@ -285,9 +290,9 @@ firewall:
 statistics:
   group_weighting: equal_groups_within_seed_then_equal_six_source_seeds
   policy_age_strata:
-    "25438": [8401, 8402]
-    "50030": [8411, 8412]
-    "100359": [8421, 8422]
+    "25438": [8901, 8902]
+    "50030": [8911, 8912]
+    "100359": [8921, 8922]
   bootstrap:
     kind: hierarchical_policy_age_seed_then_trajectory_group
     replicates: 50000
@@ -321,7 +326,7 @@ triage_gates:
     independent_groups_exact: 384
     unique_source_trajectories_exact: 384
     groups_per_required_source_seed_exact: 64
-    required_source_seeds: [8401, 8402, 8411, 8412, 8421, 8422]
+    required_source_seeds: [8901, 8902, 8911, 8912, 8921, 8922]
     candidates_per_group_exact: 9
     discovery_replicas_exact: 64
     audit_replicas_exact: 64
@@ -355,7 +360,7 @@ triage_gates:
 stage_A:
   status_before_audit: preregistered_not_run
   actor_training_seed: 42
-  source_seeds: [8401, 8402, 8411, 8412, 8421, 8422]
+  source_seeds: [8901, 8902, 8911, 8912, 8921, 8922]
   groups: 384
   candidates: 9
   admission_replicas: 32

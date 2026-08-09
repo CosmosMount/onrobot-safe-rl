@@ -1,6 +1,14 @@
 # Objective 1 state-dependent recovery Q_safe v4 plan
 
-Status: **preregister before any v4 simulator outcome**
+Status: **historical preregistration; V4 terminated tooling-invalid without a
+scientific decision**
+
+This file is retained as the immutable historical V4 design. V4 must not be
+resumed: its six seeds are consumed and its first discovery merge failed before
+aggregation or audit authorization. See
+`QSAFE_STATE_DEPENDENT_RECOVERY_V4_TECHNICAL_FAILURE.md`. The fresh successor is
+`QSAFE_PHASE1_STATE_DEPENDENT_RECOVERY_V5_PLAN.md` with a distinct root, seeds,
+Stage-A RNG domain, and protocol identity.
 
 Protocol name: `objective1_state_dependent_recovery_qsafe_v4`
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Merge or discovery-lock canonical V4 Stage-A artifacts.
+"""Merge or discovery-lock canonical V5 Stage-A artifacts.
 
 Operations are deliberately path-free: every input and output is derived from
 the immutable protocol.  ``admission`` never opens candidate outcomes;
@@ -28,14 +28,16 @@ from safety_data.closed_loop_recovery_collector import (
 )
 from safety_data.closed_loop_recovery_triage import _artifact_path
 from safety_data.merge import merge_grouped_shards, merge_privileged_shards
+from safety_data.paths import workflow_evidence_read_scope
 from safety_data.schema import GroupedBranchDataset, PrivilegedBranchView
-from safety_data.state_dependent_recovery_v4 import (
+from safety_data.state_dependent_recovery_v5 import (
+    PROTOCOL_NAME,
     PROTOCOL_PATH,
     SOURCE_SEEDS,
     create_state_dependent_selection_lock,
-    expected_v4_seed_manifest,
-    load_state_dependent_recovery_v4_protocol,
+    load_state_dependent_recovery_v5_protocol,
     resume_state_dependent_discovery_failure_report,
+    validate_v5_outcome_manifest,
     validate_state_dependent_collection_readiness,
 )
 from scripts.collect_closed_loop_recovery_triage import _file_sha256
@@ -101,7 +103,7 @@ def _require_free(outputs: list[Path], operation: str) -> None:
     occupied = [path for path in outputs if os.path.lexists(os.fspath(path))]
     if occupied:
         raise FileExistsError(
-            f"refusing to overwrite V4 {operation} outputs: {occupied}")
+            f"refusing to overwrite V5 {operation} outputs: {occupied}")
 
 
 def _merge_admission(
@@ -140,8 +142,17 @@ def _merge_admission(
         if Path(admission_commitment["path"]) != path or Path(
                 privileged_commitment["path"]) != privileged_path:
             raise ValueError("admission readiness path order drifted")
-        ledger = AdmissionLedger.load(path)
-        view = AdmissionPrivilegedView.load(privileged_path, ledger=ledger)
+        with workflow_evidence_read_scope(
+                workflow=PROTOCOL_NAME,
+                role="admission",
+                path=path):
+            ledger = AdmissionLedger.load(path)
+        with workflow_evidence_read_scope(
+                workflow=PROTOCOL_NAME,
+                role="admission_privileged",
+                path=privileged_path):
+            view = AdmissionPrivilegedView.load(
+                privileged_path, ledger=ledger)
         if _sha256(path) != admission_commitment["file_sha256"] or (
                 ledger.manifest["content_sha256"] !=
                 admission_commitment["content_sha256"]):
@@ -159,15 +170,23 @@ def _merge_admission(
     merged = merge_admission_ledgers(ledgers)
     merged_view = merge_admission_privileged_views(views, ledgers, merged)
     if merged.validate()["accepted"] != 384:
-        raise ValueError("merged V4 admission must contain 384 accepted groups")
+        raise ValueError("merged V5 admission must contain 384 accepted groups")
 
     staged = [_staging_path(path) for path in outputs]
     try:
         merged.save(staged[0])
         merged_view.save(staged[1], merged)
-        persisted = AdmissionLedger.load(staged[0])
-        persisted_view = AdmissionPrivilegedView.load(
-            staged[1], ledger=persisted)
+        with workflow_evidence_read_scope(
+                workflow=PROTOCOL_NAME,
+                role="admission",
+                path=staged[0]):
+            persisted = AdmissionLedger.load(staged[0])
+        with workflow_evidence_read_scope(
+                workflow=PROTOCOL_NAME,
+                role="admission_privileged",
+                path=staged[1]):
+            persisted_view = AdmissionPrivilegedView.load(
+                staged[1], ledger=persisted)
         report = {
             "schema_version": "qsafe.closed_loop_admission_merge_report.v3",
             "protocol_file_sha256": _file_sha256(PROTOCOL_PATH),
@@ -204,7 +223,7 @@ def _merge_admission(
             encoding="utf-8",
         )
         if _clean_git_commit() != commit:
-            raise RuntimeError("worktree changed during V4 admission merge")
+            raise RuntimeError("worktree changed during V5 admission merge")
         _publish_no_clobber(list(zip(staged, outputs, strict=True)))
     finally:
         for path in staged:
@@ -212,21 +231,10 @@ def _merge_admission(
     return report
 
 
-def _require_exact_v4_discovery_rng_split(
+def _require_exact_v5_discovery_rng_split(
     manifest: dict[str, Any],
 ) -> None:
-    collection_protocol = manifest.get("collection_protocol")
-    if not isinstance(collection_protocol, dict) or (
-            collection_protocol.get("version") !=
-            "qsafe.state_dependent_recovery.collection.v4_stage_a"):
-        raise ValueError("discovery leaf does not bind the V4 collection version")
-    if collection_protocol.get(
-            "seed_derivation") != expected_v4_seed_manifest():
-        raise ValueError(
-            "discovery leaf does not bind the exact V4 RNG manifest")
-    if manifest.get(
-            "split") != "state_dependent_recovery_v4_stage_a_discovery":
-        raise ValueError("discovery leaf does not bind the exact V4 split")
+    validate_v5_outcome_manifest(manifest, "discovery")
 
 
 def _merge_discovery(
@@ -265,9 +273,18 @@ def _merge_discovery(
         if Path(commitment["path"]) != path or Path(
                 privileged_commitment["path"]) != privileged_path:
             raise ValueError("discovery readiness path order drifted")
-        dataset = GroupedBranchDataset.load(path)
-        view = PrivilegedBranchView.load(privileged_path, deployable=dataset)
-        _require_exact_v4_discovery_rng_split(dataset.manifest)
+        with workflow_evidence_read_scope(
+                workflow=PROTOCOL_NAME,
+                role="discovery",
+                path=path):
+            dataset = GroupedBranchDataset.load(path)
+        with workflow_evidence_read_scope(
+                workflow=PROTOCOL_NAME,
+                role="discovery_privileged",
+                path=privileged_path):
+            view = PrivilegedBranchView.load(
+                privileged_path, deployable=dataset)
+        _require_exact_v5_discovery_rng_split(dataset.manifest)
         if dataset.group_count != 64 or dataset.candidate_count != 9 or (
                 dataset.replica_count != 64) or dataset.horizon_steps != 96 or (
                     not np.all(np.asarray(dataset["source_seed"]) == seed)):
@@ -290,7 +307,7 @@ def _merge_discovery(
     if not data_gate["pass"]:
         failed = sorted(
             name for name, value in data_gate["checks"].items() if not value)
-        raise ValueError("V4 discovery data gate failed: " + ", ".join(failed))
+        raise ValueError("V5 discovery data gate failed: " + ", ".join(failed))
 
     staged = [_staging_path(path) for path in outputs]
     try:
@@ -346,7 +363,7 @@ def _merge_discovery(
             encoding="utf-8",
         )
         if _clean_git_commit() != commit:
-            raise RuntimeError("worktree changed during V4 discovery merge")
+            raise RuntimeError("worktree changed during V5 discovery merge")
         _publish_no_clobber(list(zip(staged, outputs, strict=True)))
     finally:
         for path in staged:
@@ -362,7 +379,7 @@ def _create_lock(
     commit: str,
 ) -> dict[str, Any]:
     if readiness["generator_commit"] != commit:
-        raise RuntimeError("V4 source shards use a different generator commit")
+        raise RuntimeError("V5 source shards use a different generator commit")
     return create_state_dependent_selection_lock(
         protocol=protocol,
         admission_path=paths["admission"],
@@ -384,7 +401,7 @@ def main() -> int:
               "of the existing selection lock"),
     )
     args = parser.parse_args()
-    protocol = load_state_dependent_recovery_v4_protocol()
+    protocol = load_state_dependent_recovery_v5_protocol()
     paths = _paths(protocol)
     if args.operation == "resume-denied-report":
         if args.selection_lock_sha256 is None:
@@ -408,9 +425,9 @@ def main() -> int:
     commit = _clean_git_commit()
     if readiness["generator_commit"] != commit:
         raise RuntimeError(
-            "V4 merge/lock must use the exact clean collection commit")
+            "V5 merge/lock must use the exact clean collection commit")
     if readiness["protocol_file_sha256"] != _file_sha256(PROTOCOL_PATH):
-        raise RuntimeError("V4 collection reports bind another protocol file")
+        raise RuntimeError("V5 collection reports bind another protocol file")
     if args.operation == "admission":
         report = _merge_admission(
             protocol=protocol, paths=paths, readiness=readiness, commit=commit)

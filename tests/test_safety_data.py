@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -12,9 +13,13 @@ from safety_data.legacy import audit_legacy_p17
 from safety_data.metrics import _equal_mass_ece, evaluate_predictions
 from safety_data.paths import (
     ProtectedEvidencePathError,
+    _audit_workflow_contract,
     assert_development_path,
     assert_safe_evidence_output,
+    require_v3_audit_consumed_or_safe_input,
+    workflow_evidence_read_scope,
 )
+from safety_data.closed_loop_recovery_collector import AdmissionLedger
 from safety_data.schema import (
     DatasetValidationError,
     GroupedBranchDataset,
@@ -282,6 +287,99 @@ class GroupedBranchDatasetTest(unittest.TestCase):
             with self.assertRaisesRegex(DatasetValidationError, "requires.*hash"):
                 GroupedBranchDataset.load(target)
 
+    def test_reserved_public_loaders_require_exact_workflow_role_scope(self):
+        dataset, _ = synthetic_dataset()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ordinary = dataset.save(root / "ordinary.npz")
+            reserved = root / "source-8901.discovery.npz"
+            ordinary.rename(reserved)
+
+            with mock.patch(
+                    "safety_data.schema.np.load",
+                    side_effect=AssertionError("reserved artifact opened")):
+                with self.assertRaisesRegex(
+                        DatasetValidationError, "scoped workflow/role"):
+                    GroupedBranchDataset.load(reserved)
+
+            with workflow_evidence_read_scope(
+                    workflow="objective1_state_dependent_recovery_qsafe_v5",
+                    role="discovery",
+                    path=reserved):
+                restored = GroupedBranchDataset.load(reserved)
+            np.testing.assert_array_equal(restored["fall"], dataset["fall"])
+
+            with workflow_evidence_read_scope(
+                    workflow="objective1_state_dependent_recovery_qsafe_v5",
+                    role="discovery_privileged",
+                    path=reserved):
+                with self.assertRaisesRegex(
+                        DatasetValidationError, "scoped workflow/role"):
+                    GroupedBranchDataset.load(reserved)
+
+            other = root / "source-8902.discovery.npz"
+            with workflow_evidence_read_scope(
+                    workflow="objective1_state_dependent_recovery_qsafe_v5",
+                    role="discovery",
+                    path=other):
+                with self.assertRaisesRegex(
+                        DatasetValidationError, "scoped workflow/role"):
+                    GroupedBranchDataset.load(reserved)
+
+    def test_privileged_public_loader_requires_its_exact_role(self):
+        dataset, _ = synthetic_dataset()
+        view = PrivilegedBranchView(
+            manifest={
+                "schema_version": PRIVILEGED_SCHEMA_VERSION,
+                "feature_view": "privileged_diagnostic_only",
+                "split": dataset.manifest["split"],
+                "generator_commit": dataset.manifest["generator_commit"],
+                "deployable_content_sha256": dataset.validate(
+                    verify_hash=False)["content_sha256"],
+            },
+            group_id=dataset["group_id"].copy(),
+            state_hash=dataset["state_hash"].copy(),
+            features=np.arange(16, dtype=np.float32).reshape(4, 4),
+            feature_names=np.asarray(["qpos", "qvel", "contact", "com"]),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ordinary = view.save(root / "ordinary-privileged.npz")
+            reserved = root / "source-8901.discovery.privileged.npz"
+            ordinary.rename(reserved)
+
+            with self.assertRaisesRegex(
+                    DatasetValidationError, "scoped workflow/role"):
+                PrivilegedBranchView.load(reserved, deployable=dataset)
+            with workflow_evidence_read_scope(
+                    workflow="objective1_state_dependent_recovery_qsafe_v5",
+                    role="discovery_privileged",
+                    path=reserved):
+                restored = PrivilegedBranchView.load(
+                    reserved, deployable=dataset)
+            np.testing.assert_array_equal(restored.features, view.features)
+
+    def test_canonical_workflow_descendant_is_denied_before_np_load(self):
+        repository_root = Path(__file__).resolve().parents[1]
+        descendant = (
+            repository_root
+            / "saved/qsafe_development/state_dependent_recovery_v5"
+            / "stage-d/seed-201/arm-pure_sac/transitions.npz")
+        with mock.patch(
+                "safety_data.schema.np.load",
+                side_effect=AssertionError("workflow descendant opened")):
+            with self.assertRaisesRegex(
+                    DatasetValidationError, "scoped workflow/role"):
+                GroupedBranchDataset.load(descendant)
+
+    def test_admission_public_loader_denies_reserved_leaf_before_np_load(self):
+        reserved = Path("/tmp/source-8901.admission.npz")
+        with mock.patch(
+                "safety_data.closed_loop_recovery_collector.np.load",
+                side_effect=AssertionError("admission artifact opened")):
+            with self.assertRaisesRegex(ValueError, "scoped workflow/role"):
+                AdmissionLedger.load(reserved)
+
 
 class MetricsTest(unittest.TestCase):
     def test_perfect_empirical_predictor_has_known_group_macro_metrics(self):
@@ -350,6 +448,89 @@ class LeakageAndLegacyTest(unittest.TestCase):
                 with self.subTest(filename=filename), self.assertRaisesRegex(
                         ProtectedEvidencePathError, "reserved v3"):
                     assert_safe_evidence_output(root / filename)
+
+    def test_generic_writers_cannot_claim_any_v5_stage_a_output(self):
+        seeds = (8901, 8902, 8911, 8912, 8921, 8922)
+        source_suffixes = (
+            "attempt-started.json",
+            "admission.npz",
+            "admission.privileged.npz",
+            "discovery.npz",
+            "discovery.privileged.npz",
+            "audit.npz",
+            "audit.privileged.npz",
+            "collection-report.json",
+        )
+        fixed_outputs = (
+            "cohort-lock.json",
+            "admission-ledger-deployable.npz",
+            "admission-ledger-privileged.npz",
+            "admission-merge-report.json",
+            "discovery-g384.npz",
+            "discovery-g384-privileged.npz",
+            "discovery-merge-report.json",
+            "audit-g384.npz",
+            "audit-g384-privileged.npz",
+            "selection-lock.json",
+            "audit-consumed.json",
+            "state-dependent-recovery-stage-a-report.json",
+        )
+        filenames = [
+            *fixed_outputs,
+            *(f"source-{seed}.{suffix}"
+              for seed in seeds for suffix in source_suffixes),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for filename in filenames:
+                with self.subTest(filename=filename), self.assertRaisesRegex(
+                        ProtectedEvidencePathError, "reserved v3/V4/V5"):
+                    assert_safe_evidence_output(root / filename)
+
+    def test_audit_marker_mapping_preserves_v3_v4_and_adds_v5(self):
+        self.assertEqual(
+            _audit_workflow_contract("source-7801.audit.npz"),
+            (
+                "qsafe.closed_loop_recovery_triage.audit_consumed.v1",
+                "objective1_closed_loop_recovery_triage_v3",
+                "v3",
+            ),
+        )
+        self.assertEqual(
+            _audit_workflow_contract("source-8401.audit.privileged.npz"),
+            (
+                "qsafe.state_dependent_recovery_v4.audit_consumed.v1",
+                "objective1_state_dependent_recovery_qsafe_v4",
+                "V4",
+            ),
+        )
+        for seed in (8901, 8902, 8911, 8912, 8921, 8922):
+            for suffix in ("audit.npz", "audit.privileged.npz"):
+                with self.subTest(seed=seed, suffix=suffix):
+                    self.assertEqual(
+                        _audit_workflow_contract(f"source-{seed}.{suffix}"),
+                        (
+                            "qsafe.state_dependent_recovery_v5."
+                            "audit_consumed.v1",
+                            "objective1_state_dependent_recovery_qsafe_v5",
+                            "V5",
+                        ),
+                    )
+
+        for basename in ("audit-g384.npz", "audit-g384-privileged.npz"):
+            path = Path("/tmp") / basename
+            with self.subTest(basename=basename), mock.patch.object(
+                    Path,
+                    "lstat",
+                    side_effect=AssertionError("filesystem probe"),
+            ), mock.patch(
+                "builtins.open", side_effect=AssertionError("file opened")
+            ):
+                with self.assertRaisesRegex(
+                        ProtectedEvidencePathError, "generic-deny-only"):
+                    require_v3_audit_consumed_or_safe_input(path)
+                with self.assertRaisesRegex(ValueError, "unlocked basename"):
+                    _audit_workflow_contract(basename)
 
     def test_legacy_adapter_is_opt_in_and_never_evidence_eligible(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -32,9 +32,10 @@ from safety_data.native import (
     evaluate_same_state_group,
 )
 from safety_data.paths import (
+    ProtectedEvidencePathError,
     assert_development_path,
     assert_safe_evidence_output,
-    require_v3_audit_consumed_or_safe_input,
+    require_workflow_authorized_or_safe_input,
 )
 from safety_data.schema import GroupedBranchDataset, PrivilegedBranchView
 
@@ -597,8 +598,12 @@ class AdmissionLedger:
 
     @classmethod
     def load(cls, path: str | Path) -> "AdmissionLedger":
-        source = assert_development_path(
-            require_v3_audit_consumed_or_safe_input(path))
+        try:
+            source = assert_development_path(
+                require_workflow_authorized_or_safe_input(
+                    path, allowed_roles=("admission",)))
+        except ProtectedEvidencePathError as exc:
+            raise ValueError(str(exc)) from exc
         with np.load(source, allow_pickle=False) as payload:
             manifest = json.loads(str(payload["manifest_json"].item()))
             arrays = {
@@ -698,8 +703,12 @@ class AdmissionPrivilegedView:
         *,
         ledger: AdmissionLedger,
     ) -> "AdmissionPrivilegedView":
-        source = assert_development_path(
-            require_v3_audit_consumed_or_safe_input(path))
+        try:
+            source = assert_development_path(
+                require_workflow_authorized_or_safe_input(
+                    path, allowed_roles=("admission_privileged",)))
+        except ProtectedEvidencePathError as exc:
+            raise ValueError(str(exc)) from exc
         with np.load(source, allow_pickle=False) as payload:
             manifest = json.loads(str(payload["manifest_json"].item()))
             value = cls(

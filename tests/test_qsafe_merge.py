@@ -14,11 +14,17 @@ import numpy as np
 import yaml
 
 from safety_data.merge import merge_grouped_shards, merge_privileged_shards
-from safety_data.schema import PRIVILEGED_SCHEMA_VERSION, PrivilegedBranchView
+from safety_data.schema import (
+    GroupedBranchDataset,
+    PRIVILEGED_SCHEMA_VERSION,
+    PrivilegedBranchView,
+)
 from scripts.merge_grouped_qsafe_shards import (
     _clean_git_commit,
     _data_gate_thresholds,
     _publish_no_clobber,
+    _reject_generic_reserved_workflow_paths,
+    _reject_locked_audit_basenames,
     main,
 )
 from tests.test_safety_data import synthetic_dataset
@@ -80,6 +86,122 @@ class GroupedShardMergeTest(unittest.TestCase):
             command = call.args[0]
             self.assertEqual(
                 command[:3], ["git", "-C", str(repository_root)])
+
+    def test_generic_merger_lexically_rejects_every_v5_audit_leaf(self):
+        for seed in (8901, 8902, 8911, 8912, 8921, 8922):
+            for suffix in ("audit.npz", "audit.privileged.npz"):
+                path = Path("unopened") / f"source-{seed}.{suffix}"
+                with self.subTest(path=path), self.assertRaisesRegex(
+                        ValueError, "locked audit paths"):
+                    _reject_locked_audit_basenames([path])
+
+        for basename in ("audit-g384.npz", "audit-g384-privileged.npz"):
+            with self.subTest(basename=basename), self.assertRaisesRegex(
+                    ValueError, "locked audit paths"):
+                _reject_locked_audit_basenames([Path("unopened") / basename])
+
+    def test_locked_audit_component_is_rejected_before_any_probe(self):
+        paths = (
+            Path("unopened") / "source-8901.audit.npz" / "child.npz",
+            Path("unopened") / "audit-g384.npz" / "child.npz",
+        )
+        with mock.patch.object(
+                Path, "lstat", side_effect=AssertionError("filesystem probe")), \
+                mock.patch("builtins.open", side_effect=AssertionError("open")):
+            for path in paths:
+                with self.subTest(path=path), self.assertRaisesRegex(
+                        ValueError, "locked audit paths"):
+                    _reject_locked_audit_basenames([path])
+
+    def test_generic_reserved_firewall_covers_all_workflow_subtrees(self):
+        repository_root = Path(__file__).resolve().parents[1]
+        roots = (
+            repository_root / "saved/qsafe_development/closed_loop_recovery_triage_v3",
+            repository_root / "saved/qsafe_development/state_dependent_recovery_v4",
+            repository_root / "saved/qsafe_development/state_dependent_recovery_v5",
+        )
+        descendants = (
+            "stage-b/model-test/labels-r64-deployable.npz",
+            "stage-c/paired-arms-r64.npz",
+            "stage-d/seed-201/arm-pure_sac/transitions.parquet",
+            "objective1-authorization-report.json",
+        )
+        with mock.patch.object(
+                Path, "lstat", side_effect=AssertionError("filesystem probe")), \
+                mock.patch("builtins.open", side_effect=AssertionError("open")):
+            for root in roots:
+                for relative in descendants:
+                    path = root / relative
+                    with self.subTest(path=path), self.assertRaisesRegex(
+                            ValueError, "reserved workflow paths"):
+                        _reject_generic_reserved_workflow_paths([path])
+
+        for path in (
+            Path("unopened") / "source-8901.discovery.npz",
+            Path("unopened") / "source-8901.collection-report.json",
+        ):
+            with self.subTest(path=path), self.assertRaisesRegex(
+                    ValueError, "reserved workflow paths"):
+                _reject_generic_reserved_workflow_paths([path])
+
+    def test_non_v3_main_rejects_workflow_artifact_before_probe(self):
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow_root = (
+            repository_root
+            / "saved/qsafe_development/state_dependent_recovery_v5")
+        with tempfile.TemporaryDirectory() as directory:
+            normal_root = Path(directory)
+            protocol = normal_root / "protocol.yaml"
+            protocol.write_text(
+                "protocol_name: unrelated_development_protocol\n",
+                encoding="utf-8",
+            )
+            argv = [
+                "merge_grouped_qsafe_shards.py",
+                str(workflow_root / "stage-b/fit/labels-r32-deployable.npz"),
+                str(normal_root / "normal.npz"),
+                "--output", str(normal_root / "output.npz"),
+                "--protocol", str(protocol),
+            ]
+            with mock.patch("sys.argv", argv), mock.patch.object(
+                    os.path,
+                    "lexists",
+                    side_effect=AssertionError("artifact filesystem probe"),
+            ), mock.patch.object(
+                GroupedBranchDataset,
+                "load",
+                side_effect=AssertionError("artifact opened"),
+            ):
+                with self.assertRaisesRegex(ValueError, "reserved workflow"):
+                    main()
+
+    def test_protocol_argument_in_workflow_root_is_rejected_before_read(self):
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow_root = (
+            repository_root
+            / "saved/qsafe_development/state_dependent_recovery_v5")
+        argv = [
+            "merge_grouped_qsafe_shards.py",
+            "/tmp/normal-a.npz",
+            "/tmp/normal-b.npz",
+            "--output", "/tmp/normal-output.npz",
+            "--protocol", str(workflow_root / "stage-b/protocol.yaml"),
+        ]
+        with mock.patch("sys.argv", argv), mock.patch.object(
+                Path,
+                "read_text",
+                side_effect=AssertionError("protocol read"),
+        ), mock.patch.object(
+            os.path,
+            "lexists",
+            side_effect=AssertionError("filesystem probe"),
+        ), mock.patch(
+            "scripts.merge_grouped_qsafe_shards."
+            "require_v3_audit_consumed_or_safe_input",
+            side_effect=AssertionError("protocol guard reached"),
+        ):
+            with self.assertRaisesRegex(ValueError, "reserved workflow"):
+                main()
 
     def test_triage_protocol_routes_to_locked_merge_dimensions(self):
         protocol = yaml.safe_load(Path(

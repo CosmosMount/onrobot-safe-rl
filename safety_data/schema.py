@@ -14,7 +14,7 @@ from safety_data.paths import (
     ProtectedEvidencePathError,
     assert_development_path,
     assert_safe_evidence_output,
-    require_v3_audit_consumed_or_safe_input,
+    require_workflow_authorized_or_safe_input,
 )
 
 
@@ -93,9 +93,14 @@ class DatasetValidationError(ValueError):
     """The grouped dataset cannot be used without violating its contract."""
 
 
-def _authorize_evidence_input(path: str | Path) -> Path:
+def _authorize_evidence_input(
+    path: str | Path,
+    *,
+    allowed_roles: tuple[str, ...],
+) -> Path:
     try:
-        return require_v3_audit_consumed_or_safe_input(path)
+        return require_workflow_authorized_or_safe_input(
+            path, allowed_roles=allowed_roles)
     except ProtectedEvidencePathError as exc:
         raise DatasetValidationError(str(exc)) from exc
 
@@ -780,7 +785,8 @@ class GroupedBranchDataset:
 
     @classmethod
     def load(cls, path: str | Path) -> "GroupedBranchDataset":
-        source = assert_development_path(_authorize_evidence_input(path))
+        source = assert_development_path(_authorize_evidence_input(
+            path, allowed_roles=("discovery", "audit")))
         with np.load(source, allow_pickle=False) as payload:
             if "manifest_json" not in payload.files:
                 raise DatasetValidationError("dataset has no manifest_json")
@@ -896,7 +902,10 @@ class PrivilegedBranchView:
         cls, path: str | Path, *,
         deployable: GroupedBranchDataset | None = None,
     ) -> "PrivilegedBranchView":
-        source = assert_development_path(_authorize_evidence_input(path))
+        source = assert_development_path(_authorize_evidence_input(
+            path,
+            allowed_roles=("discovery_privileged", "audit_privileged"),
+        ))
         with np.load(source, allow_pickle=False) as payload:
             required = {
                 "manifest_json", "group_id", "state_hash", "features", "feature_names"}

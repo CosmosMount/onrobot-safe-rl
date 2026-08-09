@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Irreversibly consume and evaluate the V4 Stage-A audit exactly once."""
+"""Irreversibly consume and evaluate the V5 Stage-A audit exactly once."""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ import os
 from pathlib import Path
 import stat
 
-from safety_data.state_dependent_recovery_v4 import (
+from safety_data.state_dependent_recovery_v5 import (
     PROTOCOL_PATH,
     SOURCE_SEEDS,
     consume_and_evaluate_state_dependent_audit,
-    load_state_dependent_recovery_v4_protocol,
+    load_state_dependent_recovery_v5_protocol,
 )
 from scripts.collect_closed_loop_recovery_triage import _file_sha256
 from scripts.collect_native_grouped_qsafe import (
@@ -31,19 +31,19 @@ def main() -> int:
     parser.add_argument(
         "--selection-lock-sha256",
         required=True,
-        help="Exact SHA-256 printed by the V4 discovery lock operation",
+        help="Exact SHA-256 printed by the V5 discovery lock operation",
     )
     args = parser.parse_args()
-    protocol = load_state_dependent_recovery_v4_protocol()
+    protocol = load_state_dependent_recovery_v5_protocol()
     collection = protocol["collection"]
     root = Path(os.path.abspath(_ROOT / str(collection["artifact_root"])))
     try:
         metadata = root.lstat()
     except OSError as exc:
-        raise RuntimeError("canonical V4 artifact root is missing") from exc
+        raise RuntimeError("canonical V5 artifact root is missing") from exc
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
         raise RuntimeError(
-            "canonical V4 artifact root must be a real directory")
+            "canonical V5 artifact root must be a real directory")
 
     lock_path = root / str(collection["selection_lock_filename"])
     consumed_path = root / str(collection["audit_consumed_filename"])
@@ -57,9 +57,9 @@ def main() -> int:
     ]
     if os.path.lexists(os.fspath(report_path)):
         raise FileExistsError(
-            "refusing to overwrite an existing V4 Stage-A report")
+            "refusing to overwrite an existing V5 Stage-A report")
     if os.path.lexists(os.fspath(consumed_path)):
-        raise RuntimeError("V4 audit has already been consumed or reserved")
+        raise RuntimeError("V5 audit has already been consumed or reserved")
 
     commit = _clean_git_commit()
     protocol_file_sha256 = _file_sha256(PROTOCOL_PATH)
@@ -85,7 +85,7 @@ def main() -> int:
             encoding="utf-8",
         )
         if _clean_git_commit() != commit:
-            raise RuntimeError("worktree changed during one-shot V4 audit")
+            raise RuntimeError("worktree changed during one-shot V5 audit")
         _publish_staged_outputs(staged)
     finally:
         staging.unlink(missing_ok=True)

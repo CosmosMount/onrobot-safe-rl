@@ -32,6 +32,9 @@ from train.config import load_app_config
 from train.mujoco_snapshot_env import MujocoSnapshotEnv
 
 
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -42,10 +45,11 @@ def _sha256(path: Path) -> str:
 
 def _git_commit() -> str:
     commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"], check=True,
+        ["git", "-C", str(_REPOSITORY_ROOT), "rev-parse", "HEAD"], check=True,
         capture_output=True, text=True).stdout.strip()
     status = subprocess.run(
-        ["git", "status", "--porcelain=v1", "-z"], check=True,
+        ["git", "-C", str(_REPOSITORY_ROOT),
+         "status", "--porcelain=v1", "-z"], check=True,
         capture_output=True)
     if status.stdout:
         raise RuntimeError(
