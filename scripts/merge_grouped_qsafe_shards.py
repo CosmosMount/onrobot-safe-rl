@@ -393,8 +393,10 @@ def _v3_exact_discovery_gate(dataset, protocol: dict) -> dict:
         == int(data["unique_source_trajectories_exact"]),
         "source_seed_order_and_counts_exact": source_seed.shape == (
             groups,) and np.array_equal(source_seed, expected_source_seed),
-        "candidates_exact": dataset.candidate_count
-        == candidates and mask.shape == (groups, candidates) and np.all(mask),
+        "candidates_exact": bool(
+            dataset.candidate_count == candidates
+            and mask.shape == (groups, candidates)
+            and np.all(mask)),
         "candidate_kind_exact": candidate_kind_exact,
         "candidate_behavior_steps_exact": candidate_behavior_steps_exact,
         "candidate_protocol_exact": isinstance(candidate_protocol, dict)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -457,9 +458,14 @@ class ClosedLoopRecoveryCliContractTest(unittest.TestCase):
 
     def test_v3_exact_gate_locks_k9_arrays_and_manifest_protocol(self):
         protocol, dataset = self._exact_gate_fixture()
-        self.assertTrue(_v3_exact_discovery_gate(dataset, protocol)["pass"])
-        self.assertTrue(
-            _require_v3_exact_discovery_gate(dataset, protocol)["pass"])
+        raw_gate = _v3_exact_discovery_gate(dataset, protocol)
+        required_gate = _require_v3_exact_discovery_gate(dataset, protocol)
+        self.assertTrue(raw_gate["pass"])
+        self.assertTrue(required_gate["pass"])
+        self.assertIsInstance(raw_gate["checks"]["candidates_exact"], bool)
+        self.assertIsInstance(
+            required_gate["checks"]["candidates_exact"], bool)
+        json.dumps(required_gate)
 
         cases = (
             ("candidate_kind_exact", lambda value: value.arrays[
