@@ -1,9 +1,11 @@
 # Q_safe fall-reduction execution roadmap
 
-Status: active, Phase 1D Iteration 2 (Objective 1 evidence execution; not yet passed)
+Status: active, Phase 1D Iteration 3 (Objective 1 evidence execution; not yet passed)
 Consumed Iteration-1 protocol: `config/qsafe_evidence_protocol.yaml`
 
-Active triage protocol: `config/qsafe_recovery_option_triage_v2.yaml`
+Consumed no-headroom triage: `config/qsafe_recovery_option_triage_v2.yaml`
+
+Active preregistration: `config/qsafe_closed_loop_recovery_triage_v3.yaml`
 
 Branch: `codex/qsafe-evidence-pipeline`
 
@@ -375,5 +377,7 @@ The primary outcome is falls per fixed policy-step budget, not falls per complet
 8. Create commit 3, then run the Objective 1 experiment ladder. **Done: `0cddc1d`; the reviewed native collector is the commit-4 boundary before the 1k PoC. Phase 2 remains blocked until every Objective 1 gate passes.**
 9. Execute the four locked Iteration-1 model runs exactly once. **Done; the primary and all action-ranking diagnostics failed. The consumed outcomes are preserved in `QSAFE_PHASE1_ITERATION1_RESULT.md`.**
 10. Audit candidate labels with independent replica halves and trajectory OOB prediction. **Done; the apparent 6.9 pp Oracle is winner's-curse bias and cross-fit action ordering is chance.**
-11. Preregister and implement `objective1_recovery_option_triage_v2`. **In progress: independent replica gate and 1--4 step residual-option collector.**
-12. Collect exactly 384 fresh groups on source seeds 7601--7603 with K29 and R64, then apply the locked triage once. **Pending; no new model is authorized before this gate.**
+11. Preregister and implement `objective1_recovery_option_triage_v2`. **Done: commit `a30f3ed`.**
+12. Collect exactly 384 fresh groups on source seeds 7601--7603 with K29 and R64, then apply the locked triage once. **Done: the one-shot audit found less than 0.3 pp effect for every duration and fired the no-headroom stop; see `QSAFE_PHASE1_RECOVERY_TRIAGE_RESULT.md` and commit `b177ede`.**
+13. Preregister v3 before observing any replacement-library outcome. **Done: early SAC policy ages, a closed-loop K9 library, admission sampling, physical discovery/audit isolation, and one-shot gates are fixed in `QSAFE_PHASE1_CLOSED_LOOP_RECOVERY_V3_PLAN.md` and `config/qsafe_closed_loop_recovery_triage_v3.yaml`.**
+14. Implement and test v3, then collect the six fresh source-seed shards exactly once. **Pending; model training remains forbidden until the causal-headroom audit passes.**

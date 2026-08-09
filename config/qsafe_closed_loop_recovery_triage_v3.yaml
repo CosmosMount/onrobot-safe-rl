@@ -1,0 +1,285 @@
+# Development-only preregistration. No v3 outcome may be observed before this
+# file and its implementation are committed on a clean Git revision.
+protocol_schema_version: 1
+protocol_name: objective1_closed_loop_recovery_triage_v3
+created_at: "2026-08-09T00:00:00+08:00"
+scope: conditional_development_mechanism_triage_only
+claim_eligible: false
+
+parent_iteration:
+  protocol_name: objective1_recovery_option_triage_v2
+  protocol_file_sha256: a3a5f07515dff8a16a0ae518c0e1a834326bad845d918e084e47d708351ca790
+  result: failed_no_headroom
+  result_report: QSAFE_PHASE1_RECOVERY_TRIAGE_RESULT.md
+  consumed_outcome_policy: permanent_falsification_only_no_reuse
+  consumed_source_seeds: [7601, 7602, 7603]
+
+protection:
+  denied_path_component_prefixes: [sealed, formal]
+  require_development_paths: true
+  prohibit_parent_outcome_reuse: true
+  assignment_before_candidate_outcomes: true
+  optional_stopping: forbidden
+  sample_top_up: forbidden
+  failed_trials_remain_in_manifest: true
+  require_clean_generator_commit: true
+  generator_commit_rule: clean_HEAD_must_contain_protocol_and_implementation
+
+target:
+  robot: unitree_go2
+  model_mjcf: /home/xyz/code/unitree_mujoco/unitree_robots/go2/scene_empty.xml
+  route: sac_from_scratch_policy_age_mechanism
+  command_speed_mps: 0.30
+  observation: corrected_deployable_46d_last_5_frames
+  observation_joint_q_slice: [0, 12]
+  observation_previous_q_target_slice: [34, 46]
+  action: normalized_12d_with_requested_executed_and_absolute_q_send_recorded
+  policy_hz: 50
+  low_level_hz: 500
+  horizon_policy_steps: 96
+  failure:
+    max_abs_roll_pitch_rad: 0.523599
+    min_base_height_m: 0.18
+    tilt_comparator: greater_than_or_equal
+    fallen_orientation_rad_overridden_from: success_orientation_rad
+    semantics: deployment_aligned_absorbing_first_crossing
+    runtime_orientation_comparator_difference_recorded: true
+  statistical_unit: unique_source_trajectory_state_group
+  estimand: equal_seed_conditional_effect_on_admission_positive_fixed_states
+  natural_incidence_claim: forbidden
+  held_out_state_generalization_claim: forbidden
+
+policy_config:
+  path: config/go2_50hz_sqrl_paper_sac_pretrain.yaml
+  config_sha256: ebf312ef27f64326a6ef478e0f86273af9f9cbaf61dd09b632fb10868524f726
+  policy_training_seed: 42
+
+early_task_policies:
+  - training_step: 25438
+    checkpoint: saved/experiments/sqrl_paper/seed42/pretrain_sac_async_v1/step_000000025438/agent
+    source_seeds: [7801, 7802]
+    actor_sha256: e38d838be37668e1d225cd362890388c4a43d146863aa9fd12678901f9c924cd
+    actor_state_dict_sha256: a876ee6a6715db9763cf8ed4867e5fa212a7ba37140cd3ad9879b768660040c1
+    policy_fingerprint_sha256: 642ecb0b6255c3d8943a4e9cbceed32dffd7bfbbca6f90bf44b117bcddc802d1
+    checkpoint_fingerprint_sha256: f4fb74c97d733dd96da23af82f6245211734cf7a06c639354da2c1091b67401f
+  - training_step: 50030
+    checkpoint: saved/experiments/sqrl_paper/seed42/pretrain_sac_async_v1/step_000000050030/agent
+    source_seeds: [7811, 7812]
+    actor_sha256: 6fb0c32cf8307541a9295bf59b35f24b50eb127fba05356ad137d8a9f5a19d99
+    actor_state_dict_sha256: d5c68b9953eb98247a2eee74b7ade92db830421878778e1740f30e2b90a3f125
+    policy_fingerprint_sha256: 0847d79bb49cd532f37094c4dfeb69675564cd23e9d6b1d20c8406846ccb6b8c
+    checkpoint_fingerprint_sha256: f80cf0865d28b7ccbd716522f31584e5f2724d234e6dfb45070eaf1f43c8b087
+  - training_step: 100359
+    checkpoint: saved/experiments/sqrl_paper/seed42/pretrain_sac_async_v1/step_000000100359/agent
+    source_seeds: [7821, 7822]
+    actor_sha256: 92a1a63dda234c2fca529b7e824ab7e2cb83389c90fe0257e694fb986b33b8d6
+    actor_state_dict_sha256: 74c475279f7547da6b964d08268e8935713cff1182df3ef1987a8e125703e2fb
+    policy_fingerprint_sha256: a6fbf86bd698a6e3c44feb8dcd2279a6560c741c6b4ab694ef3d83fe8c5f5974
+    checkpoint_fingerprint_sha256: 4336373ae7298a3d2c835bf3288d640949aa8c1fbdf152e78f99e6e95afe9900
+
+mature_recovery_policy:
+  training_step: 500000
+  checkpoint: saved/experiments/sqrl_paper/seed42/pretrain_sac_async_v1/step_000000500000/agent
+  actor_sha256: 958e2c4345aca511723e4b9299554c9f1594617322ad7d62c0ace84319cbbed0
+  actor_state_dict_sha256: 2074a3f00152df8e96cddf380623a9eb4bb63f84538dafca59cdf509f9559409
+  policy_fingerprint_sha256: f01e7cc36b9020631171c3dfe502d7426877aee0c33debd0a5c197206efc0908
+  checkpoint_fingerprint_sha256: 2597eeb238d586bdd895e436b0e814aae23677484878da1eba5d1258b06f97cc
+  action_semantics: deterministic_actor_mean_during_option
+  privileged_inputs: forbidden
+
+collection:
+  artifact_root: saved/qsafe_development/closed_loop_recovery_triage_v3
+  cohort_lock_filename: cohort-lock.json
+  admission_deployable_filename: admission-ledger-deployable.npz
+  admission_privileged_filename: admission-ledger-privileged.npz
+  discovery_filename: discovery-g384.npz
+  discovery_privileged_filename: discovery-g384-privileged.npz
+  audit_filename: audit-g384.npz
+  audit_privileged_filename: audit-g384-privileged.npz
+  selection_lock_filename: selection-lock.json
+  audit_consumed_filename: audit-consumed.json
+  groups_per_source_seed: 64
+  total_groups: 384
+  max_groups_per_trajectory: 1
+  max_episode_steps: 100
+  max_proposals_per_source_seed: 4096
+  max_source_trajectories_per_seed: 2048
+  rejected_proposal_cooldown_policy_steps: 5
+  settle_seconds: 0.05
+  source_impulse:
+    interval_policy_steps: 10
+    linear_std_mps: 1.0
+    angular_std_radps: 4.0
+  branch_impulse:
+    policy_steps: [24, 48, 72]
+    linear_std_mps: 0.0
+    angular_std_radps: 0.0
+  proposal_pre_screen:
+    require_not_failed: true
+    min_tilt_rad_inclusive: 0.10
+    max_height_m_inclusive: 0.32
+    boolean_rule: tilt_at_least_min_OR_height_at_most_max
+    base_height_is_privileged_sampling_only: true
+    future_runtime_input: forbidden
+  admission:
+    replicas: 32
+    horizon_policy_steps: 96
+    nominal_first_action: deterministic_early_actor_mean
+    continuation: stochastic_same_early_actor
+    branch_disturbance: zero
+    accept_min_falls_inclusive: 6
+    accept_max_falls_inclusive: 26
+    accepted_empirical_risk_interval: [0.1875, 0.8125]
+    seed_domain: admission_v3_disjoint
+    all_proposals_recorded: true
+    labels_used_in_effect_estimation: false
+  candidates:
+    protocol_version: qsafe.closed_loop_recovery_behaviors.v3
+    count: 9
+    nominal_index: 0
+    ordered_names:
+      - nominal_early_L1
+      - mature_actor_L10
+      - mature_actor_L25
+      - mature_actor_L50
+      - joint_brake_L10
+      - halfway_neutral_L10
+      - halfway_neutral_L25
+      - ramp_neutral_L25
+      - ramp_crouch_L25
+    behavior_steps_array: candidate_behavior_steps
+    behavior_override_steps: [0, 10, 25, 50, 10, 10, 25, 25, 25]
+    t0_nominal_semantics: deterministic_early_actor_mean
+    post_option_continuation: stochastic_same_early_actor
+    reselection_during_option: forbidden
+    q_neutral_per_leg_rad: [0.05, 0.70, -1.40]
+    q_crouch_per_leg_rad: [0.05, 0.90, -1.60]
+    halfway_neutral_formula: 0.5_times_latest_q_plus_0.5_times_q_neutral
+    ramp_max_delta_rad_per_joint_per_policy_step: 0.04
+    target_to_action: runtime_qpos_to_action
+    projection: unchanged_runtime_ActionApplier
+    kp: 60.0
+    kd: 5.0
+    max_joint_delta: null
+    use_action_filter: false
+    tie_priority: ordered_names
+  replica_partition:
+    schema_version: qsafe.physically_separate_replica_partition.v3
+    assignment_timing: before_candidate_outcomes
+    discovery_indices: {start_inclusive: 0, stop_exclusive: 64}
+    audit_indices: {start_inclusive: 64, stop_exclusive: 128}
+    discovery_replicas: 64
+    audit_replicas: 64
+    exhaustive: true
+    disjoint_seed_domains: true
+    physical_files: true
+  total_candidate_replicas: 128
+  total_candidate_branch_rollouts: 442368
+  max_candidate_policy_steps: 42467328
+  collection_order: complete_all_six_source_seed_shards_before_discovery_analysis
+
+firewall:
+  selection_uses: [admission_ledger, discovery]
+  selection_forbidden: [audit, parent_iteration_outcomes]
+  selection_lock_no_clobber: true
+  selected_global_candidate: minimum_equal_group_equal_seed_discovery_risk
+  global_exact_tie_break: locked_candidate_order
+  per_group_ties: uniform_expectation_all_discovery_minima
+  audit_requires_exact_selection_lock_hash: true
+  audit_consumed_marker_created_before_outcome_read: true
+  interrupted_audit_remains_consumed: true
+  audit_runner_up_policy: forbidden
+
+statistics:
+  group_weighting: equal_groups_within_seed_then_equal_six_source_seeds
+  policy_age_strata:
+    "25438": [7801, 7802]
+    "50030": [7811, 7812]
+    "100359": [7821, 7822]
+  bootstrap:
+    kind: hierarchical_policy_age_seed_then_trajectory_group
+    replicates: 50000
+    seed: 20260809
+    confidence: one_sided_0.95
+    resample_policy_age_strata: false
+    resample_source_seeds_within_stratum: true
+    resample_complete_groups_within_seed: true
+    resample_candidates: false
+    resample_replicas: false
+  reported_effect: audit_nominal_risk_minus_audit_intervention_risk
+  audit_labels: raw_unshrunk_binary_falls
+  pair_tie_score: 0.5
+  natural_frequency_weighting: forbidden
+
+triage_gates:
+  data:
+    independent_groups_exact: 384
+    unique_source_trajectories_exact: 384
+    groups_per_required_source_seed_exact: 64
+    required_source_seeds: [7801, 7802, 7811, 7812, 7821, 7822]
+    candidates_per_group_exact: 9
+    discovery_replicas_exact: 64
+    audit_replicas_exact: 64
+    horizon_policy_steps_exact: 96
+    admission_replicas_exact: 32
+    admission_falls_inclusive: [6, 26]
+    min_discovery_nominal_risk: 0.15
+    max_discovery_nominal_risk: 0.75
+    min_each_policy_age_discovery_nominal_risk: 0.10
+    max_each_policy_age_discovery_nominal_risk: 0.90
+    discovery_informativeness_checked_before_audit_open: true
+    zero_duplicate_state_fingerprints: true
+    zero_duplicate_trajectory_fingerprints: true
+  primary_global_backup:
+    min_audit_absolute_reduction: 0.05
+    min_one_sided_95_lcb_reduction: 0.03
+    require_each_policy_age_positive: true
+    min_positive_source_seeds: 6
+  conditional_state_dependent:
+    tested_only_if_primary_global_passes: true
+    min_audit_absolute_reduction: 0.05
+    min_one_sided_95_lcb_reduction: 0.03
+    min_incremental_reduction_over_global: 0.02
+    min_incremental_one_sided_95_lcb: 0.0
+    incremental_lcb_strictly_greater: true
+    min_discovery_to_audit_pair_agreement: 0.58
+    min_pair_agreement_one_sided_95_lcb: 0.55
+    max_discovery_minimizer_tie_fraction: 0.50
+    max_mean_winner_count: 2.0
+    require_each_policy_age_increment_positive: true
+    min_increment_positive_source_seeds: 6
+  no_headroom:
+    simultaneous_band: hierarchical_bootstrap_max_centered_error_nonstudentized
+    confidence: one_sided_0.95
+    joint_effect_vector: eight_fixed_candidates_plus_discovery_locked_per_state_rule
+    preserve_k9_crn_correlation: true
+    critical_value_formula: quantile_0.95_of_max_k_theta_hat_k_minus_theta_star_bk
+    candidate_ucb_formula: theta_hat_k_plus_common_critical_value
+    min_audit_nominal_risk_one_sided_95_lcb: 0.10
+    require_every_simultaneous_effect_ucb_below: 0.03
+    scope_limit: locked_K9_fixed_behaviors_and_locked_per_state_rule_only
+    decision: redesign_recovery_library_no_model_training
+  inconclusive:
+    condition: primary_fails_and_no_headroom_does_not_fire
+    decision: no_model_training_no_topup_no_audit_reuse
+
+decision_tree:
+  - if: data_gate_fails
+    then: stop_protocol_invalid_no_topup
+  - if: primary_global_backup_passes_and_conditional_state_dependent_passes
+    then: preregister_fresh_option_ranking_qsafe_protocol
+  - if: primary_global_backup_passes_and_conditional_state_dependent_fails
+    then: preregister_fresh_state_risk_qsafe_plus_fixed_backup_protocol
+  - if: primary_global_backup_fails_and_no_headroom_fires
+    then: redesign_recovery_library_before_model_training
+  - if: primary_global_backup_fails_and_no_headroom_does_not_fire
+    then: report_inconclusive_no_model_training
+
+authorization:
+  triage_pass_is_not_objective1_pass: true
+  triage_may_authorize_fresh_model_protocol_only: true
+  triage_data_may_train_future_model: false
+  selector_calibration_authorized: false
+  paired_closed_loop_authorized: false
+  online_training_authorized: false
+  phase2_authorized: false
