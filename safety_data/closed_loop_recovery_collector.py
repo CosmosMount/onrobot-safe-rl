@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 import numpy as np
 
@@ -95,6 +95,29 @@ _INJECTIVE_V4_STREAM_MAPPING = {
         "roles": ["admission", "discovery", "audit"],
         "identity": "proposal_index", "namespace": 3, "index": 0},
 }
+
+
+def seed_derivation_manifest(
+    *,
+    seed_domain: bytes,
+    seed_role_tags: Mapping[str, int] | Iterable[tuple[str, int]],
+    seed_algorithm: str,
+) -> dict[str, Any]:
+    """Build a fresh canonical manifest for a non-default seed contract."""
+    items = (
+        seed_role_tags.items()
+        if isinstance(seed_role_tags, Mapping)
+        else seed_role_tags
+    )
+    result = {
+        "domain_hex": seed_domain.hex(),
+        "role_tags": {name: int(value) for name, value in items},
+        "algorithm": seed_algorithm,
+    }
+    if seed_algorithm == _INJECTIVE_V4_SEED_ALGORITHM:
+        result["stream_mapping"] = copy.deepcopy(
+            _INJECTIVE_V4_STREAM_MAPPING)
+    return result
 
 
 def _canonical_hash(manifest: Mapping[str, Any], arrays: Mapping[str, Any]) -> str:
@@ -1007,15 +1030,11 @@ def _common_collection_manifest(
     if config.seed_domain != _V3_SEED_DOMAIN or config.seed_role_tags != (
             _V3_ROLE_TAG_ITEMS) or config.seed_algorithm != (
                 _SHA256_LOW63_SEED_ALGORITHM):
-        result["seed_derivation"] = {
-            "domain_hex": config.seed_domain.hex(),
-            "role_tags": {
-                name: int(value) for name, value in config.seed_role_tags},
-            "algorithm": config.seed_algorithm,
-        }
-        if config.seed_algorithm == _INJECTIVE_V4_SEED_ALGORITHM:
-            result["seed_derivation"]["stream_mapping"] = copy.deepcopy(
-                _INJECTIVE_V4_STREAM_MAPPING)
+        result["seed_derivation"] = seed_derivation_manifest(
+            seed_domain=config.seed_domain,
+            seed_role_tags=config.seed_role_tags,
+            seed_algorithm=config.seed_algorithm,
+        )
     return result
 
 
@@ -1623,4 +1642,5 @@ __all__ = [
     "merge_admission_privileged_views",
     "preflight_closed_loop_recovery_collection",
     "role_randomness",
+    "seed_derivation_manifest",
 ]

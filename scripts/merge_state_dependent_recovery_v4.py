@@ -31,10 +31,9 @@ from safety_data.merge import merge_grouped_shards, merge_privileged_shards
 from safety_data.schema import GroupedBranchDataset, PrivilegedBranchView
 from safety_data.state_dependent_recovery_v4 import (
     PROTOCOL_PATH,
-    SEED_DOMAIN,
-    SEED_ROLE_TAGS,
     SOURCE_SEEDS,
     create_state_dependent_selection_lock,
+    expected_v4_seed_manifest,
     load_state_dependent_recovery_v4_protocol,
     resume_state_dependent_discovery_failure_report,
     validate_state_dependent_collection_readiness,
@@ -213,8 +212,21 @@ def _merge_admission(
     return report
 
 
-def _seed_manifest() -> dict[str, Any]:
-    return {"domain_hex": SEED_DOMAIN.hex(), "role_tags": dict(SEED_ROLE_TAGS)}
+def _require_exact_v4_discovery_rng_split(
+    manifest: dict[str, Any],
+) -> None:
+    collection_protocol = manifest.get("collection_protocol")
+    if not isinstance(collection_protocol, dict) or (
+            collection_protocol.get("version") !=
+            "qsafe.state_dependent_recovery.collection.v4_stage_a"):
+        raise ValueError("discovery leaf does not bind the V4 collection version")
+    if collection_protocol.get(
+            "seed_derivation") != expected_v4_seed_manifest():
+        raise ValueError(
+            "discovery leaf does not bind the exact V4 RNG manifest")
+    if manifest.get(
+            "split") != "state_dependent_recovery_v4_stage_a_discovery":
+        raise ValueError("discovery leaf does not bind the exact V4 split")
 
 
 def _merge_discovery(
@@ -255,13 +267,7 @@ def _merge_discovery(
             raise ValueError("discovery readiness path order drifted")
         dataset = GroupedBranchDataset.load(path)
         view = PrivilegedBranchView.load(privileged_path, deployable=dataset)
-        collection_protocol = dataset.manifest.get("collection_protocol", {})
-        if collection_protocol.get("seed_derivation") != _seed_manifest() or (
-                collection_protocol.get("version") !=
-                "qsafe.state_dependent_recovery.collection.v4_stage_a") or (
-                    dataset.manifest.get("split") !=
-                    "state_dependent_recovery_v4_stage_a_discovery"):
-            raise ValueError("discovery leaf does not bind the V4 RNG/split")
+        _require_exact_v4_discovery_rng_split(dataset.manifest)
         if dataset.group_count != 64 or dataset.candidate_count != 9 or (
                 dataset.replica_count != 64) or dataset.horizon_steps != 96 or (
                     not np.all(np.asarray(dataset["source_seed"]) == seed)):

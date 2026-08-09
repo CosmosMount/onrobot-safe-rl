@@ -28,10 +28,10 @@ import yaml
 
 from safety_data.closed_loop_recovery_collector import (
     AdmissionLedger,
-    _INJECTIVE_V4_STREAM_MAPPING,
     _derived_seed,
     canonical_protocol_sha256,
     role_randomness,
+    seed_derivation_manifest,
 )
 import safety_data.closed_loop_recovery_triage as _v3
 from safety_data.recovery_behaviors import RecoveryBehaviorConfig
@@ -1558,14 +1558,13 @@ def validate_state_dependent_collection_readiness(
     return _json_copy(result, "collection readiness")
 
 
-def _expected_seed_manifest() -> dict[str, Any]:
-    return {
-        "domain_hex": SEED_DOMAIN.hex(),
-        "role_tags": dict(SEED_ROLE_TAGS),
-        "algorithm": SEED_ALGORITHM,
-        "stream_mapping": _json_copy(
-            _INJECTIVE_V4_STREAM_MAPPING, "V4 seed stream mapping"),
-    }
+def expected_v4_seed_manifest() -> dict[str, Any]:
+    """Return a fresh copy of the exact four-field V4 RNG manifest."""
+    return seed_derivation_manifest(
+        seed_domain=SEED_DOMAIN,
+        seed_role_tags=SEED_ROLE_TAGS,
+        seed_algorithm=SEED_ALGORITHM,
+    )
 
 
 def _validate_admission_seed_leaf(
@@ -1667,7 +1666,7 @@ def _validate_discovery_seed_contract_before_lock(
                    "qsafe.state_dependent_recovery.collection.v4_stage_a",
                    "discovery collection version")
     _require_equal(collection_protocol.get("seed_derivation"),
-                   _expected_seed_manifest(),
+                   expected_v4_seed_manifest(),
                    "discovery seed-derivation manifest")
     _require_equal(discovery.manifest.get("split"),
                    "state_dependent_recovery_v4_stage_a_discovery",
@@ -3109,6 +3108,7 @@ __all__ = [
     "consume_and_evaluate_state_dependent_audit",
     "create_state_dependent_selection_lock",
     "evaluate_state_dependent_stage_a",
+    "expected_v4_seed_manifest",
     "load_state_dependent_recovery_v4_protocol",
     "resume_state_dependent_discovery_failure_report",
     "v4_seed",
