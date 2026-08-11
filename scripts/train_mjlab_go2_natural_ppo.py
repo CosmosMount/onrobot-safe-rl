@@ -38,6 +38,18 @@ def _git_head(path: Path) -> str:
     ).stdout.strip()
 
 
+def _git_status(path: Path) -> bytes:
+    return subprocess.run(
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        cwd=path, check=True, capture_output=True,
+    ).stdout
+
+
+def require_clean_production_worktree(exposure: int, status: bytes) -> None:
+    if exposure == 30_000_000 and status:
+        raise RuntimeError("30M production PPO requires a clean generator worktree")
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -57,6 +69,8 @@ def main() -> None:
     steps_per_iteration = args.envs * args.rollout_steps
     if args.exposure <= 0 or args.exposure % steps_per_iteration:
         raise ValueError("exposure must be exactly divisible by envs*rollout-steps")
+    require_clean_production_worktree(
+        args.exposure, _git_status(REPOSITORY_ROOT))
 
     import mjlab.tasks  # noqa: F401
     import src.tasks  # type: ignore  # noqa: F401

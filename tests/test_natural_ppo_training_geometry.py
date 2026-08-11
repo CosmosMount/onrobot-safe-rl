@@ -4,10 +4,19 @@ import unittest
 
 import yaml
 
-from scripts.train_mjlab_go2_natural_ppo import CHECKPOINT_EXPOSURES
+from scripts.train_mjlab_go2_natural_ppo import (
+    CHECKPOINT_EXPOSURES,
+    require_clean_production_worktree,
+)
 
 
 class NaturalPpoTrainingGeometryTest(unittest.TestCase):
+    def test_only_fixed_30m_production_requires_clean_worktree(self):
+        require_clean_production_worktree(1_000_000, b"dirty")
+        require_clean_production_worktree(30_000_000, b"")
+        with self.assertRaisesRegex(RuntimeError, "clean generator"):
+            require_clean_production_worktree(30_000_000, b"dirty")
+
     def test_production_geometry_hits_every_checkpoint_exactly(self):
         steps_per_iteration = 2000 * 125
         for exposure in CHECKPOINT_EXPOSURES:

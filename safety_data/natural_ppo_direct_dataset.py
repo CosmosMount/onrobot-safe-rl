@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
 from typing import Any
 
 import numpy as np
@@ -33,6 +34,13 @@ def _identity(namespace: bytes, *values: str) -> str:
 
 def _decode(value: np.generic) -> str:
     return bytes(value).decode("ascii")
+
+
+def _git_head() -> str:
+    root = Path(__file__).resolve().parents[1]
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True,
+        capture_output=True, text=True).stdout.strip()
 
 
 def _publish_no_clobber(temporary: Path, destination: Path) -> None:
@@ -261,6 +269,7 @@ def compile_direct_qsafe_dataset(
         "match_file_sha256": _sha256(pairs_path),
         "dataset_file": output.name,
         "dataset_file_sha256": _sha256(output),
+        "compiler_commit": _git_head(),
         "pair_count": pair_count,
         "sample_count": 2 * pair_count,
         "positive_count": pair_count,
