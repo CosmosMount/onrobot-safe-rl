@@ -110,7 +110,9 @@ def merge_grouped_shards(
     items = list(datasets)
     if len(items) < 2:
         raise ValueError("at least two grouped shards are required")
-    reports = [dataset.validate() for dataset in items]
+    reports = [
+        dataset.validate(summarize_outcomes=False) for dataset in items
+    ]
     content_hashes = [
         _verified_content_hash(
             dataset.manifest, report["content_sha256"],
@@ -170,7 +172,7 @@ def merge_grouped_shards(
         for index, dataset in enumerate(items)
     ]
     combined = GroupedBranchDataset(manifest, arrays)
-    combined.validate(verify_hash=False)
+    combined.validate(verify_hash=False, summarize_outcomes=False)
     return combined
 
 
@@ -184,7 +186,9 @@ def merge_privileged_shards(
     deployable = list(deployable_shards)
     if len(privileged) != len(deployable) or len(privileged) < 2:
         raise ValueError("privileged and deployable shard lists must align")
-    deployable_reports = [dataset.validate() for dataset in deployable]
+    deployable_reports = [
+        dataset.validate(summarize_outcomes=False) for dataset in deployable
+    ]
     deployable_hashes = [
         _verified_content_hash(
             dataset.manifest, report["content_sha256"],
@@ -203,7 +207,8 @@ def merge_privileged_shards(
         )
         privileged_reports.append(report)
 
-    combined_report = combined_deployable.validate(verify_hash=False)
+    combined_report = combined_deployable.validate(
+        verify_hash=False, summarize_outcomes=False)
     provenance = combined_deployable.manifest.get("shards")
     expected_provenance = [
         (content_hash, dataset.manifest["generator_commit"])

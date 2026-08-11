@@ -397,7 +397,8 @@ class AdmissionLedger:
             "admission_perturbation_seed", "fall", "first_failure_step",
             "accepted", "accepted_group_index", "decision_reason",
         }
-        if set(self.arrays) != required:
+        optional = {"admission_candidate_seed"}
+        if not required.issubset(self.arrays) or set(self.arrays) - required - optional:
             raise ValueError(
                 f"admission ledger fields differ: missing={required-set(self.arrays)}, "
                 f"extra={set(self.arrays)-required}")
@@ -534,6 +535,19 @@ class AdmissionLedger:
         ])
         if len(np.unique(combined_seeds)) != combined_seeds.size:
             raise ValueError("admission RNG namespaces must be disjoint")
+        if "admission_candidate_seed" in self.arrays:
+            candidate_seed = np.asarray(self.arrays["admission_candidate_seed"])
+            if candidate_seed.shape != (proposals,) or candidate_seed.dtype.kind not in "iu" or np.any(candidate_seed < 0):
+                raise ValueError(
+                    "admission_candidate_seed must be a nonnegative integer [P] vector")
+            if len(np.unique(candidate_seed)) != proposals:
+                raise ValueError("admission candidate seeds must be globally unique")
+            combined_with_candidate = np.concatenate([
+                combined_seeds, candidate_seed.astype(np.uint64, copy=False)
+            ])
+            if len(np.unique(combined_with_candidate)) != len(combined_with_candidate):
+                raise ValueError(
+                    "admission candidate seeds overlap another admission namespace")
         accepted = np.asarray(self.arrays["accepted"])
         if accepted.dtype.kind not in "biu" or not np.all(
                 np.isin(accepted, (0, 1, False, True))):
@@ -601,7 +615,15 @@ class AdmissionLedger:
         try:
             source = assert_development_path(
                 require_workflow_authorized_or_safe_input(
-                    path, allowed_roles=("admission",)))
+                    path, allowed_roles=(
+                        "admission",
+                        "stage_b_fit_admission",
+                        "stage_b_probability_calibration_admission",
+                        "stage_b_uncertainty_calibration_admission",
+                        "stage_b_selector_calibration_admission",
+                        "stage_b_model_test_admission",
+                        "stage_b_model_test_producer_admission",
+                    )))
         except ProtectedEvidencePathError as exc:
             raise ValueError(str(exc)) from exc
         with np.load(source, allow_pickle=False) as payload:
@@ -904,6 +926,13 @@ def merge_admission_ledgers(
         combined = np.concatenate(flattened)
         if len(np.unique(combined)) != combined.size:
             raise ValueError(f"admission shards overlap on {name}")
+    if all("admission_candidate_seed" in item.arrays for item in items):
+        combined = np.concatenate([
+            np.asarray(item["admission_candidate_seed"]).reshape(-1)
+            for item in items
+        ])
+        if len(np.unique(combined)) != combined.size:
+            raise ValueError("admission shards overlap on admission_candidate_seed")
     arrays = {
         name: np.concatenate([np.asarray(item[name]) for item in items], axis=0)
         for name in sorted(items[0].arrays)
@@ -1343,7 +1372,7 @@ def collect_preflighted_closed_loop_recovery_triage(
                 f"{config.trajectory_id_prefix}:source-{config.source_seed}:"
                 f"trajectory-{episode_number}")
             proposal_id = f"{trajectory_id}:step-{episode_step}"
-            admission_bundle, _ = role_randomness(
+            admission_bundle, admission_randomness = role_randomness(
                 source_seed=config.source_seed,
                 proposal_index=proposal_index,
                 replicas=config.admission_replicas,
@@ -1385,6 +1414,7 @@ def collect_preflighted_closed_loop_recovery_triage(
                 "admission_crn_id": admission.crn_id,
                 "admission_rollout_seed": admission.rollout_seed,
                 "admission_perturbation_seed": admission.perturbation_seed,
+                "admission_candidate_seed": admission_randomness.candidate_seed,
                 "fall": admission.fall,
                 "first_failure_step": admission.first_failure_step,
                 "accepted": accepted,
