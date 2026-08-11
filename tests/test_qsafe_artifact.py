@@ -170,6 +170,37 @@ class QSafeArtifactTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "hash mismatch"):
                 load_qsafe_artifact(output)
 
+    def test_publish_race_cannot_replace_new_empty_destination(self):
+        config, trained = self._trained()
+        normalization = NormalizationStats(
+            np.zeros(46, dtype=np.float32),
+            np.ones(46, dtype=np.float32),
+        )
+        training = QSafeTrainingConfig(
+            epochs=2, ensemble_members=2, calibration_steps=0
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "development-artifact"
+
+            def race() -> None:
+                output.mkdir()
+                (output / "owner.txt").write_text("other-writer\n")
+
+            with self.assertRaises(FileExistsError):
+                save_qsafe_artifact(
+                    output,
+                    trained,
+                    normalization,
+                    config,
+                    training,
+                    QSafeLossConfig(),
+                    provenance={"train_content_sha256": "a" * 64},
+                    pre_publish_check=race,
+                )
+            self.assertEqual(
+                (output / "owner.txt").read_text(), "other-writer\n"
+            )
+
     def test_normalization_must_be_covered_by_component_hash_manifest(self):
         config, trained = self._trained()
         with tempfile.TemporaryDirectory() as directory:

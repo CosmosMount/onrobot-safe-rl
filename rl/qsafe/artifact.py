@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import ctypes
+import errno
 import hashlib
 import json
 import math
@@ -555,6 +557,49 @@ def _normalization_fit_provenance(
     }
 
 
+def _rename_directory_no_replace(source: Path, target: Path) -> None:
+    """Atomically publish one directory without a check/replace race.
+
+    Stage-B's claim artifact cannot use ``os.replace``: another process could
+    create an empty destination after the pre-check and have it silently
+    replaced.  Linux ``renameat2(RENAME_NOREPLACE)`` makes nonexistence part of
+    the atomic rename operation.  Failing to obtain that primitive fails
+    closed instead of weakening publication semantics.
+    """
+    renameat2 = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
+    if renameat2 is None:  # pragma: no cover - supported Linux/glibc runtime.
+        raise RuntimeError(
+            "atomic no-replace directory publication is unavailable"
+        )
+    renameat2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        -100, os.fsencode(source), -100, os.fsencode(target), 1
+    )
+    if result != 0:
+        error = ctypes.get_errno()
+        if error in (errno.EEXIST, errno.ENOTEMPTY):
+            raise FileExistsError(
+                error, "refusing to overwrite Q_safe artifact", target
+            )
+        if error in (errno.ENOSYS, errno.EINVAL):
+            raise RuntimeError(
+                "atomic no-replace directory publication is unsupported"
+            )
+        raise OSError(error, os.strerror(error), target)
+    directory_fd = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def _npz_scalar_text(payload: Any, name: str) -> str:
     value = np.asarray(payload[name])
     if value.shape != () or value.dtype.kind != "U":
@@ -658,7 +703,7 @@ def save_qsafe_artifact(
         )
         if pre_publish_check is not None:
             pre_publish_check()
-        os.replace(temporary, output)
+        _rename_directory_no_replace(temporary, output)
     except Exception:
         if temporary.exists():
             shutil.rmtree(temporary)

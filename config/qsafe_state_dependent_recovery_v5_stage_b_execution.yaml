@@ -1,0 +1,257 @@
+# Result-blind operational supplement for V5 Stage B.
+#
+# The parent V5 protocol remains byte-immutable.  This file resolves only the
+# execution details that must be fixed before the first Stage-B actor or branch
+# outcome exists.  A clean implementation HEAD is captured by the first
+# no-clobber actor-bank attempt and becomes the generator identity for every
+# Stage-B artifact.
+protocol_schema_version: 1
+protocol_name: objective1_state_dependent_recovery_qsafe_v5_stage_b_execution
+created_at: "2026-08-10T12:00:00+08:00"
+scope: result_blind_stage_b_execution_lock
+claim_eligible: false
+
+authorization:
+  parent_protocol_path: config/qsafe_state_dependent_recovery_v5.yaml
+  parent_protocol_file_sha256: f4c3e796004d124574df3d35ef344f6a4a766d9099acb5792c1d78b8361b49b0
+  parent_protocol_contract_sha256: 1e8667aa17ab361c323771d5deb51258644cce37bd26bed00599ca08d7545ea5
+  stage_a_report_relative_path: state-dependent-recovery-stage-a-report.json
+  stage_a_report_sha256: e7ea56546bf8006cfc4d8ade4f5b2c26dbfcbc132e0568e054a98c2be3174b2e
+  stage_a_required_decision: authorize_stage_B_only
+  stage_a_required_pass: true
+  stage_a_disposition_commit: 959605d621163f2122d6947bbb8fd657a51d5f7f
+  recovery_library_fingerprint_sha256: fcfb1fa541acf316f87dacf82b1fdeb9188d7a4b9df7f69544b567fb2c5d1045
+  first_attempt_generator_rule: clean_HEAD_contains_execution_lock_implementation_and_tests
+  generator_commit_capture: first_actor_bank_attempt_before_any_training_transition
+  generator_commit_reuse: exact_same_commit_all_stage_b_operations
+
+protection:
+  development_artifact_root: saved/qsafe_development/state_dependent_recovery_v5/stage-b
+  parent_v5_artifacts_as_stage_b_training_inputs: forbidden
+  v4_artifacts_as_stage_b_inputs: forbidden
+  old_generic_qsafe_train_or_calibrate_cli: forbidden
+  result_dependent_checkpoint_filtering: forbidden
+  optional_stopping: forbidden
+  source_or_group_top_up: forbidden
+  publication: atomic_no_clobber_report_last
+  all_outcome_roles_assigned_before_first_candidate_outcome: true
+
+actor_bank:
+  schema_version: qsafe.state_dependent_recovery_v5.stage_b_actor_bank.v1
+  policy_config_path: config/go2_50hz_sqrl_paper_sac_pretrain.yaml
+  policy_config_sha256: ebf312ef27f64326a6ef478e0f86273af9f9cbaf61dd09b632fb10868524f726
+  training_seeds_exact: [43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56]
+  checkpoint_steps_exact: [25000, 50000, 100000]
+  checkpoint_count_exact: 42
+  snapshot_kind: policy_only
+  exposure_counter: committed_environment_transitions
+  snapshot_timing: after_transition_and_scheduled_update_before_next_transition
+  nearby_or_episode_boundary_checkpoint_substitution: forbidden
+  retain_every_seed_and_checkpoint_without_return_or_fall_filter: true
+  checkpoint_path_template: stage-b/actor-bank/seed-{training_seed}/step-{checkpoint_step}/agent
+  attempt_marker_path: stage-b/actor-bank-attempt-started.json
+  entry_required_fields:
+    - actor_training_seed
+    - checkpoint_step
+    - checkpoint_path
+    - actor_sha256
+    - actor_state_dict_sha256
+    - policy_fingerprint_sha256
+    - checkpoint_fingerprint_sha256
+    - policy_config_sha256
+    - generator_commit
+  manifest_path: stage-b/actor-bank-manifest.json
+
+role_execution:
+  role_order: [fit, probability_calibration, uncertainty_calibration, selector_calibration, model_test]
+  source_assignment: inherit_exact_parent_stage_B_actor_source_assignment
+  source_trajectory_policy: one_accepted_state_per_complete_source_trajectory
+  proposal_cap_per_source_seed: 4096
+  admission_falls_inclusive: [6, 26]
+  admission_replicas: 32
+  label_replicas:
+    fit: 32
+    probability_calibration: 32
+    uncertainty_calibration: 32
+    selector_calibration: 32
+    model_test: 64
+  label_candidate_count: 9
+  label_horizon_policy_steps: 96
+  role_attempt_marker: inherit_parent_role_path_schema_attempt_marker
+  source_auxiliary_path_templates:
+    attempt_marker: stage-b/{role_directory}/source-{source_seed}.attempt-started.json
+    step_log: stage-b/{role_directory}/source-{source_seed}.steps.jsonl
+    report: stage-b/{role_directory}/source-{source_seed}.collection-report.json
+  leaf_publication_order: [attempt_marker, admission, label, privileged_label, step_log, collection_manifest, completion_marker, report]
+  report_outcome_summary: forbidden
+  merge_outcome_summary:
+    fit: forbidden
+    probability_calibration: forbidden
+    uncertainty_calibration: forbidden
+    selector_calibration: forbidden
+    model_test: forbidden
+  model_test_merge_mode: blind_identity_and_byte_commitment_only
+
+seed_derivation:
+  algorithm: high_bit_then_domain_low15_then_14_8_18_2_6_bitpack_v1
+  packed_field_order: [high_bit, domain_prefix, source_seed, role_tag, identity, namespace, index]
+  packed_field_width_bits: [1, 15, 14, 8, 18, 2, 6]
+  production_caps_exclusive: {source_seed: 16384, role_tag: 256, identity: 262144, namespace: 4, index: 64}
+  high_bit: 1
+  role_tags: {source_reset: 110, source_impulse: 111, source_action: 112, admission: 120, label: 130}
+  source_streams_use: role_admission_domain
+  label_streams_use: role_label_domain
+  stream_mapping:
+    source_reset_rng: {role: source_reset, identity: episode_number, namespace: 0, index: 0}
+    episode_id: {role: source_reset, identity: episode_number, namespace: 1, index: 0}
+    source_impulse_rng: {role: source_impulse, identity: episode_number_times_max_episode_steps_plus_episode_step, namespace: 0, index: 0}
+    source_action_rng: {role: source_action, identity: episode_number_times_max_episode_steps_plus_episode_step, namespace: 0, index: 0}
+    admission_crn_id: {role: admission, identity: proposal_index, namespace: 0, index: replica_index}
+    admission_rollout_seed: {role: admission, identity: proposal_index, namespace: 1, index: replica_index}
+    admission_perturbation_seed: {role: admission, identity: proposal_index, namespace: 2, index: replica_index}
+    admission_candidate_seed: {role: admission, identity: proposal_index, namespace: 3, index: 0}
+    label_crn_id: {role: label, identity: proposal_index, namespace: 0, index: replica_index}
+    label_rollout_seed: {role: label, identity: proposal_index, namespace: 1, index: replica_index}
+    label_perturbation_seed: {role: label, identity: proposal_index, namespace: 2, index: replica_index}
+    label_candidate_seed: {role: label, identity: proposal_index, namespace: 3, index: 0}
+  domains:
+    fit:
+      admission: {literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_b_fit_admission\\0", sha256_prefix_low15: 15295}
+      label: {literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_b_fit_label\\0", sha256_prefix_low15: 4157}
+    probability_calibration:
+      admission: {literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_b_probability_calibration_admission\\0", sha256_prefix_low15: 30411}
+      label: {literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_b_probability_calibration_label\\0", sha256_prefix_low15: 24324}
+    uncertainty_calibration:
+      admission: {literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_b_uncertainty_calibration_admission\\0", sha256_prefix_low15: 32283}
+      label: {literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_b_uncertainty_calibration_label\\0", sha256_prefix_low15: 4139}
+    selector_calibration:
+      admission: {literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_b_selector_calibration_admission\\0", sha256_prefix_low15: 32430}
+      label: {literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_b_selector_calibration_label\\0", sha256_prefix_low15: 22370}
+    model_test:
+      admission: {literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_b_model_test_admission\\0", sha256_prefix_low15: 4704}
+      label: {literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_stage_b_model_test_label\\0", sha256_prefix_low15: 1103}
+  all_ten_domain_prefixes_pairwise_distinct: true
+
+split_and_normalization:
+  pairwise_role_pairs_exact: 10
+  collision_dimensions: [policy_training_seed, actor_checkpoint_sha256, actor_state_dict_sha256, policy_fingerprint_sha256, checkpoint_fingerprint_sha256, state_fingerprint_sha256, trajectory_fingerprint_sha256, crn_id, rollout_seed, perturbation_seed, candidate_seed]
+  zero_collisions_required: true
+  proof_may_read_outcome_values: false
+  proof_publication_path: stage-b/stage-b-split-disjointness-report.json
+  proof_publication_timing: blind_producer_after_model_test_merge_before_model_test_role_report
+  model_test_identity_commitment_source: in_memory_merged_identity_columns_and_staged_label_byte_sha256
+  proof_binds_all_five_aggregate_label_file_and_content_sha256: true
+  model_test_role_report_published_after_proof_revokes_producer: true
+  commitment_compiler_reads_model_test_role_report_only: true
+  normalization_role: fit
+  normalization_population: complete_fit_groups_only
+  normalization_weighting: one_row_per_group_candidate_descriptor_no_outcome_weighting
+  normalization_float_accumulator: float64
+  normalization_std: population_ddof0
+  normalization_std_floor: 0.000001
+  normalization_published_dtype: float32
+  normalization_frozen_before_probability_calibration: true
+
+model_test_firewall:
+  commitment_schema_version: qsafe.state_dependent_recovery_v5.stage_b_model_test_commitment.v1
+  commitment_before_normalization_or_model_fit: true
+  commitment_inputs: [outcome_free_model_test_report, producer_supplied_path_and_sha256_commitments]
+  pre_consumption_allowed_probe: model_test_report_only
+  pre_consumption_forbidden_operations: [resolve, exists, lexists, lstat, stat, open, mmap, byte_hash, archive_map, numpy_load, schema_load]
+  prerequisite_frozen_artifacts:
+    - actor_bank_manifest
+    - split_disjointness_report
+    - normalization_report
+    - qsafe_artifact
+    - probability_calibration_report
+    - uncertainty_calibration_report
+    - selector_search_report
+    - recovery_selector_bundle
+    - matched_random_placebo_bundle
+  consumed_marker_schema_version: qsafe.state_dependent_recovery_v5.stage_b_model_test_consumed.v1
+  consumed_marker_publication: atomic_no_clobber_before_first_forbidden_operation
+  consumed_marker_binds: [commitment_sha256, all_prerequisite_artifact_sha256, evaluator_clean_commit, parent_protocol_sha256, execution_lock_sha256]
+  crash_after_consumed_marker: permanently_consumed_stage_b_failure_no_rerun
+  rerun_or_replacement_model_test: forbidden
+
+conformal:
+  stable_row_order: actor_training_seed_source_seed_trajectory_fingerprint_group_id_candidate_index
+  empirical_risk: equal_replica_mean_per_complete_group_candidate
+  risk_score: empirical_risk_k_minus_temperature_scaled_ensemble_mean_risk_k
+  benefit_score: predicted_nominal_minus_candidate_benefit_minus_empirical_nominal_minus_candidate_benefit
+  nominal_score: predicted_nominal_risk_minus_empirical_nominal_risk
+  nonnominal_candidate_indices: [1, 2, 3, 4, 5, 6, 7, 8]
+  risk_family_alpha: 0.05
+  benefit_family_alpha: 0.05
+  per_option_alpha: 0.00625
+  nominal_alpha: 0.05
+  rank: one_based_min_n_ceil_n_plus_1_times_1_minus_alpha
+  ties: stable_sorted_value_at_exact_rank
+  offsets_remain_signed: true
+  risk_clip: [0.0, 1.0]
+  benefit_clip: [-1.0, 1.0]
+
+selector_search_bootstrap:
+  grid_iteration_order: nominal_threshold_outer_then_benefit_threshold_then_max_risk_threshold_inner
+  grid_points_exact: 100
+  statistic_weighting: equal_actor_then_equal_source_within_actor_then_equal_complete_group
+  resampling:
+    outer: sample_actor_training_seeds_with_replacement_same_count
+    middle: retain_every_registered_source_stratum_for_each_sampled_actor
+    inner: sample_complete_trajectory_groups_with_replacement_within_source_same_count
+  replicates: 50000
+  rng: numpy_PCG64
+  seed: 20260811
+  simultaneous_root: max_over_grid_of_observed_reduction_minus_bootstrap_reduction
+  simultaneous_critical_quantile: 0.95
+  quantile_method: linear
+  lower_bound: observed_reduction_minus_simultaneous_critical_value
+  feasibility: point_reduction_gte_0.03_and_simultaneous_lcb_gt_0_and_intervention_rate_lte_0.35
+  selection_order: largest_simultaneous_lcb_then_lower_intervention_rate_then_machine_grid_order
+
+placebo:
+  fit_role: selector_calibration
+  fit_after_selector_frozen: true
+  outcome_columns_read: forbidden
+  nominal_risk_value: calibrated_conformal_nominal_risk_lcb
+  nominal_risk_bin_edges: numpy_linear_quantiles_0_to_1_in_0.1_steps_with_interior_searchsorted_right
+  repeated_edge_bins: permitted_empty
+  first_action_distance_value: requested_action_rms_delta_from_nominal
+  distance_edges: numpy_linear_quantiles_over_all_support_eligible_nonnominal_options_at_0_0.25_0.5_0.75_1
+  distance_bin_assignment: interior_searchsorted_right_clipped_0_to_3
+  duration_order: [10, 25, 50]
+  table_cell_order: risk_bin_then_duration_then_distance_bin
+  target: frozen_qsafe_selector_decision_distribution
+  objective_order: [absolute_intervention_rate_error, duration_histogram_total_variation, first_action_distance_ks]
+  ties: lexicographic_table_order
+  runtime_cell_draw: preassigned_counter_based_numpy_PCG64
+  rng_domain_literal_ascii_escaped: "qsafe_state_dependent_recovery_v4_placebo\\0"
+  rng_seed_payload: domain_then_source_seed_u64le_then_group_fingerprint_raw32_then_draw_index_u64le
+  rng_seed_integer: sha256_payload_as_uint256_little_endian
+  option_draw: uniform_over_current_state_eligible_options_in_sampled_duration_distance_cell
+  empty_cell: deterministic_abstain_without_fallback
+  max_intervention_rate_mismatch: 0.02
+  max_duration_total_variation: 0.05
+  max_action_distance_ks: 0.10
+
+model_test_statistics:
+  stable_weighting: equal_actor_then_equal_source_within_actor_then_equal_complete_group
+  bootstrap_resampling: same_as_selector_search_bootstrap
+  replicates: 50000
+  rng: numpy_PCG64
+  seed: 20260812
+  quantile_method: linear
+  pair_accuracy_lcb: percentile_0.025_two_sided_95_lower_endpoint
+  top1_reduction_lcb: percentile_0.05_one_sided_95_lower_bound
+  frozen_selector_reduction_lcb: percentile_0.05_one_sided_95_lower_bound
+  strong_pair_gap_inclusive: 0.25
+  empirical_pair_ties: excluded
+  predicted_pair_ties: half_credit
+  ece_bins: 10_stable_equal_mass_bins
+  ece_weighting: equal_group_mass_divided_equally_across_all_K9_candidates
+  oracle_gap_capture_zero_or_negative_denominator: fail
+  directional_subgroups: [three_checkpoint_ages, four_actor_training_seeds, twelve_source_seeds]
+  outcome_driven_threshold_or_selector_change: forbidden
+  pass_authorizes: stage_C_only
+  objective1_pass_after_stage_b: false
+  phase2_authorized_after_stage_b: false

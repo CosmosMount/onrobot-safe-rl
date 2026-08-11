@@ -14,6 +14,12 @@ Active preregistration: `config/qsafe_state_dependent_recovery_v5.yaml`
 
 Active execution plan: `QSAFE_PHASE1_STATE_DEPENDENT_RECOVERY_V5_PLAN.md`
 
+Active Stage-B implementation plan:
+`QSAFE_PHASE1_STATE_DEPENDENT_RECOVERY_V5_STAGE_B_PLAN.md`
+
+Result-blind Stage-B execution supplement:
+`config/qsafe_state_dependent_recovery_v5_stage_b_execution.yaml`
+
 Branch: `codex/qsafe-evidence-pipeline`
 
 ## 1. Objective and ordering constraint
@@ -87,7 +93,7 @@ state-risk V(s)   predictive auxiliary heads
                     |
        ensemble mean + epistemic uncertainty
                     |
- state trigger + support + reward-Q + benefit-LCB gates
+ state trigger + support + conformal risk/benefit gates
                     |
        repeated closed-loop selection at 50 Hz
 ```
@@ -105,7 +111,7 @@ The selector intervenes only when all conditions hold:
 1. the state-risk trigger says intervention is warranted;
 2. candidate action is inside measured behavior support;
 3. the lower confidence bound on benefit is positive;
-4. reward Q remains within a preregistered nominal margin;
+4. ensemble support uncertainty remains within its preregistered limit;
 5. action/q_send change satisfies local RMS and slew constraints.
 
 If no candidate passes, it abstains. It never substitutes “minimum predicted risk” merely because a minimum exists.

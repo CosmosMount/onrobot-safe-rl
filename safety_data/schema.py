@@ -231,6 +231,22 @@ def _require_content_hash(manifest: Mapping[str, Any]) -> str:
     return value
 
 
+def _mixed_outcome_fraction(
+    fall_bool: np.ndarray,
+    candidate_mask: np.ndarray,
+) -> float:
+    """Compute the optional candidate-outcome diagnostic.
+
+    Integrity-only writers and Stage-B evidence plumbing deliberately skip
+    this helper.  Keeping it separate makes that no-summary boundary both
+    explicit and regression-testable.
+    """
+    return float(np.mean([
+        len(np.unique(np.mean(fall_bool[g, candidate_mask[g]], axis=1))) > 1
+        for g in range(len(fall_bool))
+    ]))
+
+
 @dataclass
 class GroupedBranchDataset:
     """A deployable-view dataset whose independent unit is one state group."""
@@ -265,7 +281,12 @@ class GroupedBranchDataset:
     def __getitem__(self, name: str) -> np.ndarray:
         return self.arrays[name]
 
-    def validate(self, *, verify_hash: bool = True) -> dict[str, Any]:
+    def validate(
+        self,
+        *,
+        verify_hash: bool = True,
+        summarize_outcomes: bool = True,
+    ) -> dict[str, Any]:
         missing_manifest = sorted(set(REQUIRED_MANIFEST_KEYS) - self.manifest.keys())
         if missing_manifest:
             raise DatasetValidationError(
@@ -428,6 +449,39 @@ class GroupedBranchDataset:
         if len(set(trajectory_steps)) != group_count:
             raise DatasetValidationError(
                 "(trajectory_id, episode_step) must uniquely identify a group")
+
+        trajectory_fingerprint = self.arrays.get(
+            "trajectory_fingerprint_sha256")
+        trajectory_contract = self.manifest.get(
+            "collection_protocol", {}).get("trajectory_fingerprint_contract")
+        expected_trajectory_contract = (
+            "sha256_compound_post_settle_pre_source_trajectory_snapshot_v1"
+        )
+        if trajectory_fingerprint is not None or trajectory_contract is not None:
+            if trajectory_contract != expected_trajectory_contract or (
+                self.manifest.get("collection_protocol", {}).get(
+                    "trajectory_fingerprint_array")
+                != "trajectory_fingerprint_sha256"
+            ):
+                raise DatasetValidationError(
+                    "trajectory fingerprint contract has drifted")
+            fingerprint = np.asarray(trajectory_fingerprint)
+            if fingerprint.shape != (group_count,) or fingerprint.dtype.kind not in (
+                "US"
+            ):
+                raise DatasetValidationError(
+                    "trajectory_fingerprint_sha256 must be text [G]")
+            fingerprint_text = fingerprint.astype(str)
+            if any(
+                len(value) != 64
+                or any(character not in "0123456789abcdef" for character in value)
+                for value in fingerprint_text
+            ):
+                raise DatasetValidationError(
+                    "trajectory_fingerprint_sha256 must contain lowercase SHA-256")
+            if len(np.unique(fingerprint_text)) != group_count:
+                raise DatasetValidationError(
+                    "trajectory fingerprints must be unique within a dataset")
 
         obs_history = np.asarray(self.arrays["obs_history"])
         q_send_history = np.asarray(self.arrays["q_send_history"])
@@ -743,7 +797,7 @@ class GroupedBranchDataset:
         if verify_hash and expected_hash is not None and expected_hash != actual_hash:
             raise DatasetValidationError(
                 f"content hash mismatch: manifest={expected_hash}, actual={actual_hash}")
-        return {
+        report = {
             "schema_version": SCHEMA_VERSION,
             "groups": group_count,
             "max_candidates": candidate_count,
@@ -758,18 +812,19 @@ class GroupedBranchDataset:
             "unique_source_seeds": int(len(np.unique(
                 self.arrays["source_seed"]))),
             "duplicate_state_fraction": 0.0,
-            "mixed_outcome_fraction": float(np.mean([
-                len(np.unique(np.mean(fall_bool[g, candidate_mask[g]], axis=1))) > 1
-                for g in range(group_count)
-            ])),
             "content_sha256": actual_hash,
         }
+        if summarize_outcomes:
+            report["mixed_outcome_fraction"] = _mixed_outcome_fraction(
+                fall_bool, candidate_mask)
+        return report
 
     def save(self, path: str | Path) -> Path:
         output = assert_development_path(assert_safe_evidence_output(path))
         if output.suffix != ".npz":
             raise DatasetValidationError("grouped datasets must use a .npz path")
-        report = self.validate(verify_hash=False)
+        report = self.validate(
+            verify_hash=False, summarize_outcomes=False)
         manifest = dict(self.manifest)
         manifest["content_sha256"] = report["content_sha256"]
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -784,9 +839,23 @@ class GroupedBranchDataset:
         return output
 
     @classmethod
-    def load(cls, path: str | Path) -> "GroupedBranchDataset":
+    def load(
+        cls,
+        path: str | Path,
+        *,
+        summarize_outcomes: bool = True,
+    ) -> "GroupedBranchDataset":
         source = assert_development_path(_authorize_evidence_input(
-            path, allowed_roles=("discovery", "audit")))
+            path, allowed_roles=(
+                "discovery",
+                "audit",
+                "stage_b_fit_label",
+                "stage_b_probability_calibration_label",
+                "stage_b_uncertainty_calibration_label",
+                "stage_b_selector_calibration_label",
+                "stage_b_model_test_label",
+                "stage_b_model_test_producer_label",
+            )))
         with np.load(source, allow_pickle=False) as payload:
             if "manifest_json" not in payload.files:
                 raise DatasetValidationError("dataset has no manifest_json")
@@ -800,7 +869,8 @@ class GroupedBranchDataset:
             }
         _require_content_hash(manifest)
         dataset = cls(manifest=manifest, arrays=arrays, path=source)
-        dataset.validate(verify_hash=True)
+        dataset.validate(
+            verify_hash=True, summarize_outcomes=summarize_outcomes)
         return dataset
 
 
@@ -853,7 +923,7 @@ class PrivilegedBranchView:
         if verify_hash and expected_hash is not None and expected_hash != actual_hash:
             raise DatasetValidationError("privileged content hash mismatch")
         if deployable is not None:
-            deployable_report = deployable.validate()
+            deployable_report = deployable.validate(summarize_outcomes=False)
             for name in ("split", "generator_commit"):
                 if self.manifest.get(name) != deployable.manifest.get(name):
                     raise DatasetValidationError(
@@ -904,7 +974,16 @@ class PrivilegedBranchView:
     ) -> "PrivilegedBranchView":
         source = assert_development_path(_authorize_evidence_input(
             path,
-            allowed_roles=("discovery_privileged", "audit_privileged"),
+            allowed_roles=(
+                "discovery_privileged",
+                "audit_privileged",
+                "stage_b_fit_label_privileged",
+                "stage_b_probability_calibration_label_privileged",
+                "stage_b_uncertainty_calibration_label_privileged",
+                "stage_b_selector_calibration_label_privileged",
+                "stage_b_model_test_label_privileged",
+                "stage_b_model_test_producer_label_privileged",
+            ),
         ))
         with np.load(source, allow_pickle=False) as payload:
             required = {

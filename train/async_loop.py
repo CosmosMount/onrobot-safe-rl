@@ -23,6 +23,11 @@ from train.loop import (
     save_snapshot,
 )
 from train.update_schedule import UTDUpdateScheduler
+from train.state_dependent_recovery_v5_stage_b_actor_bank import (
+    CHECKPOINT_SEMANTICS,
+    EXACT_CHECKPOINT_STEPS,
+    maybe_create_exact_policy_exporter,
+)
 
 
 class _NullTrainerLogger:
@@ -57,6 +62,7 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
                        robot_cfg: Any) -> Any:
     """Collect at runtime rate while this process performs learner updates."""
     os.makedirs(cfg.save_dir, exist_ok=True)
+    exact_policy_exporter = maybe_create_exact_policy_exporter(cfg)
     start_i = 0
     resume_state: dict[str, Any] = {}
     if cfg.resume_checkpoint and cfg.save_checkpoints:
@@ -134,6 +140,14 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
         "resumed_from_step": start_i,
         "wandb_run_id": logger.run_id,
     }
+    if exact_policy_exporter is not None:
+        manifest["stage_b_exact_policy_checkpoints"] = {
+            "run_contract_sha256": exact_policy_exporter.contract_sha256,
+            "steps": list(EXACT_CHECKPOINT_STEPS),
+            "semantics": CHECKPOINT_SEMANTICS,
+            "policy_only": True,
+            "return_or_fall_filtering": "forbidden",
+        }
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
 
     steps = start_i
@@ -210,6 +224,8 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
             if steps >= int(cfg.start_training) and agent.can_start_training():
                 request = utd_scheduler.next_request()
                 if request is None:
+                    if exact_policy_exporter is not None:
+                        exact_policy_exporter.maybe_export(agent, steps)
                     continue
                 update_info = agent.update_policy_steps(request)
                 if not all(np.isfinite(float(v))
@@ -238,6 +254,9 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
                     last_published_actor_steps = actor_steps
                     last_published_auxiliary_steps = auxiliary_steps
                     final_inference_weight_version = snapshot_version
+
+            if exact_policy_exporter is not None:
+                exact_policy_exporter.maybe_export(agent, steps)
 
             done = bool(transition["terminated"][0]
                         or transition["truncated"][0])
@@ -348,6 +367,8 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
                 "learner_calls": learner_calls,
                 "snapshot_version": snapshot_version,
             }, indent=2) + "\n")
+        if exact_policy_exporter is not None and status == "finished":
+            exact_policy_exporter.require_complete()
         final_hashes = _agent_hashes(agent)
         recent = np.asarray(intervals, dtype=np.float64)
         manifest.update({
@@ -382,6 +403,10 @@ def run_async_training(agent: Any, env: Any, cfg: Any,
                 str(k): float(v) for k, v in agent.get_metrics().items()
                 if np.isfinite(float(v))},
         })
+        if exact_policy_exporter is not None:
+            manifest["stage_b_exact_policy_checkpoints"][
+                "exported_steps"] = list(
+                    exact_policy_exporter.exported_steps)
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
         (Path(cfg.save_dir) / "episodes.json").write_text(
             json.dumps(episodes, indent=2) + "\n")

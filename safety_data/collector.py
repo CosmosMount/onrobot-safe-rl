@@ -47,6 +47,7 @@ class GroupIdentity:
     command_vx: float
     acceptance_probability: float
     sampling_stratum: str = "unspecified"
+    trajectory_fingerprint_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -159,6 +160,13 @@ class GroupedBranchAssembler:
                     identity.trajectory_id, identity.policy_source,
                     identity.sampling_stratum)):
             raise ValueError("group identity text fields must be nonempty")
+        if identity.trajectory_fingerprint_sha256 is not None:
+            fingerprint = identity.trajectory_fingerprint_sha256
+            if len(fingerprint) != 64 or any(
+                character not in "0123456789abcdef" for character in fingerprint
+            ):
+                raise ValueError(
+                    "trajectory_fingerprint_sha256 must be lowercase SHA-256")
         for name in (
             "episode_id", "episode_step", "policy_training_seed", "source_seed",
         ):
@@ -396,6 +404,15 @@ class GroupedBranchAssembler:
                 group.randomness.candidate_seed for group in self._groups
             ], dtype=np.uint64),
         }
+        trajectory_fingerprints = [
+            value.trajectory_fingerprint_sha256 for value in identities
+        ]
+        if any(value is not None for value in trajectory_fingerprints):
+            if any(value is None for value in trajectory_fingerprints):
+                raise ValueError(
+                    "trajectory fingerprints must be present for every group")
+            arrays["trajectory_fingerprint_sha256"] = np.asarray(
+                trajectory_fingerprints, dtype=str)
         if self._duration_mode == "option":
             arrays["candidate_option_steps"] = np.stack([
                 group.candidate_option_steps for group in self._groups
@@ -405,7 +422,7 @@ class GroupedBranchAssembler:
                 group.candidate_behavior_steps for group in self._groups
             ]).astype(np.int16)
         dataset = GroupedBranchDataset(dict(self.manifest), arrays)
-        dataset.validate(verify_hash=False)
+        dataset.validate(verify_hash=False, summarize_outcomes=False)
         privileged_view = None
         if self.privileged_feature_names is not None:
             privileged_view = PrivilegedBranchView(

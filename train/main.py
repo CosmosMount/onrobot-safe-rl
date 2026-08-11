@@ -13,6 +13,10 @@ from train.async_loop import run_async_training
 from train.env import Go2Env
 from train.loop import run_play, run_training
 from train.replay import install_flashsac_numpy_replay
+from train.state_dependent_recovery_v5_stage_b_actor_bank import (
+    StageBActorBankError,
+    configure_training_for_actor_run_contract,
+)
 
 
 def _parse_args(argv=None) -> argparse.Namespace:
@@ -105,6 +109,14 @@ def _parse_args(argv=None) -> argparse.Namespace:
         help="Disable Weights & Biases logging for this run.",
     )
     parser.add_argument(
+        "--stage-b-actor-run-contract",
+        default=None,
+        help=(
+            "Frozen V5 Stage-B SAC-from-zero run contract. It fixes the "
+            "seed, 100k run directory, and exact 25k/50k/100k policy-only "
+            "exports."),
+    )
+    parser.add_argument(
         "--play-episodes",
         type=int,
         default=1,
@@ -176,6 +188,37 @@ def main(argv=None) -> int:
         agent_cfg.seed = int(args.seed)
     if args.no_wandb:
         train_cfg.wandb = False
+    if args.stage_b_actor_run_contract is not None:
+        conflicting = {
+            "--mode": args.mode != "train",
+            "--config": args.config is None,
+            "--agent": args.agent is not None,
+            "--save-dir": args.save_dir is not None,
+            "--run-name": args.run_name is not None,
+            "--experiment-name": args.experiment_name is not None,
+            "--max-steps": args.max_steps is not None,
+            "--resume": args.resume,
+            "--seed": args.seed is not None,
+            "--initialize-from": args.initialize_from is not None,
+            "--safety-mode": args.safety_mode is not None,
+            "--safety-pretrained-path": args.safety_pretrained_path is not None,
+            "--freeze-safety-critic": args.freeze_safety_critic,
+        }
+        invalid = [name for name, present in conflicting.items() if present]
+        if invalid:
+            raise SystemExit(
+                "--stage-b-actor-run-contract has conflicting or missing "
+                f"arguments: {', '.join(invalid)}")
+        try:
+            configure_training_for_actor_run_contract(
+                train_cfg,
+                agent_cfg,
+                robot_cfg,
+                contract_path=args.stage_b_actor_run_contract,
+                source_config_path=args.config,
+            )
+        except StageBActorBankError as exc:
+            raise SystemExit(str(exc)) from exc
     if args.safety_mode is not None:
         if str(agent_cfg.agent_type) != "safe_droq":
             raise SystemExit("--safety-mode requires --agent safe_droq")
