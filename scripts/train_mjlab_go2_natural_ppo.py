@@ -13,6 +13,7 @@ import argparse
 from dataclasses import asdict
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -63,6 +64,86 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _load_json(path: Path) -> dict:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"authorization must be a JSON object: {path}")
+    return value
+
+
+def validate_preflight_authorizations(
+    *,
+    capacity_path: Path,
+    model_contract_path: Path,
+    parity_path: Path,
+    production_envs: int,
+) -> dict:
+    capacity = _load_json(capacity_path)
+    model = _load_json(model_contract_path)
+    parity = _load_json(parity_path)
+    if capacity.get("schema_version") != "qsafe.mjlab_capacity_authorization.v1" or (
+            capacity.get("authorized") is not True):
+        raise ValueError("PPO capacity is not authorized")
+    if capacity.get("production_envs") != production_envs or int(
+            capacity.get("selected_capacity_envs", 0)) < production_envs:
+        raise ValueError("PPO environment count differs from capacity authorization")
+    if model.get("schema_version") != "qsafe.mjlab_target_model_contract.v1" or (
+            model.get("pass") is not True):
+        raise ValueError("target model contract did not pass")
+    if parity.get("schema_version") != "qsafe.mjlab_native_parity.v1" or (
+            parity.get("pass") is not True):
+        raise ValueError("native/Warp parity did not pass")
+    if int(parity.get("states", 0)) < 100 or int(
+            parity.get("policy_steps_per_state", 0)) < 100 or float(
+            parity.get("fall_predicate_agreement", 0.0)) != 1.0:
+        raise ValueError("native/Warp parity corpus is too small or disagrees on falls")
+    if model.get("external_force_nonzero") is not False or (
+            parity.get("external_force_nonzero") is not False):
+        raise ValueError("preflight evidence contains an external force")
+    expected = target_alignment_manifest()["contract_sha256"]
+    contracts = {
+        str(capacity.get("target_alignment_contract_sha256")),
+        str(model.get("target_alignment", {}).get("contract_sha256")),
+        str(parity.get("target_alignment", {}).get("contract_sha256")),
+    }
+    if contracts != {expected}:
+        raise ValueError("preflight target-alignment contracts differ")
+    versions = {
+        json.dumps(capacity.get("backend_versions"), sort_keys=True),
+        json.dumps(model.get("versions"), sort_keys=True),
+        json.dumps(parity.get("versions"), sort_keys=True),
+    }
+    if len(versions) != 1:
+        raise ValueError("preflight backend versions differ")
+    return {
+        "capacity": {"path": str(capacity_path), "sha256": _sha256(capacity_path)},
+        "target_model_contract": {
+            "path": str(model_contract_path), "sha256": _sha256(model_contract_path)},
+        "native_warp_parity": {"path": str(parity_path), "sha256": _sha256(parity_path)},
+        "target_alignment_contract_sha256": expected,
+        "backend_versions": capacity["backend_versions"],
+    }
+
+
+def _write_json_no_clobber(path: Path, value: dict) -> None:
+    content = (json.dumps(value, sort_keys=True, indent=2) + "\n").encode("utf-8")
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    with temporary.open("xb") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+    try:
+        os.link(temporary, path)
+    except FileExistsError as exc:
+        raise FileExistsError(f"refusing to overwrite training manifest: {path}") from exc
+    temporary.unlink()
+    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--envs", type=int, default=2000)
@@ -70,15 +151,34 @@ def main() -> None:
     parser.add_argument("--exposure", type=int, default=30_000_000)
     parser.add_argument("--seed", type=int, default=43)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--capacity-authorization", type=Path,
+        default=Path("saved/qsafe_development/natural_ppo/capacity-030-target-aligned/capacity-authorization-v1.json"))
+    parser.add_argument(
+        "--model-contract", type=Path,
+        default=Path("saved/qsafe_development/natural_ppo/parity/mjlab-target-model-contract-v1.json"))
+    parser.add_argument(
+        "--parity-report", type=Path,
+        default=Path("saved/qsafe_development/natural_ppo/parity/mjlab-native-target-aligned-validation-seed137-v1.json"))
     args = parser.parse_args()
     steps_per_iteration = args.envs * args.rollout_steps
     if args.exposure <= 0 or args.exposure % steps_per_iteration:
         raise ValueError("exposure must be exactly divisible by envs*rollout-steps")
     require_clean_production_worktree(
         args.exposure, _git_status(REPOSITORY_ROOT))
+    launch_commit = _git_head(REPOSITORY_ROOT)
+    launch_worktree_clean = not bool(_git_status(REPOSITORY_ROOT))
+    preflight = validate_preflight_authorizations(
+        capacity_path=args.capacity_authorization,
+        model_contract_path=args.model_contract,
+        parity_path=args.parity_report,
+        production_envs=args.envs,
+    )
 
     import mjlab.tasks  # noqa: F401
     import src.tasks  # type: ignore  # noqa: F401
+    import src  # type: ignore
+    import mujoco
     from mjlab.envs import ManagerBasedRlEnv
     from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
     from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
@@ -102,7 +202,8 @@ def main() -> None:
     dump_yaml(args.output / "env.yaml", asdict(cfg))
     dump_yaml(args.output / "agent.yaml", asdict(agent_cfg))
     capture = MjlabNaturalFallCapture(
-        args.envs, args.output / "natural-falls", seed=args.seed)
+        args.envs, args.output / "natural-falls", seed=args.seed,
+        rollout_steps=args.rollout_steps)
 
     class CapturingEnvironment(ManagerBasedRlEnv):
         def step(self, action: torch.Tensor):
@@ -118,6 +219,8 @@ def main() -> None:
     if "push_robot" in environment.cfg.events:
         raise RuntimeError("natural PPO runner unexpectedly contains push_robot")
     wrapped = RslRlVecEnvWrapper(environment, clip_actions=agent_cfg.clip_actions)
+    compiled_model = args.output / "target-aligned-model.mjb"
+    mujoco.mj_saveModel(environment.sim.mj_model, str(compiled_model))
     capture.arm(environment)
     runner = MjlabOnPolicyRunner(
         wrapped, asdict(agent_cfg), str(args.output), device="cuda:0")
@@ -156,7 +259,10 @@ def main() -> None:
         })
 
     repository = REPOSITORY_ROOT
-    upstream = Path.cwd()
+    upstream = Path(src.__file__).resolve().parents[1]
+    if args.exposure == 30_000_000 and (
+            _git_head(repository) != launch_commit or _git_status(repository)):
+        raise RuntimeError("production generator changed during PPO collection")
     manifest = {
         "schema_version": "qsafe.natural_ppo_training.v1",
         "run_scope": (
@@ -181,13 +287,22 @@ def main() -> None:
             "vy": 0.0, "yaw_rate": 0.0,
         },
         "target_alignment": target_alignment_manifest(),
+        "preflight_authorizations": preflight,
+        "compiled_model": {
+            "path": compiled_model.name,
+            "sha256": _sha256(compiled_model),
+        },
+        "resolved_configs": {
+            "environment": {"path": "env.yaml", "sha256": _sha256(args.output / "env.yaml")},
+            "agent": {"path": "agent.yaml", "sha256": _sha256(args.output / "agent.yaml")},
+        },
         "checkpoint_selection_uses_outcomes": False,
         "checkpoints": entries,
-        "generator_commit": _git_head(repository),
+        "generator_commit": launch_commit,
+        "generator_worktree_clean_at_launch": launch_worktree_clean,
         "unitree_rl_mjlab_commit": _git_head(upstream),
     }
-    (args.output / "manifest.json").write_text(
-        json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    _write_json_no_clobber(args.output / "manifest.json", manifest)
     print(json.dumps(manifest, sort_keys=True, indent=2))
     environment.close()
 

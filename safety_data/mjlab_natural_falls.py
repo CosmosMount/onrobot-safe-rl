@@ -80,7 +80,7 @@ def _fsync_dir(path: Path) -> None:
 
 
 class MjlabFallShardWriter:
-    def __init__(self, root: str | Path, *, events_per_shard: int = 256) -> None:
+    def __init__(self, root: str | Path, *, events_per_shard: int = 1024) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=False)
         self.events_per_shard = int(events_per_shard)
@@ -131,7 +131,7 @@ class MjlabFallShardWriter:
             "external_force": "verified_zero",
             "direct_qsafe_supervision": {
                 "state_risk": True,
-                "executed_action_risk_under_ppo_continuation": True,
+                "executed_action_risk_under_ppo_continuation": "diagnostic_only",
                 "counterfactual_recovery_action_risk": False,
                 "horizon_policy_steps": RISK_HORIZON_POLICY_STEPS,
             },
@@ -201,9 +201,24 @@ class MjlabNormalShardWriter(MjlabFallShardWriter):
 class MjlabNaturalFallCapture:
     """Maintain 65-step GPU histories and export every target-predicate fall."""
 
-    def __init__(self, num_envs: int, output: str | Path, *, seed: int) -> None:
+    def __init__(
+        self,
+        num_envs: int,
+        output: str | Path,
+        *,
+        seed: int,
+        rollout_steps: int = 125,
+        preview_envs: int = 4,
+        preview_policy_steps: int = 500,
+    ) -> None:
         self.num_envs = int(num_envs)
         self.seed = int(seed)
+        self.rollout_steps = int(rollout_steps)
+        self.preview_envs = min(int(preview_envs), self.num_envs)
+        self.preview_policy_steps = int(preview_policy_steps)
+        if self.rollout_steps <= 0 or self.preview_envs <= 0 or (
+                self.preview_policy_steps <= 0):
+            raise ValueError("capture rollout and preview dimensions must be positive")
         self.writer = MjlabFallShardWriter(output)
         self.normal_writer = MjlabNormalShardWriter(Path(output) / "normals")
         self.armed = False
@@ -211,6 +226,8 @@ class MjlabNaturalFallCapture:
         self.global_vector_step = 0
         self.fall_count = 0
         self.normal_count = 0
+        self.preview_frames: list[dict[str, np.ndarray]] = []
+        self.normal_preview: dict[str, np.ndarray] | None = None
 
     def _allocate(self, env: Any) -> None:
         device = torch.device(env.device)
@@ -222,6 +239,13 @@ class MjlabNaturalFallCapture:
         self.qpos = torch.zeros((n, c, 19), dtype=torch.float64, device=device)
         self.qvel = torch.zeros((n, c, 18), dtype=torch.float64, device=device)
         self.ctrl = torch.zeros((n, c, 12), dtype=torch.float64, device=device)
+        self.time = torch.zeros((n, c), dtype=torch.float64, device=device)
+        self.act = torch.zeros(
+            (n, c, int(env.sim.data.act.shape[1])), dtype=torch.float64,
+            device=device)
+        self.qacc_warmstart = torch.zeros(
+            (n, c, int(env.sim.data.qacc_warmstart.shape[1])),
+            dtype=torch.float64, device=device)
         self.obs_history = torch.zeros((n, c, 5, 46), dtype=torch.float32,
                                        device=device)
         self.action_requested = torch.zeros((n, c, 12), dtype=torch.float32,
@@ -268,6 +292,10 @@ class MjlabNaturalFallCapture:
         self.qpos[ids, slot] = env.sim.data.qpos.to(torch.float64)
         self.qvel[ids, slot] = env.sim.data.qvel.to(torch.float64)
         self.ctrl[ids, slot] = env.sim.data.ctrl.to(torch.float64)
+        self.time[ids, slot] = env.sim.data.time.to(torch.float64)
+        self.act[ids, slot] = env.sim.data.act.to(torch.float64)
+        self.qacc_warmstart[ids, slot] = env.sim.data.qacc_warmstart.to(
+            torch.float64)
         self.obs_history[ids, slot] = self.history
         action_term = env.action_manager.get_term("joint_pos")
         encoder_bias = robot.data.encoder_bias[:, action_term.target_ids]
@@ -285,6 +313,18 @@ class MjlabNaturalFallCapture:
         self.policy_step[ids, slot] = (
             self.global_vector_step * self.num_envs + ids)
         self.count += 1
+        if len(self.preview_frames) < self.preview_policy_steps:
+            preview = self.preview_envs
+            self.preview_frames.append({
+                "qpos": env.sim.data.qpos[:preview].detach().cpu().numpy().copy(),
+                "qvel": env.sim.data.qvel[:preview].detach().cpu().numpy().copy(),
+                "action": requested[:preview].detach().cpu().numpy().copy(),
+                "q_target": absolute_target[:preview].detach().cpu().numpy().copy(),
+                "episode_id": self.episode_id[:preview].detach().cpu().numpy().copy(),
+                "episode_step": env.episode_length_buf[:preview].detach().cpu().numpy().copy(),
+                "fall_after_action": np.zeros(preview, dtype=bool),
+                "terminal_qpos": np.full((preview, 19), np.nan, dtype=np.float64),
+            })
         self.global_vector_step += 1
 
     def _capture_mature_normals(self, env: Any, ids: torch.Tensor) -> None:
@@ -300,6 +340,8 @@ class MjlabNaturalFallCapture:
         )
         selected = mature & ((key % NORMAL_HASH_MODULUS) == 0)
         for environment_id in selected.nonzero(as_tuple=False).flatten().cpu().tolist():
+            if self.normal_preview is None:
+                self.normal_preview = self._normal_preview_event(int(environment_id))
             self.normal_writer.add(self._normal_event(env, int(environment_id),
                                                       int(old_slot[environment_id].item())))
             self.normal_count += 1
@@ -312,6 +354,13 @@ class MjlabNaturalFallCapture:
         qpos = env.sim.data.qpos[env_ids]
         fell = target_fall_predicate(qpos)
         fall_ids = env_ids[fell]
+        if self.preview_frames:
+            frame = self.preview_frames[-1]
+            for environment_id in fall_ids.detach().cpu().tolist():
+                if int(environment_id) < self.preview_envs:
+                    frame["fall_after_action"][int(environment_id)] = True
+                    frame["terminal_qpos"][int(environment_id)] = env.sim.data.qpos[
+                        int(environment_id)].detach().cpu().numpy()
         for environment_id in fall_ids.detach().cpu().tolist():
             self.writer.add(self._event(env, int(environment_id)))
             self.fall_count += 1
@@ -372,6 +421,9 @@ class MjlabNaturalFallCapture:
             "trajectory_qpos": padded(self.qpos),
             "trajectory_qvel": padded(self.qvel),
             "trajectory_ctrl": padded(self.ctrl),
+            "trajectory_time": padded(self.time),
+            "trajectory_act": padded(self.act),
+            "trajectory_qacc_warmstart": padded(self.qacc_warmstart),
             "trajectory_observation_history": padded(self.obs_history),
             "trajectory_action_requested": padded(self.action_requested),
             "trajectory_action_executed": padded(self.action_executed),
@@ -382,6 +434,12 @@ class MjlabNaturalFallCapture:
             "terminal_qpos": terminal_qpos,
             "terminal_qvel": terminal_qvel,
             "terminal_ctrl": terminal_ctrl,
+            "terminal_time": env.sim.data.time[
+                environment_id].detach().cpu().numpy(),
+            "terminal_act": env.sim.data.act[
+                environment_id].detach().cpu().numpy(),
+            "terminal_qacc_warmstart": env.sim.data.qacc_warmstart[
+                environment_id].detach().cpu().numpy(),
             "terminal_action_requested": env.action_manager.action[
                 environment_id, permutation].detach().cpu().numpy().astype(np.float32),
             "terminal_action_executed": env.action_manager.action[
@@ -396,6 +454,12 @@ class MjlabNaturalFallCapture:
                 environment_id].detach().cpu().numpy(),
             "randomized_encoder_bias": robot.data.encoder_bias[
                 environment_id].detach().cpu().numpy(),
+            "rng_identity": np.asarray(hashlib.sha256(
+                b"qsafe.mjlab_rng_identity.v1\0" + raw_identity
+            ).hexdigest().encode("ascii"), dtype="S64"),
+            "ppo_iteration": np.asarray(
+                (self.global_vector_step * self.num_envs)
+                // (self.num_envs * self.rollout_steps), dtype=np.int64),
         }
 
     def _normal_event(self, env: Any, environment_id: int,
@@ -437,9 +501,67 @@ class MjlabNaturalFallCapture:
                 environment_id].detach().cpu().numpy(),
             "randomized_encoder_bias": robot.data.encoder_bias[
                 environment_id].detach().cpu().numpy(),
+            "rng_identity": np.asarray(hashlib.sha256(
+                b"qsafe.mjlab_rng_identity.v1\0" + raw_identity
+            ).hexdigest().encode("ascii"), dtype="S64"),
+            "ppo_iteration": np.asarray(
+                policy_step // (self.num_envs * self.rollout_steps),
+                dtype=np.int64),
         }
 
+    def _normal_preview_event(self, environment_id: int) -> dict[str, np.ndarray]:
+        count = int(self.count[environment_id].item())
+        indices = ordered_ring_indices(count, CAPTURE_RING_STEPS)
+        if len(indices) != CAPTURE_RING_STEPS:
+            raise RuntimeError("normal preview requires a mature 97-step window")
+        device_indices = torch.as_tensor(
+            indices, dtype=torch.long, device=self.count.device)
+
+        def cpu(value: torch.Tensor) -> np.ndarray:
+            return value[environment_id, device_indices].detach().cpu().numpy()
+
+        return {
+            "environment_id": np.asarray(environment_id, dtype=np.int32),
+            "episode_id": self.episode_id[
+                environment_id].detach().cpu().numpy(),
+            "qpos": cpu(self.qpos),
+            "qvel": cpu(self.qvel),
+            "action_requested": cpu(self.action_requested),
+            "q_target": cpu(self.q_target),
+            "episode_step": cpu(self.episode_step),
+            "policy_step": cpu(self.policy_step),
+            "fall_within_96_steps": np.asarray(False),
+        }
+
+    @staticmethod
+    def _write_npz_no_clobber(path: Path, arrays: Mapping[str, np.ndarray]) -> str:
+        temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}.npz")
+        np.savez_compressed(temporary, **arrays)
+        content = temporary.read_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        try:
+            os.link(temporary, path)
+        except FileExistsError as exc:
+            raise FileExistsError(f"refusing to overwrite preview archive: {path}") from exc
+        temporary.unlink()
+        _fsync_dir(path.parent)
+        return digest
+
     def close(self, provenance: Mapping[str, Any]) -> Path:
+        if not self.preview_frames:
+            raise RuntimeError("parallel PPO preview archive is empty")
+        preview_arrays = {
+            name: np.stack([frame[name] for frame in self.preview_frames])
+            for name in self.preview_frames[0]
+        }
+        preview_path = self.writer.root / "parallel-preview.npz"
+        preview_sha = self._write_npz_no_clobber(preview_path, preview_arrays)
+        normal_preview_path = None
+        normal_preview_sha = None
+        if self.normal_preview is not None:
+            normal_preview_path = self.writer.root / "normal-preview.npz"
+            normal_preview_sha = self._write_npz_no_clobber(
+                normal_preview_path, self.normal_preview)
         normal_manifest = self.normal_writer.close({
             **dict(provenance),
             "normal_candidates": self.normal_count,
@@ -450,4 +572,17 @@ class MjlabNaturalFallCapture:
             "recorded_falls": self.fall_count,
             "normal_candidates": self.normal_count,
             "normal_manifest": str(normal_manifest.relative_to(self.writer.root)),
+            "parallel_preview": {
+                "path": preview_path.name,
+                "sha256": preview_sha,
+                "environments": self.preview_envs,
+                "policy_steps": len(self.preview_frames),
+            },
+            "normal_preview": (
+                None if normal_preview_path is None else {
+                    "path": normal_preview_path.name,
+                    "sha256": normal_preview_sha,
+                    "policy_steps": CAPTURE_RING_STEPS,
+                }
+            ),
         })

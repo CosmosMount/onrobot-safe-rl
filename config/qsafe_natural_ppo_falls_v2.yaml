@@ -46,7 +46,8 @@ environment:
     push_event: disabled
   domain_randomization:
     source: upstream_go2_flat_defaults
-    enabled: [friction, body_mass_and_com, initial_joint_state, actuator_parameters]
+    enabled: [foot_friction, base_com, encoder_bias, reset_base_pose]
+    disabled_or_zero_range: [body_mass, actuator_parameters, initial_joint_offset]
     every_realized_value_recorded: true
 
 backend:
@@ -116,6 +117,14 @@ fall_collection:
     - realized_velocity_command
     - randomization_values
     - rng_identity
+  integration_state_components:
+    - time
+    - qpos
+    - qvel
+    - act
+    - qacc_warmstart
+  absent_application_state:
+    action_filter_state: none
 
 normal_collection:
   selection: fixed_hash_before_branch_outcomes
