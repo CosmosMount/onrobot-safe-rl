@@ -1,4 +1,4 @@
-"""Train and evaluate pointwise Q_safe heads from direct PPO supervision."""
+"""Train a state-risk Q_safe trigger from direct natural-PPO supervision."""
 
 from __future__ import annotations
 
@@ -28,7 +28,6 @@ class DirectTrainingConfig:
     learning_rate: float = 3e-4
     weight_decay: float = 1e-5
     state_risk_weight: float = 1.0
-    action_risk_weight: float = 1.0
     calibration_steps: int = 200
     seed: int = 20260811
     frame_hidden_dim: int = 128
@@ -42,8 +41,7 @@ class DirectTrainingConfig:
             if int(getattr(self, name)) <= 0:
                 raise ValueError(f"{name} must be positive")
         for name in (
-                "learning_rate", "weight_decay", "state_risk_weight",
-                "action_risk_weight"):
+                "learning_rate", "weight_decay", "state_risk_weight"):
             value = float(getattr(self, name))
             if not math.isfinite(value) or value < 0.0:
                 raise ValueError(f"{name} must be finite and non-negative")
@@ -194,109 +192,81 @@ def paired_accuracy(
     return float(np.mean(outcomes))
 
 
-def _normalization(
-    observation: np.ndarray, action: np.ndarray,
-) -> dict[str, np.ndarray]:
+def _normalization(observation: np.ndarray) -> dict[str, np.ndarray]:
     observation_flat = observation.reshape(-1, observation.shape[-1])
     observation_mean = observation_flat.mean(axis=0, dtype=np.float64)
     observation_std = observation_flat.std(axis=0, dtype=np.float64)
-    action_mean = action.mean(axis=0, dtype=np.float64)
-    action_std = action.std(axis=0, dtype=np.float64)
     return {
         "observation_mean": observation_mean.astype(np.float32),
         "observation_std": np.maximum(observation_std, 1e-6).astype(np.float32),
-        "action_mean": action_mean.astype(np.float32),
-        "action_std": np.maximum(action_std, 1e-6).astype(np.float32),
     }
 
 
 def _normalized_arrays(
     dataset: DirectDataset, normalization: dict[str, np.ndarray],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     arrays = dataset.arrays
     observation = (
         arrays["observation_history"] - normalization["observation_mean"]
     ) / normalization["observation_std"]
-    action = (
-        arrays["action_requested"] - normalization["action_mean"]
-    ) / normalization["action_std"]
-    return observation.astype(np.float32), action.astype(np.float32), arrays["label"]
+    return observation.astype(np.float32), arrays["label"]
 
 
 def _fit_temperature(
     state_logits: torch.Tensor,
-    action_logits: torch.Tensor,
     label: torch.Tensor,
     steps: int,
 ) -> float:
     log_temperature = nn.Parameter(torch.zeros((), device=state_logits.device))
     optimizer = torch.optim.Adam([log_temperature], lr=0.03)
     detached_state = state_logits.detach()
-    detached_action = action_logits.detach()
     for _ in range(steps):
         optimizer.zero_grad(set_to_none=True)
         temperature = log_temperature.exp().clamp(0.05, 20.0)
-        loss = 0.5 * (
-            F.binary_cross_entropy_with_logits(
-                detached_state / temperature, label)
-            + F.binary_cross_entropy_with_logits(
-                detached_action / temperature, label)
-        )
+        loss = F.binary_cross_entropy_with_logits(
+            detached_state / temperature, label)
         loss.backward()
         optimizer.step()
     return float(log_temperature.detach().exp().clamp(0.05, 20.0).item())
 
 
-def _forward_logits(
+def _forward_state_logits(
     model: SelectiveAdvantageQSafe,
     observation: torch.Tensor,
-    action: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    output = model(observation, action, action[:, None, :])
-    return output.state_risk_logit, output.risk_logits[:, 0]
+) -> torch.Tensor:
+    state = model.encode_state(observation)
+    return model.state_risk_head(state).reshape(-1)
 
 
 def _predict(
     models: list[SelectiveAdvantageQSafe],
     temperatures: list[float],
     observation: torch.Tensor,
-    action: torch.Tensor,
     batch_size: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     member_state = []
-    member_action = []
     with torch.inference_mode():
         for model, temperature in zip(models, temperatures, strict=True):
             state_chunks = []
-            action_chunks = []
             for start in range(0, len(observation), batch_size):
-                state_logit, action_logit = _forward_logits(
-                    model, observation[start:start + batch_size],
-                    action[start:start + batch_size])
+                state_logit = _forward_state_logits(
+                    model, observation[start:start + batch_size])
                 state_chunks.append(torch.sigmoid(state_logit / temperature).cpu())
-                action_chunks.append(torch.sigmoid(action_logit / temperature).cpu())
             member_state.append(torch.cat(state_chunks).numpy())
-            member_action.append(torch.cat(action_chunks).numpy())
     state = np.stack(member_state)
-    action_risk = np.stack(member_action)
-    return state.mean(axis=0), state.std(axis=0), action_risk.mean(axis=0), action_risk.std(axis=0)
+    return state.mean(axis=0), state.std(axis=0)
 
 
 def _metrics(
     label: np.ndarray,
     pair_identity: np.ndarray,
     state_risk: np.ndarray,
-    action_risk: np.ndarray,
 ) -> dict[str, float]:
     return {
         "state_auroc": binary_auc(label, state_risk),
         "state_pair_accuracy": paired_accuracy(pair_identity, label, state_risk),
         "state_ece": expected_calibration_error(label, state_risk),
-        "action_auroc": binary_auc(label, action_risk),
-        "action_pair_accuracy": paired_accuracy(pair_identity, label, action_risk),
-        "action_ece": expected_calibration_error(label, action_risk),
         "state_accuracy_at_0.5": float(np.mean((state_risk >= 0.5) == label)),
-        "action_accuracy_at_0.5": float(np.mean((action_risk >= 0.5) == label)),
     }
 
 
@@ -329,11 +299,9 @@ def train_direct_qsafe(
     calibration_mask = dataset.role_mask("calibration")
     test_mask = dataset.role_mask("test")
     normalization = _normalization(
-        dataset.arrays["observation_history"][fit_mask],
-        dataset.arrays["action_requested"][fit_mask])
-    observation_np, action_np, label_np = _normalized_arrays(dataset, normalization)
+        dataset.arrays["observation_history"][fit_mask])
+    observation_np, label_np = _normalized_arrays(dataset, normalization)
     observation = torch.from_numpy(observation_np).to(selected_device)
-    action = torch.from_numpy(action_np).to(selected_device)
     label = torch.from_numpy(label_np.astype(np.float32)).to(selected_device)
     calibration_indices = torch.from_numpy(
         np.flatnonzero(calibration_mask)).to(selected_device)
@@ -371,13 +339,10 @@ def train_direct_qsafe(
             for start in range(0, len(member_indices), config.batch_size):
                 indices = torch.from_numpy(
                     member_indices[start:start + config.batch_size]).to(selected_device)
-                state_logit, action_logit = _forward_logits(
-                    model, observation[indices], action[indices])
+                state_logit = _forward_state_logits(model, observation[indices])
                 target = label[indices]
                 state_loss = F.binary_cross_entropy_with_logits(state_logit, target)
-                action_loss = F.binary_cross_entropy_with_logits(action_logit, target)
-                loss = (config.state_risk_weight * state_loss
-                        + config.action_risk_weight * action_loss)
+                loss = config.state_risk_weight * state_loss
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
@@ -385,24 +350,24 @@ def train_direct_qsafe(
                 final_loss = float(loss.detach().item())
         model.eval()
         with torch.no_grad():
-            state_logit, action_logit = _forward_logits(
-                model, observation[calibration_indices], action[calibration_indices])
+            state_logit = _forward_state_logits(
+                model, observation[calibration_indices])
         temperature = _fit_temperature(
-            state_logit, action_logit,
-            label[calibration_indices], config.calibration_steps)
+            state_logit, label[calibration_indices], config.calibration_steps)
         models.append(model)
         temperatures.append(temperature)
         member_losses.append(final_loss)
 
     test_indices = torch.from_numpy(test_indices_np).to(selected_device)
-    state_mean, state_std, action_mean, action_std = _predict(
-        models, temperatures, observation[test_indices], action[test_indices],
-        config.batch_size)
+    state_mean, state_std = _predict(
+        models, temperatures, observation[test_indices], config.batch_size)
     test_metrics = _metrics(
         label_np[test_indices_np], dataset.arrays["pair_identity"][test_indices_np],
-        state_mean, action_mean)
+        state_mean)
     artifact = {
-        "schema_version": "qsafe.natural_ppo_direct_model.v1",
+        "schema_version": "qsafe.natural_ppo_state_trigger_model.v2",
+        "production_head": "state_risk_only",
+        "executed_ppo_action_use": "provenance_and_diagnostics_only",
         "trainer_commit": _git_head(),
         "dataset_file_sha256": dataset.file_sha256,
         "dataset_manifest": dataset.manifest,
@@ -415,7 +380,7 @@ def train_direct_qsafe(
             {name: value.detach().cpu() for name, value in model.state_dict().items()}
             for model in models
         ],
-        "temperatures": temperatures,
+        "state_temperatures": temperatures,
         "heldout_ppo_test_metrics": test_metrics,
         "sac_model_test_consumed": False,
         "objective1_claim_eligible": False,
@@ -428,7 +393,7 @@ def train_direct_qsafe(
     _publish_no_clobber(temporary, output)
     output_sha256 = _sha256(output)
     report = {
-        "schema_version": "qsafe.natural_ppo_direct_training_report.v1",
+        "schema_version": "qsafe.natural_ppo_state_trigger_training_report.v2",
         "model_file": output.name,
         "model_file_sha256": output_sha256,
         "dataset_file_sha256": dataset.file_sha256,
@@ -436,10 +401,9 @@ def train_direct_qsafe(
         "calibration_samples": int(calibration_mask.sum()),
         "heldout_ppo_test_samples": int(test_mask.sum()),
         "member_final_losses": member_losses,
-        "temperatures": temperatures,
+        "state_temperatures": temperatures,
         "heldout_ppo_test_metrics": test_metrics,
         "heldout_mean_state_uncertainty": float(state_std.mean()),
-        "heldout_mean_action_uncertainty": float(action_std.mean()),
         "sac_model_test_consumed": False,
         "objective1_claim_eligible": False,
     }

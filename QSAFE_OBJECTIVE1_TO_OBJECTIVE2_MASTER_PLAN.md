@@ -1,276 +1,215 @@
-# Q_safe Objective 1 → Objective 2 Master Plan
+# Q_safe Objective 1 → Objective 2 master plan
 
-**Repository:** `onrobot-safe-rl`
-**Scope:** Go2 MuJoCo safety critic and SAC training evidence
-**Status:** natural-PPO direct-supervision route frozen for implementation; Objective 1 and Objective 2 are not yet passed
-**Primary route:** SAC-from-zero at `0.30 m/s`, followed by mechanically gated speed expansion
+**Task:** Unitree Go2 at constant `vx=+0.30 m/s`, `vy=0`, `yaw_rate=0`
 
-## 1. Research conclusion
+**Status:** Objective 1 not passed; Objective 2 mechanically blocked
 
-The local feasibility report concludes that large-batch PPO/MJX or MuJoCo-Warp
-is technically useful.  PPO transitions directly identify on-policy state risk
-and executed-action risk under PPO continuation, but do not by themselves
-identify the target-SAC counterfactual
+**Data route:** target-aligned MuJoCo-Warp PPO-from-zero, natural falls only
 
-\[
-P(\mathrm{fall}_{H96}\mid s,a,\pi_{\mathrm{filtered\ SAC}}).
-\]
+**Q_safe route:** direct state-risk trigger plus a separately validated recovery mechanism
 
-PPO fall/pre-fall and delayed-normal states therefore directly supervise the
-Q_safe state-risk and executed-action-risk heads.  Same-state target-SAC
-multi-action branching, common random numbers, and independent replicas are
-retained only for counterfactual recovery-action supervision, calibration, and
-claim-bearing SAC validation.
+## 1. Claim and priority
 
-The fixed-impulse Stage-B source attempt was terminated before any source
-completed.  Its ten source attempts are preserved under
-`stage-b/aborted-fixed-perturbation-db761ac` and are permanently excluded from
-future data.  The replacement protocol is
-`config/qsafe_natural_ppo_falls_v2.yaml`: PPO-from-zero runs on flat terrain
-with ordinary domain randomization and a constant forward command of
-`+0.30 m/s`, but no external push, impulse, or artificial velocity injection.
-This deliberately matches the existing target-SAC task and checkpoint bank.
-Every realized command is recorded.  Every independent first fall
-is retained together with its preceding 64 policy steps.  Registered pre-fall
-states are positive `fall-within-H96` examples; matched states that survive at
-least 96 future steps are negative examples.  Splits are made by whole PPO
-episode, never by individual frame.  Objective-1 target SAC remains fixed at
-`+0.30 m/s`.
+Objective 1 asks whether a pretrained safety trigger reduces falls while SAC is
+trained from zero on the existing `+0.30 m/s` task.  It must beat both pure SAC
+and an intervention-rate-matched random placebo without materially damaging
+return or velocity tracking.  Objective 2 may begin only after the final
+Objective-1 compiler emits both `objective1_pass=true` and
+`phase2_authorized=true`.
 
-The initial 1M development pilot used the upstream MjLab Go2 posture and
-controller (`0.9/-1.8` thigh/calf posture, `0.25` uniform action scale,
-`20/1` or `40/2` PD, `5 ms` physics steps).  Those differ materially from the
-target SAC runtime (`0.7/-1.4`, per-joint `0.2/0.4/0.4`, `60/5` PD, `2 ms`
-physics steps).  Although its PPO-held-out state AUROC was `0.954`, a
-development-only evaluation on the ordered seed-42 natural SAC replay gave
-AUROC `0.415`; therefore it does not establish cross-policy transfer and is
-permanently excluded from Objective-1 claims.  Production PPO and capacity
-selection now require the hash-bound target-alignment contract implemented in
-`safety_data/mjlab_target_alignment.py`.  Upstream-unaligned capacity results
-remain engineering diagnostics only.
+The fixed-impulse source protocol is retired.  Its ten started attempts and
+zero completed sources are isolated under
+`saved/qsafe_development/state_dependent_recovery_v5/stage-b/aborted-fixed-perturbation-db761ac`
+and cannot enter any new dataset.
 
-This follows complementary lessons from [SQRL](https://arxiv.org/abs/2010.14603),
-[Recovery RL](https://arxiv.org/abs/2010.15920),
-[SAILR](https://proceedings.mlr.press/v139/wagener21a.html),
-[Conservative Safety Critics](https://openreview.net/forum?id=iaO86DUuKi), and
-[near-future safety shielding](https://proceedings.neurips.cc/paper/2021/hash/73b277c11266681122132d024f53a75b-Abstract.html).
+The replacement data flow is:
 
-The selected method is a **Selective Advantage Q_safe**:
+```text
+PPO-from-zero, +0.30 m/s, no push
+        ↓
+all independent natural falls + matched natural normal states
+        ↓
+direct supervision of Q_safe state risk
+        ↓
+SAC-only calibration and protected transfer test
+        ↓
+Q_safe danger trigger + frozen recovery mechanism
+        ↓
+paired SAC-only causal test
+        ↓
+24 fresh SAC seeds × pure/Q_safe/random arms
+```
 
-1. five corrected deployable observation frames;
-2. a state-risk head;
-3. nominal/candidate relative safety-benefit heads;
-4. a five-member ensemble with uncertainty;
-5. conformal risk/benefit bounds;
-6. a state trigger plus behavior-support and action-distance gates;
-7. a persistent multi-frame recovery option with closed-loop trigger checks;
-8. deterministic abstention when no candidate has a reliable positive benefit.
+PPO labels answer only whether the current state led to a fall under the PPO
+trajectory.  They supervise `Q_safe(s)` directly.  PPO actions are stored for
+provenance and diagnostics, but no unexecuted action is assigned a fabricated
+label.  Recovery outcomes never feed back into these PPO state labels.
 
-If privileged-state learning passes while deployable learning fails, the
-Objective-1 fallback is a versioned short-horizon predictive rollout shield.
-If both fail, the correct conclusion is that the candidate/label mechanism or
-observability is inadequate; more epochs or outcome-selected data are not an
-authorized remedy.
+## 2. Recovery contract and SQRL interpretation
 
-## 2. Evidence already established
+The requested first recovery candidate is the repository's original non-policy
+controller:
 
-The [parallel Go2 report](RESEARCH_PARALLEL_GO2_SAFETY_DATA.md) establishes a
-feasible GPU simulation path and a strong same-state branching rationale. The
-[V5 Stage-A result](QSAFE_PHASE1_STATE_DEPENDENT_RECOVERY_V5_STAGE_A_RESULT.md)
-passed on fresh audit replicas with approximately `34.47 pp` absolute recovery
-risk reduction and a one-sided LCB of approximately `31.35 pp`.
+- implementation: `runtime/control/go2/motions/src/recovery.cpp`;
+- configuration: `runtime/control/go2/go2.yaml`;
+- control rate: 500 Hz;
+- stages: `Fold -> Above -> SwingDown -> Push`;
+- gains: `kp=100`, `kd=8`;
+- no learned recovery actor and no policy network;
+- exact absolute joint targets, timing, leg masks and joint-reach gate are bound
+  into the recovery artifact.
 
-Stage-A proves only that the frozen K9/H96 recovery library contains a reusable
-state-dependent signal. It does **not** prove that a deployable Q_safe can learn
-the signal, reduce paired closed-loop falls, or reduce SAC-from-zero falls.
-Objective 2 remains forbidden until Objective 1 is authorized by the final
-compiler.
+This uses the SQRL separation at a coarse level: Q_safe decides whether normal
+task control may continue; rejection transfers control to another action
+source.  Here that source is a deterministic motion program rather than a
+recovery policy.
 
-The current Stage-B implementation is not frozen: the latest focused suite
-has `44 passed / 3 failed`, with failures in the transition to an
-outcome-inaccessible split identity view. No actor-bank or Stage-B outcome
-collection may begin before those failures and the full-suite checks are green.
+The fall predicate remains active during recovery.  A recovery-induced height
+or orientation threshold crossing counts as a fall; it cannot be hidden as an
+"intentional" motion.  Before fitting or deploying a trigger, the recovery
+mechanism must pass two result-blind preflights:
 
-## 3. Objective 1 execution ladder
+1. it must not manufacture a fall in the registered stable-standing negative
+   control;
+2. on natural SAC pre-fall snapshots, same-state fixed-recovery continuation
+   must show positive paired fall headroom versus nominal SAC.
 
-### B0 — Result-blind implementation and freeze
+Failure rejects this recovery mechanism for fall prevention.  It does not
+invalidate the natural-PPO archive or authorize relabeling falls.  An
+alternative mechanism—such as an action-conditioned SQRL resampling shield or
+predictive rollout shield—requires a new frozen protocol and the same online
+Objective-1 gates.
 
-Complete and test the existing Stage-B implementation.
+## 3. Phase A — target mechanics, parity and capacity
 
-- Before any 30M PPO run, align the MjLab initial posture, action-to-q-target
-  mapping, PD/effort limits, 50/500 Hz timing, MuJoCo options, episode length,
-  and exact height/roll/pitch terminal predicate to the target SAC task.  Run
-  the capacity ladder only after this alignment; upstream-default capacity
-  measurements cannot select the production environment count.
+Production PPO must match the target SAC task:
 
-- Make the split compiler consume only a dedicated identity view. It may read
-  identity arrays and raw-byte/content hashes, but may not index `fall`,
-  `max_tilt_rad`, `min_height_m`, or derive any outcome statistic before the
-  Model-Test commitment.
-- Store a real role/source-independent trajectory fingerprint: the SHA-256
-  compound snapshot captured immediately after `reset_standing` settles and
-  before the first source impulse, observation, or source-policy action. Do not
-  alias `trajectory_id`; its role/source prefix is operational metadata only.
-- Persist admission and label CRN, rollout, perturbation, and candidate seeds.
-  Validate all ten `role × partition` domains, all four namespaces within each
-  partition, and all 45 unordered partition-pair seed unions.
-- Add file and parent-directory fsync to every irreversible marker and staged
-  publication. A partial marker or fsync failure permanently consumes the
-  attempt and fails closed.
-- Freeze actor-bank production dimensions to `46D` observation and `12D`
-  action; remove production CLI dimension overrides.
-- Add regression tests for outcome indexing, trajectory aliasing, admission-only
-  seed collision, marker durability, and report publication ordering.
+- initial pose `hip=0.05`, `thigh=0.70`, `calf=-1.40`;
+- normalized action scale `0.20/0.40/0.40`;
+- position targets with `kp=60`, `kd=5` and target effort limits;
+- 2-ms MuJoCo steps, ten low-level steps per 50-Hz policy step;
+- target collision geoms, friction, solver and fall predicate;
+- constant `+0.30 m/s` command and no push, impulse or velocity injection.
 
-Exit: focused tests, full tests, `py_compile`, and `git diff --check` pass on a
-clean worktree; create the single generator commit used by the entire Stage-B
-evidence run.
+Required gates:
 
-### B1 — Fixed SAC actor bank
+1. hash-bound target model/config contract;
+2. 100 states × 100 steps native/Warp parity corpus;
+3. 256/512/1024/2048 capacity ladder, each measured for at least five minutes;
+4. select the largest tier whose throughput gain is at least 15%, peak VRAM is
+   at most 20 GiB, and which has no OOM, NaN, reset/RNG cross-talk or kernel
+   failure;
+5. run the selected tier continuously for at least 30 minutes with no sustained
+   resource growth.
 
-Train exactly 14 SAC-from-zero seeds and export exactly 25k, 50k, and 100k
-policy-step policy-only checkpoints, for 42 identities total.
+The experiment process owns its resource sampler; it exits with the runner.
+No external watcher, automation, retry loop or periodic user notification is
+allowed.
 
-- Include every preregistered seed/checkpoint pair.
-- Never filter by return, fall count, stability, or checkpoint quality.
-- Export after the scheduled update and before the next transition.
-- Bind actor bytes, state dict, policy configuration, run contract, and clean
-  generator commit in the actor-bank manifest.
+## 4. Phase B — 30M natural-PPO collection
 
-### B2 — Five-role same-state data
+Train official-size clipped PPO with GAE, critic loss, entropy, minibatches and
+multiple update epochs for exactly 30M policy-environment steps.  Save fixed
+exposure checkpoints at `0, 1M, 2M, 5M, 10M, 20M, 30M`.  Do not stop, extend,
+select or discard a checkpoint based on its fall count or return.
 
-Use physically separate roles:
+Every environment follows these rules:
 
-| Role | Groups | Replicas | Use |
-|---|---:|---:|---|
-| Fit | 1,536 | R32 | Q_safe and normalization |
-| Probability calibration | 384 | R32 | temperature calibration |
-| Uncertainty calibration | 384 | R32 | conformal offsets |
-| Selector calibration | 384 | R32 | selector and placebo |
-| Model-Test | 768 | R64 | one-shot held-out test |
+- the first terminal fall is the episode's only counted fall;
+- reset occurs in the same vector step;
+- retain short episodes with availability masks;
+- keep the preceding 64 policy steps and offsets `1/2/4/8/16/32/64`;
+- store integration state, qpos/qvel/ctrl, corrected `5×46` history, requested
+  and executed action, absolute q-target, command, randomization and RNG/
+  environment/episode/step identities;
+- verify runtime force arrays remain zero;
+- sample matched normal states by a frozen hash rule, at least 96 steps from a
+  fall or terminal, stratified by PPO age and realized randomization;
+- shard atomically, fail closed on corruption or duplicate identity, and
+  publish the manifest last.
 
-Each group is one admission-positive state from one source trajectory. It
-contains K9 candidates, H96 continuation, five corrected observation frames,
-requested/executed/q-target action representations, per-replica outcomes,
-CRN identities, and a physically separate privileged diagnostic view.
+Acceptance requires
+`recorded_falls == independently_terminated_fall_episodes`, unique identities,
+zero external force, coverage at every registered PPO age, and descriptive
+fall/normal distribution reports.  Large shards and checkpoints stay outside
+Git; manifests, hashes and reports are committed.
 
-PPO-generated fall and normal states enter Q_safe fitting directly. Their
-labels supervise state risk and the actually executed PPO action only; they
-cannot label unexecuted recovery candidates. Counterfactual candidate heads,
-calibration, Model-Test, and final causal evidence retain target-SAC
-actor/source identities and same-state labels.
+## 5. Phase C — state-risk fitting and SAC-only transfer
 
-### B3 — Fit, calibrate, and freeze
+Fit a five-member state-risk ensemble using only the Fit role.  Split by whole
+PPO episodes; a trajectory may never cross roles.  The production loss contains
+no executed-action or candidate-action head.
 
-Fit only on the Fit role. Freeze, in order:
+PPO-held-out metrics are development diagnostics.  Probability calibration,
+uncertainty calibration, trigger selection and protected Model-Test use only
+SAC-proposed states.  No PPO state may enter the protected SAC Model-Test.
 
-1. fit-only normalization;
-2. five-member ensemble and temperature calibration;
-3. signed conformal risk/benefit offsets;
-4. exact 100-point selector grid and simultaneous bootstrap;
-5. matched-random placebo bundle;
-6. self-describing Q_safe artifact.
+Frozen Model-Test gates:
 
-Model-Test outcomes cannot change any model, temperature, threshold, selector,
-placebo, or action protocol.
+- state AUROC `>=0.60`, bootstrap LCB `>=0.55`;
+- ten-bin ECE `<=0.08` after SAC-only calibration;
+- intervention rate `<=35%`;
+- positive risk separation and trigger direction at every registered SAC age
+  and held-out source seed;
+- fixed-trigger paired fall reduction `>=3 pp`, one-sided LCB `>0`.
 
-### B4 — One-shot Model-Test gates
+The protected result is one-shot.  Outcomes cannot change the model,
+temperature, uncertainty offset, threshold or placebo bundle.
 
-The Model-Test is consumed atomically before its outcome bytes can be loaded.
-It must pass all gates:
+## 6. Phase D — at least 1,200 paired SAC-only states
 
-- pair accuracy `>=0.60`, 2.5% LCB `>=0.55`;
-- strong-pair accuracy `>=0.62` for empirical risk gaps `>=0.25`;
-- top-1 reduction `>=0.05`, one-sided LCB `>=0.03`;
-- frozen-selector reduction `>=0.03`, one-sided LCB `>0`;
-- intervention rate `<=0.35`;
-- oracle-gap capture `>=0.25`;
-- stable ten-bin ECE `<=0.08`;
-- strictly positive top-1 and selector effects at all three checkpoint ages,
-  four held-out actor seeds, and twelve source seeds.
-
-Failure is terminal for this one-shot artifact. A failed Model-Test cannot be
-re-run with changed thresholds or a different seed.
-
-### C — Paired closed-loop causal confirmation
-
-Only a passing B4 authorizes C. Evaluate the same initial state and the same
-continuation randomness under:
+Only a passing recovery preflight and Phase-C Model-Test authorize this phase.
+For at least 1,200 independent SAC-only snapshots, use identical initial state
+and common continuation randomness for:
 
 1. nominal SAC;
-2. frozen Q_safe selector;
-3. action-distance/intervention-rate-matched random placebo.
+2. frozen Q_safe trigger plus frozen recovery;
+3. intervention-rate-matched random trigger plus the same recovery.
 
-Use at least 1,200 independent groups with R64 paired replicas. Require Q_safe
-reduction `>=5 pp`, one-sided LCB `>=3 pp`, positive comparison against placebo,
-more improved than worsened pairs, positive effects in every registered
-subgroup, and valid placebo balance.
+Require at least 5-pp absolute Q_safe fall reduction, one-sided LCB at least
+3 pp, positive Q_safe-versus-placebo LCB, more improved than worsened pairs,
+valid placebo balance and positive effects in every registered subgroup.
 
-### D — SAC-from-zero Objective 1 confirmation
+## 7. Phase E — SAC-from-zero Objective 1
 
-Only a passing C authorizes D. Run 24 fresh seeds (`201..224`) with three
-arms—pure SAC, frozen Q_safe SAC, and matched-random placebo—at exactly 500k
-policy steps per seed/arm.
+Only passing Phases C and D authorize 24 fresh seeds (`201..224`) with three
+500k-policy-step arms per seed:
 
-Require all of the following:
+- pure SAC;
+- SAC + frozen Q_safe/recovery;
+- SAC + matched-random recovery placebo.
 
-- relative fall reduction `>=20%`;
-- absolute reduction `>=0.40 falls/1,000 steps`;
-- seed-cluster fall-reduction LCB `>0`;
-- Q_safe versus placebo LCB `>0`;
-- exact paired label-swap test `p<=0.05`;
-- return non-inferiority within the preregistered 5% margin;
-- velocity tracking degradation `<=0.03 m/s`;
-- deadline-miss rate `<0.001`;
-- complete provenance for all 72 exposures.
+Objective 1 passes only if all 72 fixed exposures complete and all gates hold:
 
-The authorization compiler must recompute all stages and emit
-`objective1_pass=true` before any speed-range data or model is created.
+- cumulative falls reduced by at least 20% relative;
+- absolute reduction at least `0.40 falls/1000 steps`;
+- seed-cluster bootstrap LCB above zero;
+- Q_safe-versus-placebo LCB above zero;
+- paired label-swap `p<=0.05`;
+- mean return at least 95% of pure SAC;
+- velocity-error increase at most `0.03 m/s`;
+- deadline-miss rate below `0.1%`;
+- complete immutable provenance.
 
-## 4. Objective 2 speed expansion
+## 8. Objective 2 — forbidden until authorization
 
-After Objective 1 only, test symmetric ranges in this order:
-
-1. `0.25–0.35 m/s`;
-2. `0.20–0.40 m/s`;
-3. `0.10–0.50 m/s`.
-
-Each range receives fresh boundary mining, same-state labels, fit/calibration/
-test roles, paired closed-loop evaluation, and fixed-exposure online testing.
+After Objective 1 only, test `0.25–0.35`, then `0.20–0.40`, then
+`0.10–0.50 m/s`.  Each range requires new boundary data, calibration,
+protected test, paired causal evidence and fixed-exposure online evidence.  A
+cross-speed critic must receive the command as an explicit deployable input.
 Stop at the first failed range.
 
-The shared cross-speed critic must receive an explicit deployable `command_vx`
-feature and a new model/schema version. A 46D critic without command input may
-be reported only as a single-speed critic, not as a cross-speed generalizer.
+## 9. Staged commits
 
-Each successful range must retain at least 80% of Objective-1 relative fall
-reduction, achieve at least 16% relative reduction, keep a positive fall LCB,
-and pass the return, velocity, runtime, and placebo gates.
+Keep at least these durable boundaries:
 
-## 5. Verification, artifacts, and commit policy
+1. `protocol: replace fixed perturbations with natural PPO fall collection`;
+2. `feat: add parity-gated parallel PPO natural-fall collector`;
+3. `test: validate terminal reset snapshot export and resource accounting`;
+4. `docs: record PPO capacity and natural-fall collection result`;
+5. `feat: train state-risk qsafe and bind frozen recovery`;
+6. `docs: record Objective 1 paired and online decision`.
 
-Required invariants include bit-exact snapshot restore, no cross-role state or
-trajectory collision, no role-prefix fingerprint alias, no precommit outcome
-indexing, durable one-shot markers, exact actor roster, correct rejected-action
-attribution, and fixed-exposure fall accounting.
-
-Required evidence artifacts are versioned grouped datasets, trajectory/RNG
-identity views, actor-bank manifest, Q_safe artifact, selector/placebo bundles,
-Stage A/B/C/D reports, and the final Objective-1/Objective-2 authorization
-reports. Large NPZ/checkpoint/step-log files stay outside Git; manifests,
-hashes, reports, and protocol files are committed.
-
-Milestone commits:
-
-1. `docs: consolidate qsafe objective plan`;
-2. `feat: freeze V5 Stage B result-blind evidence pipeline`;
-3. `docs: record one-shot V5 Stage B decision`;
-4. `docs: record Stage C paired closed-loop decision`;
-5. `docs: record Stage D Objective 1 authorization`;
-6. one protocol/result pair for each authorized Objective-2 speed range.
-
-Between the generator commit and the one-shot Stage-B decision, do not change
-HEAD, checkout, or create a code commit. Do not use outcome-dependent seed
-filtering, top-up, optional stopping, threshold changes, or manual inspection
-of protected outcome arrays. No subagent is created unless the user explicitly
-requests one.
+Run focused tests before every commit and the full repository suite before each
+claim-bearing collection generator is frozen.  Objective 2 commits are
+forbidden until the final Objective-1 authorization report passes.

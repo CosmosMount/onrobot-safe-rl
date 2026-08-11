@@ -35,6 +35,28 @@ class NaturalPpoTrainingGeometryTest(unittest.TestCase):
         self.assertEqual(force["push_event"], "disabled")
         self.assertEqual(force["impulse"], "forbidden")
 
+    def test_qsafe_is_state_trigger_for_original_nonpolicy_recovery(self):
+        with open("config/qsafe_natural_ppo_falls_v2.yaml", encoding="utf-8") as stream:
+            protocol = yaml.safe_load(stream)
+        supervision = protocol["direct_ppo_supervision"]
+        self.assertEqual(supervision["supervised_heads"], ["state_risk"])
+        runtime = protocol["qsafe_runtime"]
+        self.assertEqual(runtime["critic_role"], "state_risk_trigger")
+        self.assertFalse(runtime["learned_candidate_selector"])
+        recovery = runtime["recovery"]
+        self.assertFalse(recovery["learned_policy_used"])
+        self.assertEqual(recovery["stages"], [
+            "fold", "above", "swing_down", "push"])
+        self.assertEqual(recovery["gains"], {"kp": 100.0, "kd": 8.0})
+        self.assertTrue(recovery["fall_predicate_remains_active_during_recovery"])
+        self.assertEqual(recovery["recovery_threshold_crossing_exemption"], "forbidden")
+        self.assertTrue(protocol["qsafe_validation"]["fixed_recovery_preflight"][
+            "any_recovery_threshold_crossing_counts_as_fall"])
+        self.assertEqual(protocol["qsafe_validation"]["paired_arms"], [
+            "nominal_sac", "qsafe_fixed_recovery",
+            "matched_random_fixed_recovery",
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()

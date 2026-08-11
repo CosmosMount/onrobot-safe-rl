@@ -119,7 +119,7 @@ def _predict_state_risk(
     probabilities = []
     with torch.inference_mode():
         for model, temperature in zip(
-                members, artifact["temperatures"], strict=True):
+                members, artifact["state_temperatures"], strict=True):
             chunks = []
             for start in range(0, len(normalized), batch_size):
                 history = torch.from_numpy(normalized[start:start + batch_size])
@@ -144,8 +144,9 @@ def evaluate_direct_qsafe_on_ordered_sac_replay(
     if output_path.exists():
         raise FileExistsError("SAC transfer audit output path was already consumed")
     artifact = torch.load(model_path, map_location="cpu", weights_only=False)
-    if artifact.get("schema_version") != "qsafe.natural_ppo_direct_model.v1":
-        raise ValueError("input is not a direct natural-PPO Q_safe model")
+    if artifact.get("schema_version") != "qsafe.natural_ppo_state_trigger_model.v2" or (
+            artifact.get("production_head") != "state_risk_only"):
+        raise ValueError("input is not a natural-PPO state-trigger Q_safe model")
     replay = torch.load(replay_path, map_location="cpu", weights_only=False)
     required = {
         "observation", "next_observation", "terminated", "truncated",

@@ -7,9 +7,10 @@ purpose:
   ppo_role: direct_qsafe_training_and_state_coverage
   ppo_transition_as_qsafe_label:
     state_risk: allowed
-    executed_action_risk_under_ppo_continuation: allowed
+    executed_action_risk_under_ppo_continuation: diagnostic_only
     counterfactual_recovery_action_risk: forbidden
-  counterfactual_recovery_label_policy: target_sac_same_state_branching
+  recovery_controller: original_go2_fixed_joint_target_sequence
+  learned_recovery_policy: forbidden
   model_test_state_source: sac_only
   objective2_before_objective1_authorization: forbidden
 
@@ -128,7 +129,7 @@ direct_ppo_supervision:
   positive_label: fall_within_96_steps
   negative_examples: matched_normal_states
   negative_label: survived_next_96_steps
-  supervised_heads: [state_risk, executed_action_risk]
+  supervised_heads: [state_risk]
   continuation_semantics: ppo_on_policy
   split_cluster: [ppo_seed, environment_identity, episode_identity]
   split_individual_snapshots_across_roles: forbidden
@@ -150,19 +151,43 @@ native_import:
   parity_failure_action: retain_in_raw_archive_but_exclude_from_qsafe_dataset
   parity_rejection_top_up: forbidden
 
-qsafe_labeling:
-  candidate_count: 9
-  nominal_candidate_count: 1
-  recovery_option_count: 8
-  continuation_policy: frozen_target_sac
+qsafe_runtime:
+  critic_role: state_risk_trigger
+  critic_input: corrected_deployable_observation_history_5x46
+  unsafe_decision: calibrated_risk_and_uncertainty_gate
+  safe_action: execute_target_sac_action
+  unsafe_action: execute_next_original_recovery_sequence_q_target
+  alternative_action_selection: deterministic_sequence_stage_and_tick
+  learned_candidate_selector: false
+  recovery:
+    implementation: runtime/control/go2/motions/src/recovery.cpp
+    configuration: runtime/control/go2/go2.yaml
+    learned_policy_used: false
+    control_frequency_hz: 500
+    stages: [fold, above, swing_down, push]
+    gains: {kp: 100.0, kd: 8.0}
+    complete_sequence_is_persistent: true
+    original_controller_acceptance:
+      fallen_roll_or_pitch_rad: 0.523599
+      or_upside_down: true
+    fall_predicate_remains_active_during_recovery: true
+    recovery_threshold_crossing_exemption: forbidden
+
+qsafe_validation:
+  continuation_policy: target_sac
   horizon_policy_steps: 96
-  common_random_numbers_across_candidates: true
+  paired_arms: [nominal_sac, qsafe_fixed_recovery, matched_random_fixed_recovery]
+  common_random_numbers_across_arms: true
   direct_fit_source: matched_ppo_prefall_and_normal_states
-  counterfactual_action_fit_source: target_sac_same_state_branching
   calibration_source: sac_only
   model_test_source: sac_only
   development_group_ladder: [1000, 3000, 10000]
-  production_group_count_if_10k_slope_positive: 50000
+  recovery_outcomes_train_qsafe: false
+  fixed_recovery_preflight:
+    standing_negative_control_required: true
+    natural_prefall_same_state_headroom_required: true
+    any_recovery_threshold_crossing_counts_as_fall: true
+    failure_action: do_not_train_or_deploy_trigger_with_failed_recovery
 
 reporting:
   periodic_user_updates: disabled
