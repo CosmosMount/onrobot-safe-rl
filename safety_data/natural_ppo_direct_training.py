@@ -14,7 +14,6 @@ from typing import Any
 
 import numpy as np
 import torch
-from torch import nn
 from torch.nn import functional as F
 
 from rl.qsafe.network import QSafeNetworkConfig, SelectiveAdvantageQSafe
@@ -28,7 +27,6 @@ class DirectTrainingConfig:
     learning_rate: float = 3e-4
     weight_decay: float = 1e-5
     state_risk_weight: float = 1.0
-    calibration_steps: int = 200
     seed: int = 20260811
     frame_hidden_dim: int = 128
     state_hidden_dim: int = 128
@@ -36,7 +34,7 @@ class DirectTrainingConfig:
 
     def __post_init__(self) -> None:
         for name in (
-                "ensemble_members", "epochs", "batch_size", "calibration_steps",
+                "ensemble_members", "epochs", "batch_size",
                 "frame_hidden_dim", "state_hidden_dim", "action_hidden_dim"):
             if int(getattr(self, name)) <= 0:
                 raise ValueError(f"{name} must be positive")
@@ -212,24 +210,6 @@ def _normalized_arrays(
     return observation.astype(np.float32), arrays["label"]
 
 
-def _fit_temperature(
-    state_logits: torch.Tensor,
-    label: torch.Tensor,
-    steps: int,
-) -> float:
-    log_temperature = nn.Parameter(torch.zeros((), device=state_logits.device))
-    optimizer = torch.optim.Adam([log_temperature], lr=0.03)
-    detached_state = state_logits.detach()
-    for _ in range(steps):
-        optimizer.zero_grad(set_to_none=True)
-        temperature = log_temperature.exp().clamp(0.05, 20.0)
-        loss = F.binary_cross_entropy_with_logits(
-            detached_state / temperature, label)
-        loss.backward()
-        optimizer.step()
-    return float(log_temperature.detach().exp().clamp(0.05, 20.0).item())
-
-
 def _forward_state_logits(
     model: SelectiveAdvantageQSafe,
     observation: torch.Tensor,
@@ -303,8 +283,7 @@ def train_direct_qsafe(
     observation_np, label_np = _normalized_arrays(dataset, normalization)
     observation = torch.from_numpy(observation_np).to(selected_device)
     label = torch.from_numpy(label_np.astype(np.float32)).to(selected_device)
-    calibration_indices = torch.from_numpy(
-        np.flatnonzero(calibration_mask)).to(selected_device)
+    calibration_indices_np = np.flatnonzero(calibration_mask)
     test_indices_np = np.flatnonzero(test_mask)
     network_config = QSafeNetworkConfig(
         frame_hidden_dim=config.frame_hidden_dim,
@@ -313,7 +292,9 @@ def train_direct_qsafe(
         action_mode="pointwise",
     )
     models: list[SelectiveAdvantageQSafe] = []
-    temperatures: list[float] = []
+    # PPO labels may fit representation weights, but production probability
+    # calibration is deliberately left pending for an SAC-only calibration set.
+    temperatures = [1.0] * config.ensemble_members
     fit_pairs = np.unique(dataset.arrays["pair_identity"][fit_mask])
     pair_to_indices = {
         bytes(pair): np.flatnonzero(
@@ -349,15 +330,16 @@ def train_direct_qsafe(
                 optimizer.step()
                 final_loss = float(loss.detach().item())
         model.eval()
-        with torch.no_grad():
-            state_logit = _forward_state_logits(
-                model, observation[calibration_indices])
-        temperature = _fit_temperature(
-            state_logit, label[calibration_indices], config.calibration_steps)
         models.append(model)
-        temperatures.append(temperature)
         member_losses.append(final_loss)
 
+    calibration_indices = torch.from_numpy(calibration_indices_np).to(selected_device)
+    calibration_state_mean, calibration_state_std = _predict(
+        models, temperatures, observation[calibration_indices], config.batch_size)
+    ppo_calibration_diagnostic_metrics = _metrics(
+        label_np[calibration_indices_np],
+        dataset.arrays["pair_identity"][calibration_indices_np],
+        calibration_state_mean)
     test_indices = torch.from_numpy(test_indices_np).to(selected_device)
     state_mean, state_std = _predict(
         models, temperatures, observation[test_indices], config.batch_size)
@@ -365,7 +347,7 @@ def train_direct_qsafe(
         label_np[test_indices_np], dataset.arrays["pair_identity"][test_indices_np],
         state_mean)
     artifact = {
-        "schema_version": "qsafe.natural_ppo_state_trigger_model.v2",
+        "schema_version": "qsafe.natural_ppo_state_trigger_model.v3",
         "production_head": "state_risk_only",
         "executed_ppo_action_use": "provenance_and_diagnostics_only",
         "trainer_commit": _git_head(),
@@ -381,6 +363,9 @@ def train_direct_qsafe(
             for model in models
         ],
         "state_temperatures": temperatures,
+        "temperature_status": "pending_sac_only_calibration",
+        "ppo_calibration_role_use": "diagnostics_only",
+        "ppo_calibration_diagnostic_metrics": ppo_calibration_diagnostic_metrics,
         "heldout_ppo_test_metrics": test_metrics,
         "sac_model_test_consumed": False,
         "objective1_claim_eligible": False,
@@ -393,7 +378,7 @@ def train_direct_qsafe(
     _publish_no_clobber(temporary, output)
     output_sha256 = _sha256(output)
     report = {
-        "schema_version": "qsafe.natural_ppo_state_trigger_training_report.v2",
+        "schema_version": "qsafe.natural_ppo_state_trigger_training_report.v3",
         "model_file": output.name,
         "model_file_sha256": output_sha256,
         "dataset_file_sha256": dataset.file_sha256,
@@ -402,6 +387,11 @@ def train_direct_qsafe(
         "heldout_ppo_test_samples": int(test_mask.sum()),
         "member_final_losses": member_losses,
         "state_temperatures": temperatures,
+        "temperature_status": "pending_sac_only_calibration",
+        "ppo_calibration_role_use": "diagnostics_only",
+        "ppo_calibration_diagnostic_metrics": ppo_calibration_diagnostic_metrics,
+        "ppo_calibration_mean_state_uncertainty": float(
+            calibration_state_std.mean()),
         "heldout_ppo_test_metrics": test_metrics,
         "heldout_mean_state_uncertainty": float(state_std.mean()),
         "sac_model_test_consumed": False,

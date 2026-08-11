@@ -15,6 +15,7 @@ from safety_data.natural_ppo_direct_training import (
 class DirectPpoQSafeMetricsTest(unittest.TestCase):
     def test_production_config_has_no_action_risk_loss(self):
         self.assertNotIn("action_risk_weight", DirectTrainingConfig.__dataclass_fields__)
+        self.assertNotIn("calibration_steps", DirectTrainingConfig.__dataclass_fields__)
 
     def test_auc_handles_ties_by_average_rank(self):
         label = np.asarray([False, True, False, True])
