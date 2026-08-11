@@ -10,6 +10,7 @@ import numpy as np
 
 from safety_data.natural_ppo_direct_dataset import compile_direct_qsafe_dataset
 from safety_data.natural_ppo_archive import (
+    _retain_smallest_identity,
     checkpoint_age_bucket,
     deterministic_pairs,
     deterministic_role_pairs,
@@ -52,6 +53,16 @@ class NaturalPpoArchiveTest(unittest.TestCase):
             ("fall-test", 1, "normal-test", "s", "test"),
         ])
 
+    def test_bounded_normal_pool_retains_global_smallest_identities(self):
+        pools = {}
+        key = ("0:0.8:0.0:0.0", "fit")
+        for value in (9, 2, 7, 1, 5):
+            _retain_smallest_identity(pools, key, f"{value:064x}", 3)
+        self.assertEqual(
+            sorted(identity for _, identity in pools[key]),
+            [f"{value:064x}" for value in (1, 2, 5)],
+        )
+
     def test_complete_archive_is_validated_and_matched(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "archive"
@@ -88,7 +99,7 @@ class NaturalPpoArchiveTest(unittest.TestCase):
                 candidate += 1
             np.savez_compressed(
                 fall_path,
-                identity=np.asarray([b"fall"], dtype="S64"),
+                identity=np.asarray([b"f" * 64], dtype="S64"),
                 environment_id=np.asarray([fall_environment], dtype=np.int32),
                 episode_id=np.asarray([fall_episode], dtype=np.int64),
                 trajectory_length=np.asarray([2], dtype=np.int16),
@@ -125,7 +136,7 @@ class NaturalPpoArchiveTest(unittest.TestCase):
             )
             np.savez_compressed(
                 normal_path,
-                identity=np.asarray([b"normal-a", b"normal-b"], dtype="S64"),
+                identity=np.asarray([b"a" * 64, b"b" * 64], dtype="S64"),
                 environment_id=np.asarray([2, 2], dtype=np.int32),
                 episode_id=np.asarray(normal_episodes, dtype=np.int64),
                 qualification_future_nonterminal_steps=np.asarray(

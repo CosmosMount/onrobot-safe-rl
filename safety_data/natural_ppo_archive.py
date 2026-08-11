@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
+import heapq
 import hashlib
 import json
 import os
@@ -146,6 +147,24 @@ def deterministic_role_pairs(
     return result
 
 
+def _retain_smallest_identity(
+    pools: dict[tuple[str, str], list[tuple[int, str]]],
+    key: tuple[str, str],
+    identity: str,
+    limit: int,
+) -> None:
+    """Keep the lexicographically smallest ``limit`` SHA-256 identities."""
+    if limit <= 0:
+        return
+    heap = pools.setdefault(key, [])
+    numeric = int(identity, 16)
+    item = (-numeric, identity)
+    if len(heap) < limit:
+        heapq.heappush(heap, item)
+    elif numeric < -heap[0][0]:
+        heapq.heapreplace(heap, item)
+
+
 def _load_manifest(path: Path, schema: str) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if value.get("schema_version") != schema:
@@ -158,9 +177,11 @@ def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str
     output = Path(output)
     if output.exists() or output.with_suffix(".report.json").exists():
         raise FileExistsError("archive validation output path was already consumed")
-    falls = _load_manifest(root / "manifest.json", "qsafe.mjlab_natural_falls.v2")
+    fall_manifest_path = root / "manifest.json"
+    falls = _load_manifest(fall_manifest_path, "qsafe.mjlab_natural_falls.v2")
+    normal_manifest_path = root / falls["provenance"]["normal_manifest"]
     normals = _load_manifest(
-        root / falls["provenance"]["normal_manifest"],
+        normal_manifest_path,
         "qsafe.mjlab_natural_normals.v2")
     supervision = falls.get("direct_qsafe_supervision", {})
     if supervision != {
@@ -184,12 +205,13 @@ def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str
         path = root / shard["path"]
         if _sha256(path) != shard["sha256"]:
             raise ValueError(f"fall shard hash mismatch: {path}")
-        with np.load(path, allow_pickle=False) as arrays:
+        with np.load(path, allow_pickle=False) as loaded:
+            arrays = {name: loaded[name] for name in loaded.files}
             forbidden = {
                 "counterfactual_candidate_outcome", "recovery_action",
                 "recovery_sequence", "recovery_policy_action",
             }
-            if forbidden.intersection(arrays.files):
+            if forbidden.intersection(arrays):
                 raise ValueError("PPO shard contains counterfactual action labels")
             required = {
                 "trajectory_time", "trajectory_qpos", "trajectory_qvel",
@@ -198,7 +220,7 @@ def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str
                 "terminal_qacc_warmstart", "terminal_ctrl", "rng_identity",
                 "ppo_iteration",
             }
-            if not required.issubset(arrays.files):
+            if not required.issubset(arrays):
                 raise ValueError("fall shard lacks complete integration/RNG state")
             count = len(arrays["identity"])
             if count != shard["event_count"]:
@@ -273,14 +295,17 @@ def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str
     if fall_count != falls["provenance"]["independent_fall_episodes"]:
         raise ValueError("fall event count is not independent episode count")
 
-    normal_rows: list[tuple[str, str, str]] = []
+    demand_by_key = Counter((stratum, role) for _, _, stratum, role in prefall_rows)
+    normal_pools: dict[tuple[str, str], list[tuple[int, str]]] = {}
+    episode_roles: dict[tuple[int, int], str] = {}
     normal_count = 0
     normal_root = (root / falls["provenance"]["normal_manifest"]).parent
     for shard in normals["shards"]:
         path = normal_root / shard["path"]
         if _sha256(path) != shard["sha256"]:
             raise ValueError(f"normal shard hash mismatch: {path}")
-        with np.load(path, allow_pickle=False) as arrays:
+        with np.load(path, allow_pickle=False) as loaded:
+            arrays = {name: loaded[name] for name in loaded.files}
             count = len(arrays["identity"])
             if count != shard["event_count"]:
                 raise ValueError("normal shard count mismatch")
@@ -296,26 +321,55 @@ def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str
                 raise ValueError("normal outcome horizon drifted")
             if not np.allclose(arrays["command"], [0.3, 0.0, 0.0], atol=1e-6):
                 raise ValueError("normal command drifted from constant +0.3 m/s")
-            if "rng_identity" not in arrays.files or "ppo_iteration" not in arrays.files:
+            if "rng_identity" not in arrays or "ppo_iteration" not in arrays:
                 raise ValueError("normal shard lacks RNG/training-age identity")
-            for row in range(count):
-                identity = bytes(arrays["identity"][row]).decode("ascii")
-                if identity in seen:
-                    raise ValueError("duplicate fall/normal identity")
-                seen.add(identity)
-                base = randomization_stratum(
-                    arrays["randomized_geom_friction"][row],
-                    arrays["randomized_body_ipos"][row],
-                    arrays["randomized_encoder_bias"][row])
-                age = checkpoint_age_bucket(int(arrays["policy_step"][row]))
-                role = episode_split_role(
-                    seed, int(arrays["environment_id"][row]),
-                    int(arrays["episode_id"][row]))
-                normal_rows.append((identity, f"{age}:{base}", role))
+            identities = [bytes(value).decode("ascii") for value in arrays["identity"]]
+            chunk_identities = set(identities)
+            if len(chunk_identities) != count or seen.intersection(chunk_identities):
+                raise ValueError("duplicate fall/normal identity")
+            seen.update(chunk_identities)
+
+            friction_values = arrays["randomized_geom_friction"][..., 0]
+            friction = np.round(np.mean(
+                friction_values,
+                axis=tuple(range(1, friction_values.ndim)),
+            ).astype(np.float64), 1)
+            body_ipos = np.round(np.linalg.norm(
+                arrays["randomized_body_ipos"], axis=(1, 2)
+            ).astype(np.float64), 1)
+            encoder_bias = np.round(np.linalg.norm(
+                arrays["randomized_encoder_bias"], axis=1
+            ).astype(np.float64), 2)
+            policy_steps = arrays["policy_step"].astype(np.int64, copy=False)
+            ages = np.searchsorted(
+                np.asarray(AGE_BOUNDARIES, dtype=np.int64), policy_steps,
+                side="right")
+            if np.any(ages >= len(AGE_BOUNDARIES)):
+                raise ValueError("normal policy step exceeds registered 30M exposure")
+            environment_ids = arrays["environment_id"].astype(np.int64, copy=False)
+            episode_ids = arrays["episode_id"].astype(np.int64, copy=False)
+            for row, identity in enumerate(identities):
+                base = ":".join(map(str, (
+                    float(friction[row]), float(body_ipos[row]),
+                    float(encoder_bias[row]))))
+                stratum = f"{int(ages[row])}:{base}"
+                episode_key = (int(environment_ids[row]), int(episode_ids[row]))
+                role = episode_roles.get(episode_key)
+                if role is None:
+                    role = episode_split_role(seed, *episode_key)
+                    episode_roles[episode_key] = role
+                key = (stratum, role)
+                _retain_smallest_identity(
+                    normal_pools, key, identity, demand_by_key.get(key, 0))
             normal_count += count
     if normal_count != normals["event_count"]:
         raise ValueError("aggregate normal count mismatch")
 
+    normal_rows = [
+        (identity, stratum, role)
+        for (stratum, role), heap in normal_pools.items()
+        for _, identity in heap
+    ]
     pairs = deterministic_role_pairs(prefall_rows, normal_rows)
     _atomic_npz(
         output,
@@ -327,9 +381,15 @@ def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str
     )
     report = {
         "schema_version": "qsafe.natural_ppo_archive_validation.v1",
+        "fall_manifest_sha256": _sha256(fall_manifest_path),
+        "normal_manifest_sha256": _sha256(normal_manifest_path),
         "fall_events": fall_count,
         "available_prefall_states": len(prefall_rows),
         "normal_candidates": normal_count,
+        "normal_candidates_retained_for_matching": len(normal_rows),
+        "normal_matching_selection": (
+            "lexicographically_smallest_identity_within_frozen_"
+            "age_randomization_episode_role_stratum"),
         "matched_normal_states": len(pairs),
         "matched_pairs_by_role": {
             role: sum(row[4] == role for row in pairs)

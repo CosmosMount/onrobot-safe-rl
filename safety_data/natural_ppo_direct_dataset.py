@@ -106,7 +106,8 @@ def compile_direct_qsafe_dataset(
         path = archive / shard["path"]
         if _sha256(path) != shard["sha256"]:
             raise ValueError("fall shard changed after archive validation")
-        with np.load(path, allow_pickle=False) as arrays:
+        with np.load(path, allow_pickle=False) as loaded:
+            arrays = {name: loaded[name] for name in loaded.files}
             for row, raw_identity in enumerate(arrays["identity"]):
                 fall_identity = _decode(raw_identity)
                 candidate_offsets = offsets_by_fall.get(fall_identity, ())
@@ -142,7 +143,8 @@ def compile_direct_qsafe_dataset(
         path = normal_root / shard["path"]
         if _sha256(path) != shard["sha256"]:
             raise ValueError("normal shard changed after archive validation")
-        with np.load(path, allow_pickle=False) as arrays:
+        with np.load(path, allow_pickle=False) as loaded:
+            arrays = {name: loaded[name] for name in loaded.files}
             for row, raw_identity in enumerate(arrays["identity"]):
                 identity = _decode(raw_identity)
                 if identity not in requested_normals:
