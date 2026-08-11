@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -323,6 +324,29 @@ class StageBSplitDisjointnessTest(unittest.TestCase):
                 role_datasets=datasets,
                 actor_bank_manifest=actor_bank,
             )
+
+    def test_all_ten_partition_rng_domains_are_persisted_and_disjoint(self) -> None:
+        actor_bank = _synthetic_actor_bank()
+        datasets = {
+            role: _identity_only_role_dataset(role, actor_bank, seed_offset=index + 1)
+            for index, role in enumerate(stage_b.ROLE_ORDER)
+        }
+        admissions = {
+            role: SimpleNamespace(arrays={
+                "admission_crn_id": np.asarray([1_000_000_000 + index], dtype=np.uint64),
+                "admission_rollout_seed": np.asarray([1_100_000_000 + index], dtype=np.uint64),
+                "admission_perturbation_seed": np.asarray([1_200_000_000 + index], dtype=np.uint64),
+                "admission_candidate_seed": np.asarray([1_300_000_000 + index], dtype=np.uint64),
+            })
+            for index, role in enumerate(stage_b.ROLE_ORDER)
+        }
+        report = stage_b.compile_partition_rng_disjointness(
+            role_admissions=admissions,
+            role_labels=datasets,
+        )
+        self.assertTrue(report["pass"])
+        self.assertEqual(report["pairs_checked"], 45)
+        self.assertFalse(report["outcome_columns_read"])
 
 
 if __name__ == "__main__":

@@ -1038,6 +1038,76 @@ def compile_split_disjointness(
     return report | {"report_sha256": canonical_sha256(report)}
 
 
+def compile_partition_rng_disjointness(
+    *,
+    role_admissions: Mapping[str, Any],
+    role_labels: Mapping[str, StageBSplitIdentityView],
+) -> dict[str, Any]:
+    """Prove all ten role×partition RNG namespaces are disjoint.
+
+    Admission ledgers are accepted only through their four persisted seed
+    arrays; label inputs are the already projected identity views.  No fall,
+    first-failure, or other outcome field is accessed.
+    """
+    if tuple(role_admissions) != ROLE_ORDER or tuple(role_labels) != ROLE_ORDER:
+        raise StageBExecutionError("partition proof requires the five roles in order")
+    namespace_names = {
+        "admission": (
+            "admission_crn_id", "admission_rollout_seed",
+            "admission_perturbation_seed", "admission_candidate_seed",
+        ),
+        "label": ("crn_id", "rollout_seed", "perturbation_seed", "candidate_seed"),
+    }
+    domains: dict[str, dict[str, set[int]]] = {}
+    for role in ROLE_ORDER:
+        admission = role_admissions[role]
+        arrays = getattr(admission, "arrays", None)
+        if not isinstance(arrays, Mapping):
+            raise StageBExecutionError(f"{role} admission is not a ledger")
+        for partition, names in namespace_names.items():
+            source = arrays if partition == "admission" else role_labels[role].arrays
+            values: dict[str, set[int]] = {}
+            for name in names:
+                if name not in source:
+                    raise StageBExecutionError(
+                        f"{role}/{partition} omits RNG identity {name}")
+                vector = np.asarray(source[name], dtype=np.uint64).reshape(-1)
+                if vector.size == 0 or len(np.unique(vector)) != vector.size:
+                    raise StageBExecutionError(
+                        f"{role}/{partition}/{name} is empty or reused")
+                values[name] = set(map(int, vector.tolist()))
+            union = set().union(*values.values())
+            if sum(map(len, values.values())) != len(union):
+                raise StageBExecutionError(
+                    f"{role}/{partition} RNG namespaces overlap")
+            domains[f"{role}/{partition}"] = values
+    pairs: list[dict[str, Any]] = []
+    domain_names = list(domains)
+    for index, left in enumerate(domain_names):
+        left_union = set().union(*domains[left].values())
+        for right in domain_names[index + 1:]:
+            right_union = set().union(*domains[right].values())
+            collisions = len(left_union & right_union)
+            record = {"left": left, "right": right,
+                      "collision_count": collisions, "pass": collisions == 0}
+            pairs.append(record)
+            if collisions:
+                raise StageBExecutionError(
+                    f"partition RNG identities overlap for {left}/{right}")
+    report = {
+        "schema_version": (
+            "qsafe.state_dependent_recovery_v5.stage_b_partition_rng_disjointness.v1"
+        ),
+        "domains": domain_names,
+        "namespaces": {name: list(values) for name, values in namespace_names.items()},
+        "pairs_checked": len(pairs),
+        "pairs": pairs,
+        "outcome_columns_read": False,
+        "pass": True,
+    }
+    return report | {"report_sha256": canonical_sha256(report)}
+
+
 def preflight_stage_b_execution() -> dict[str, Any]:
     """Perform the outcome-free authorization/RNG/roster preflight."""
     protocol = load_stage_b_execution_protocol()
@@ -1107,6 +1177,7 @@ __all__ = [
     "branch_randomness",
     "canonical_sha256",
     "compile_split_disjointness",
+    "compile_partition_rng_disjointness",
     "execution_identity",
     "file_sha256",
     "load_stage_b_execution_protocol",
