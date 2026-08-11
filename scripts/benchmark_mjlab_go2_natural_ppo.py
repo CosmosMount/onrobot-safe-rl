@@ -42,24 +42,40 @@ class GpuSampler:
         self._thread: threading.Thread | None = None
         self.samples_mib: list[int] = []
         self.samples_utilization: list[int] = []
+        self.measurement_start_index: int | None = None
+        self.error: str | None = None
+
+    def _sample_once(self) -> None:
+        value = subprocess.run(
+            ["nvidia-smi", f"--id={self.gpu_index}",
+             "--query-gpu=memory.used,utilization.gpu",
+             "--format=csv,noheader,nounits"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        memory, utilization = value.splitlines()[0].split(",")
+        self.samples_mib.append(int(memory.strip()))
+        self.samples_utilization.append(int(utilization.strip()))
 
     def _sample(self) -> None:
         while not self._stop.is_set():
-            value = subprocess.run(
-                ["nvidia-smi", f"--id={self.gpu_index}",
-                "--query-gpu=memory.used,utilization.gpu",
-                 "--format=csv,noheader,nounits"],
-                check=True, capture_output=True, text=True,
-            ).stdout.strip()
-            memory, utilization = value.splitlines()[0].split(",")
-            self.samples_mib.append(int(memory.strip()))
-            self.samples_utilization.append(int(utilization.strip()))
+            try:
+                self._sample_once()
+            except Exception as exc:  # fail closed in the main thread
+                self.error = f"{type(exc).__name__}: {exc}"
+                self._stop.set()
+                return
             self._stop.wait(0.5)
 
     def __enter__(self) -> "GpuSampler":
+        # A synchronous baseline guarantees that initialization/JIT is inside
+        # the monitored interval rather than racing the sampler thread.
+        self._sample_once()
         self._thread = threading.Thread(target=self._sample, daemon=True)
         self._thread.start()
         return self
+
+    def mark_measurement_start(self) -> None:
+        self.measurement_start_index = len(self.samples_mib)
 
     def __exit__(self, *_: Any) -> None:
         self._stop.set()
@@ -110,7 +126,8 @@ def _edge_median(values: list[int], *, first: bool) -> float:
 def capacity_run_passes(
     *, elapsed_seconds: float, minimum_seconds: float, peak_vram_mib: int,
     memory_growth_mib: float, nonfinite: bool, external_force_nonzero: bool,
-    push_event_present: bool,
+    push_event_present: bool, gpu_sampling_error: bool = False,
+    initialization_peak_monitored: bool = True,
 ) -> bool:
     return bool(
         elapsed_seconds >= minimum_seconds
@@ -119,6 +136,8 @@ def capacity_run_passes(
         and not nonfinite
         and not external_force_nonzero
         and not push_event_present
+        and not gpu_sampling_error
+        and initialization_peak_monitored
     )
 
 
@@ -146,41 +165,56 @@ def main() -> None:
     cfg.scene.num_envs = args.envs
     validate_target_aligned_go2(cfg)
 
-    started_initialization = time.perf_counter()
-    env = ManagerBasedRlEnv(cfg=cfg, device="cuda:0")
-    observation, _ = env.reset()
-    actor_observation = observation["actor"]
-    actor = OfficialSizeActor(actor_observation.shape[1], 12).to("cuda:0")
-    initialization_seconds = time.perf_counter() - started_initialization
-
     terminated_count = 0
     truncated_count = 0
     nonfinite = False
     external_force_nonzero = False
-    with torch.inference_mode(), GpuSampler() as gpu:
-        started = time.perf_counter()
-        for index in range(args.warmup_steps + args.steps):
-            action = actor(actor_observation)
-            observation, _, terminated, truncated, _ = env.step(action)
-            actor_observation = observation["actor"]
-            if index >= args.warmup_steps:
-                terminated_count += int(terminated.sum().item())
-                truncated_count += int(truncated.sum().item())
-                nonfinite = nonfinite or not bool(torch.isfinite(
-                    actor_observation).all().item())
-                force = env.sim.data.xfrc_applied
-                external_force_nonzero = external_force_nonzero or bool(
-                    torch.any(force != 0.0).item())
-            if args.warmup_steps > 0 and index + 1 == args.warmup_steps:
-                torch.cuda.synchronize()
-                started = time.perf_counter()
+    env = None
+    with GpuSampler() as gpu:
+        torch.cuda.reset_peak_memory_stats("cuda:0")
+        started_initialization = time.perf_counter()
+        env = ManagerBasedRlEnv(cfg=cfg, device="cuda:0")
+        observation, _ = env.reset()
+        actor_observation = observation["actor"]
+        actor = OfficialSizeActor(actor_observation.shape[1], 12).to("cuda:0")
         torch.cuda.synchronize()
-        elapsed = time.perf_counter() - started
+        initialization_seconds = time.perf_counter() - started_initialization
+        try:
+            with torch.inference_mode():
+                started = time.perf_counter()
+                if args.warmup_steps == 0:
+                    gpu.mark_measurement_start()
+                for index in range(args.warmup_steps + args.steps):
+                    action = actor(actor_observation)
+                    observation, _, terminated, truncated, _ = env.step(action)
+                    actor_observation = observation["actor"]
+                    if index >= args.warmup_steps:
+                        terminated_count += int(terminated.sum().item())
+                        truncated_count += int(truncated.sum().item())
+                        nonfinite = nonfinite or not bool(torch.isfinite(
+                            actor_observation).all().item())
+                        force = env.sim.data.xfrc_applied
+                        external_force_nonzero = external_force_nonzero or bool(
+                            torch.any(force != 0.0).item())
+                    if args.warmup_steps > 0 and index + 1 == args.warmup_steps:
+                        torch.cuda.synchronize()
+                        gpu.mark_measurement_start()
+                        started = time.perf_counter()
+                torch.cuda.synchronize()
+                elapsed = time.perf_counter() - started
+        finally:
+            env.close()
+        process_peak_allocated_mib = int(
+            torch.cuda.max_memory_allocated("cuda:0") / (1024 * 1024))
+        process_peak_reserved_mib = int(
+            torch.cuda.max_memory_reserved("cuda:0") / (1024 * 1024))
 
-    env.close()
+    measured_start = gpu.measurement_start_index
+    measured_memory = (
+        gpu.samples_mib[measured_start:] if measured_start is not None else [])
     memory_growth_mib = (
-        _edge_median(gpu.samples_mib, first=False)
-        - _edge_median(gpu.samples_mib, first=True)
+        _edge_median(measured_memory, first=False)
+        - _edge_median(measured_memory, first=True)
     )
     peak_vram_mib = max(gpu.samples_mib, default=0)
     push_event_present = "push_robot" in cfg.events
@@ -202,6 +236,9 @@ def main() -> None:
         "nonfinite": nonfinite,
         "external_force_nonzero": external_force_nonzero,
         "peak_total_gpu_memory_mib": peak_vram_mib,
+        "initialization_peak_monitored": True,
+        "process_peak_allocated_mib": process_peak_allocated_mib,
+        "process_peak_reserved_mib": process_peak_reserved_mib,
         "mean_total_gpu_memory_mib": float(
             np.mean(gpu.samples_mib) if gpu.samples_mib else 0.0),
         "memory_growth_mib": memory_growth_mib,
@@ -210,6 +247,8 @@ def main() -> None:
             if gpu.samples_utilization else 0.0),
         "peak_gpu_utilization_percent": max(gpu.samples_utilization, default=0),
         "gpu_memory_samples": len(gpu.samples_mib),
+        "measured_gpu_memory_samples": len(measured_memory),
+        "gpu_sampling_error": gpu.error,
         "command_distribution": {
             "type": "constant", "vx": 0.30,
             "vy": 0.0, "yaw_rate": 0.0,
@@ -226,6 +265,8 @@ def main() -> None:
         nonfinite=nonfinite,
         external_force_nonzero=external_force_nonzero,
         push_event_present=push_event_present,
+        gpu_sampling_error=gpu.error is not None,
+        initialization_peak_monitored=True,
     )
     rendered = json.dumps(result, sort_keys=True, indent=2)
     print(rendered)

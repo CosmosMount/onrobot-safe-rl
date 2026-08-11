@@ -15,6 +15,8 @@ class MjlabCapacityBenchmarkTest(unittest.TestCase):
             nonfinite=False,
             external_force_nonzero=False,
             push_event_present=False,
+            gpu_sampling_error=False,
+            initialization_peak_monitored=True,
         )
         self.assertTrue(capacity_run_passes(**valid))
         for field, value in (
@@ -24,6 +26,8 @@ class MjlabCapacityBenchmarkTest(unittest.TestCase):
             ("nonfinite", True),
             ("external_force_nonzero", True),
             ("push_event_present", True),
+            ("gpu_sampling_error", True),
+            ("initialization_peak_monitored", False),
         ):
             with self.subTest(field=field):
                 invalid = {**valid, field: value}
