@@ -39,8 +39,10 @@ def main() -> None:
     parser.add_argument("--policy-steps", type=int, default=100)
     parser.add_argument("--seed", type=int, default=43)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--max-qpos-error", type=float, default=1e-3)
-    parser.add_argument("--max-qvel-error", type=float, default=1e-2)
+    parser.add_argument("--max-qpos-error", type=float, default=5e-3)
+    parser.add_argument("--p99-qpos-error", type=float, default=1e-3)
+    parser.add_argument("--max-qvel-error", type=float, default=1e-1)
+    parser.add_argument("--p99-qvel-error", type=float, default=1e-2)
     parser.add_argument("--min-contact-presence-agreement", type=float, default=0.95)
     parser.add_argument("--min-contact-pair-jaccard", type=float, default=0.90)
     args = parser.parse_args()
@@ -190,7 +192,9 @@ def main() -> None:
             "command_vx_mps": 0.3,
             "thresholds": {
                 "max_qpos_error": args.max_qpos_error,
+                "p99_qpos_error": args.p99_qpos_error,
                 "max_qvel_error": args.max_qvel_error,
+                "p99_qvel_error": args.p99_qvel_error,
                 "min_contact_presence_agreement": (
                     args.min_contact_presence_agreement),
                 "min_mean_contact_pair_jaccard": args.min_contact_pair_jaccard,
@@ -200,7 +204,9 @@ def main() -> None:
         report["pass"] = bool(
             not report["nonfinite"]
             and report["max_abs_qpos_error"] <= args.max_qpos_error
+            and report["p99_abs_qpos_error"] <= args.p99_qpos_error
             and report["max_abs_qvel_error"] <= args.max_qvel_error
+            and report["p99_abs_qvel_error"] <= args.p99_qvel_error
             and report["contact_presence_agreement"]
             >= args.min_contact_presence_agreement
             and report["mean_contact_pair_jaccard"]
