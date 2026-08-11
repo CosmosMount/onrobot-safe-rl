@@ -16,6 +16,7 @@ def _workflow_shaped_split_report() -> tuple[dict[str, object], dict[str, str]]:
         "model_test_label": "c" * 64,
     }
     aggregates: list[dict[str, object]] = []
+    admission_aggregates: list[dict[str, object]] = []
     proof_roles: dict[str, dict[str, object]] = {}
     for index, role in enumerate(evaluator.ROLE_ORDER):
         replicas = evaluator.LABEL_REPLICAS[role]
@@ -39,6 +40,14 @@ def _workflow_shaped_split_report() -> tuple[dict[str, object], dict[str, str]]:
             "role_report_file_sha256": (
                 None if role == "model_test" else f"{index + 21:064x}"
             ),
+        })
+        admission_aggregates.append({
+            "role": role,
+            "admission_path": (
+                f"stage-b/{role.replace('_', '-')}/admission-r32.npz"),
+            "admission_file_sha256": f"{index + 41:064x}",
+            "admission_content_sha256": f"{index + 51:064x}",
+            "admission_proposals": 32,
         })
         proof_roles[role] = {
             "groups": groups,
@@ -74,10 +83,38 @@ def _workflow_shaped_split_report() -> tuple[dict[str, object], dict[str, str]]:
         "pass": True,
     }
     proof["report_sha256"] = evaluator._canonical_object_sha256(proof)
+    domains = [
+        f"{role}/{partition}"
+        for role in evaluator.ROLE_ORDER
+        for partition in ("admission", "label")
+    ]
+    partition_pairs = [
+        {"left": left, "right": right, "collision_count": 0, "pass": True}
+        for index, left in enumerate(domains)
+        for right in domains[index + 1:]
+    ]
+    partition = {
+        "schema_version": (
+            "qsafe.state_dependent_recovery_v5."
+            "stage_b_partition_rng_disjointness.v1"),
+        "domains": domains,
+        "namespaces": {
+            "admission": [
+                "admission_crn_id", "admission_rollout_seed",
+                "admission_perturbation_seed", "admission_candidate_seed",
+            ],
+            "label": ["crn_id", "rollout_seed", "perturbation_seed", "candidate_seed"],
+        },
+        "pairs_checked": 45,
+        "pairs": partition_pairs,
+        "outcome_columns_read": False,
+        "pass": True,
+    }
+    partition["report_sha256"] = evaluator._canonical_object_sha256(partition)
     report: dict[str, object] = {
         "schema_version": (
             "qsafe.state_dependent_recovery_v5."
-            "stage_b_split_disjointness_bound.v2"
+            "stage_b_split_disjointness_bound.v3"
         ),
         "parent_protocol_name": evaluator.STAGE_B_PROTOCOL_NAME,
         "parent_protocol_contract_sha256": (
@@ -98,7 +135,9 @@ def _workflow_shaped_split_report() -> tuple[dict[str, object], dict[str, str]]:
         "actor_bank_contract_sha256": identity["actor_contract"],
         "role_order": list(evaluator.ROLE_ORDER),
         "role_aggregate_labels": aggregates,
+        "role_aggregate_admissions": admission_aggregates,
         "identity_proof": proof,
+        "partition_rng_proof": partition,
         "model_test_source": (
             "in_memory_merged_dataset_and_staged_label_bytes_before_role_report"
         ),

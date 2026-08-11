@@ -147,6 +147,18 @@ _SPLIT_IDENTITY_ARRAY_NAMES = frozenset({
     "perturbation_seed",
     "candidate_seed",
 })
+_ADMISSION_IDENTITY_ARRAY_NAMES = frozenset({
+    "proposal_id",
+    "state_hash",
+    "trajectory_id",
+    "source_seed",
+    "policy_training_step",
+    "policy_source",
+    "admission_crn_id",
+    "admission_rollout_seed",
+    "admission_perturbation_seed",
+    "admission_candidate_seed",
+})
 
 
 @dataclass(frozen=True)
@@ -187,6 +199,108 @@ class StageBSplitIdentityView:
                 f"split identity view forbids non-identity field {name!r}"
             )
         return self.arrays[name]
+
+
+@dataclass(frozen=True)
+class StageBAdmissionIdentityView:
+    """Outcome-inaccessible admission partition identity projection."""
+
+    manifest: Mapping[str, Any]
+    arrays: Mapping[str, np.ndarray]
+    content_sha256: str
+
+    def __post_init__(self) -> None:
+        if set(self.arrays) != _ADMISSION_IDENTITY_ARRAY_NAMES:
+            raise StageBExecutionError(
+                "admission identity view must expose exactly frozen identity arrays"
+            )
+        if not isinstance(self.content_sha256, str) or _HEX64.fullmatch(
+            self.content_sha256
+        ) is None:
+            raise StageBExecutionError(
+                "admission identity view content hash must be lowercase SHA-256"
+            )
+        object.__setattr__(self, "manifest", dict(self.manifest))
+        object.__setattr__(self, "arrays", {
+            str(name): np.asarray(value) for name, value in self.arrays.items()
+        })
+
+    @property
+    def proposal_count(self) -> int:
+        return int(np.asarray(self.arrays["proposal_id"]).shape[0])
+
+    def __getitem__(self, name: str) -> np.ndarray:
+        if name not in _ADMISSION_IDENTITY_ARRAY_NAMES:
+            raise StageBExecutionError(
+                f"admission identity view forbids non-identity field {name!r}"
+            )
+        return self.arrays[name]
+
+
+def make_admission_identity_view(
+    ledger: Any,
+    *,
+    content_sha256: str | None = None,
+) -> StageBAdmissionIdentityView:
+    """Project an admission ledger without invoking outcome validation."""
+    arrays = getattr(ledger, "arrays", None)
+    manifest = getattr(ledger, "manifest", None)
+    if not isinstance(arrays, Mapping) or not isinstance(manifest, Mapping):
+        raise StageBExecutionError("admission identity source is not a ledger")
+    missing = sorted(_ADMISSION_IDENTITY_ARRAY_NAMES - set(arrays))
+    if missing:
+        raise StageBExecutionError(
+            f"admission identity source omits frozen arrays: {missing}")
+    digest = content_sha256 or manifest.get("content_sha256")
+    if not isinstance(digest, str) or _HEX64.fullmatch(digest) is None:
+        digest_payload = {
+            "manifest": dict(manifest),
+            "arrays": {
+                name: np.asarray(arrays[name]).tolist()
+                for name in sorted(_ADMISSION_IDENTITY_ARRAY_NAMES)
+            },
+        }
+        digest = canonical_sha256(digest_payload)
+    return StageBAdmissionIdentityView(
+        manifest=dict(manifest),
+        arrays={
+            name: np.asarray(arrays[name])
+            for name in _ADMISSION_IDENTITY_ARRAY_NAMES
+        },
+        content_sha256=digest,
+    )
+
+
+def load_split_identity_view(path: str | Path) -> StageBSplitIdentityView:
+    """Load only deployable split identity arrays from an NPZ artifact."""
+    source = Path(path)
+    with np.load(source, allow_pickle=False) as payload:
+        manifest = json.loads(str(payload["manifest_json"].item()))
+        arrays = {
+            name: payload[name].copy()
+            for name in sorted(_SPLIT_IDENTITY_ARRAY_NAMES)
+        }
+    return make_split_identity_view(
+        type("SplitIdentitySource", (), {
+            "manifest": manifest, "arrays": arrays,
+        })()
+    )
+
+
+def load_admission_identity_view(path: str | Path) -> StageBAdmissionIdentityView:
+    """Load only admission identity arrays from an NPZ artifact."""
+    source = Path(path)
+    with np.load(source, allow_pickle=False) as payload:
+        manifest = json.loads(str(payload["manifest_json"].item()))
+        arrays = {
+            name: payload[name].copy()
+            for name in sorted(_ADMISSION_IDENTITY_ARRAY_NAMES)
+        }
+    return make_admission_identity_view(
+        type("AdmissionIdentitySource", (), {
+            "manifest": manifest, "arrays": arrays,
+        })()
+    )
 
 
 def make_split_identity_view(
@@ -1168,7 +1282,11 @@ __all__ = [
     "STAGE_A_DISPOSITION_COMMIT",
     "STAGE_A_REPORT_SHA256",
     "StageBSplitIdentityView",
+    "StageBAdmissionIdentityView",
     "make_split_identity_view",
+    "make_admission_identity_view",
+    "load_split_identity_view",
+    "load_admission_identity_view",
     "StageBExecutionError",
     "StageBSourceAssignment",
     "TRAJECTORY_FINGERPRINT_ARRAY",

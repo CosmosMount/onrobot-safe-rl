@@ -312,7 +312,9 @@ def _validate_split_disjointness_report(
         "actor_bank_contract_sha256",
         "role_order",
         "role_aggregate_labels",
+        "role_aggregate_admissions",
         "identity_proof",
+        "partition_rng_proof",
         "model_test_source",
         "identity_proof_outcome_columns_read",
         "blind_mechanical_merge_outcome_statistics_computed",
@@ -326,7 +328,7 @@ def _validate_split_disjointness_report(
         value,
         schema_version=(
             "qsafe.state_dependent_recovery_v5."
-            "stage_b_split_disjointness_bound.v2"),
+            "stage_b_split_disjointness_bound.v3"),
         name="split disjointness report",
     )
     for name, expected in frozen_identity.items():
@@ -377,6 +379,27 @@ def _validate_split_disjointness_report(
         elif not _is_sha256(role_report_sha256):
             raise StageBModelTestError(
                 f"split disjointness report {role} role report drifted")
+
+    admissions = value.get("role_aggregate_admissions")
+    if not isinstance(admissions, list) or len(admissions) != len(ROLE_ORDER):
+        raise StageBModelTestError(
+            "split disjointness report admission roster drifted")
+    for record, role in zip(admissions, ROLE_ORDER, strict=True):
+        expected_path = (
+            f"stage-b/{role.replace('_', '-')}/admission-r32.npz")
+        if not isinstance(record, Mapping) or set(record) != {
+                "role", "admission_path", "admission_file_sha256",
+                "admission_content_sha256", "admission_proposals"} or (
+                    record.get("role") != role or record.get(
+                        "admission_path") != expected_path or not _is_sha256(
+                            record.get("admission_file_sha256")) or not _is_sha256(
+                                record.get("admission_content_sha256")) or (
+                                    isinstance(record.get("admission_proposals"), bool)
+                                    or not isinstance(
+                                        record.get("admission_proposals"), int)
+                                    or record.get("admission_proposals") <= 0)):
+            raise StageBModelTestError(
+                f"split disjointness report {role} admission aggregate drifted")
 
     proof = value.get("identity_proof")
     expected_proof_fields = {
@@ -443,6 +466,51 @@ def _validate_split_disjointness_report(
                                     for count in collisions.values()):
             raise StageBModelTestError(
                 f"nested split pair {left}/{right} drifted")
+
+    partition = value.get("partition_rng_proof")
+    if not isinstance(partition, Mapping) or set(partition) != {
+            "schema_version", "domains", "namespaces", "pairs_checked",
+            "pairs", "outcome_columns_read", "pass", "report_sha256"}:
+        raise StageBModelTestError("partition RNG proof schema drifted")
+    _validate_self_hashed_report(
+        partition,
+        schema_version=(
+            "qsafe.state_dependent_recovery_v5."
+            "stage_b_partition_rng_disjointness.v1"),
+        name="partition RNG proof",
+    )
+    expected_domains = [
+        f"{role}/{partition_name}"
+        for role in ROLE_ORDER
+        for partition_name in ("admission", "label")
+    ]
+    expected_namespaces = {
+        "admission": [
+            "admission_crn_id", "admission_rollout_seed",
+            "admission_perturbation_seed", "admission_candidate_seed",
+        ],
+        "label": ["crn_id", "rollout_seed", "perturbation_seed", "candidate_seed"],
+    }
+    ppairs = partition.get("pairs")
+    if partition.get("domains") != expected_domains or partition.get(
+            "namespaces") != expected_namespaces or partition.get(
+                "pairs_checked") != 45 or partition.get(
+                    "outcome_columns_read") is not False or partition.get(
+                        "pass") is not True or not isinstance(ppairs, list) or len(
+                            ppairs) != 45:
+        raise StageBModelTestError("partition RNG proof gate drifted")
+    expected_domain_pairs = [
+        (left, right)
+        for index, left in enumerate(expected_domains)
+        for right in expected_domains[index + 1:]
+    ]
+    for record, (left, right) in zip(ppairs, expected_domain_pairs, strict=True):
+        if not isinstance(record, Mapping) or set(record) != {
+                "left", "right", "collision_count", "pass"} or record.get(
+                    "left") != left or record.get("right") != right or record.get(
+                        "collision_count") != 0 or record.get("pass") is not True:
+            raise StageBModelTestError(
+                f"partition RNG pair {left}/{right} drifted")
     return report_sha256
 
 
