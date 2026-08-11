@@ -357,6 +357,8 @@ class MjlabNaturalFallCapture:
         identity = hashlib.sha256(
             b"qsafe.mjlab_natural_fall.v1\0" + raw_identity).hexdigest()
         robot = env.scene.entities["robot"]
+        permutation = torch.as_tensor(
+            MJLAB_TO_TARGET_JOINT, dtype=torch.long, device=self.count.device)
         return {
             "identity": np.asarray(identity.encode("ascii"), dtype="S64"),
             "environment_id": np.asarray(environment_id, dtype=np.int32),
