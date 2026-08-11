@@ -637,6 +637,139 @@ class AdmissionLedger:
         return value
 
 
+def load_admission_ledger_blind(path: str | Path) -> AdmissionLedger:
+    """Load an admission shard without inspecting outcome semantics.
+
+    Model-Test production is allowed to carry the complete immutable shard,
+    but must not derive accepted counts, fall rates, or any other outcome
+    statistic while assembling the aggregate.  This loader therefore checks
+    only the manifest/content hash and leaves semantic validation to the
+    later, authorized evaluator.
+    """
+    source = Path(path)
+    with np.load(source, allow_pickle=False) as payload:
+        if "manifest_json" not in payload.files:
+            raise ValueError("blind admission shard has no manifest_json")
+        manifest = json.loads(str(payload["manifest_json"].item()))
+        arrays = {
+            name: payload[name].copy()
+            for name in payload.files if name != "manifest_json"
+        }
+    recorded = manifest.get("content_sha256")
+    if not isinstance(recorded, str) or len(recorded) != 64:
+        raise ValueError("blind admission shard lacks content_sha256")
+    actual = _canonical_hash(manifest, arrays)
+    if actual != recorded:
+        raise ValueError("blind admission shard content hash mismatch")
+    return AdmissionLedger(manifest, arrays, source)
+
+
+def merge_admission_ledgers_blind(
+    ledgers: list[AdmissionLedger] | tuple[AdmissionLedger, ...],
+) -> AdmissionLedger:
+    """Mechanically merge admission shards without reading fall/accepted data."""
+    items = list(ledgers)
+    if len(items) < 2:
+        raise ValueError("at least two admission ledgers are required")
+    reference = items[0]
+    locked_fields = (
+        "schema_version", "feature_view", "generator_commit",
+        "protocol_sha256", "protocol_contract_sha256", "fall_definition",
+        "simulator_fingerprint", "source_policy", "continuation_policy",
+        "action_application_contract", "admission_replicas",
+        "horizon_steps", "accept_min_falls_inclusive",
+        "accept_max_falls_inclusive", "all_proposals_recorded",
+        "candidate_outcomes_used_for_admission",
+    )
+    keys = set(reference.arrays)
+    hashes: list[str] = []
+    source_seeds: list[int] = []
+    policy_steps: list[int] = []
+    for index, item in enumerate(items):
+        if set(item.arrays) != keys:
+            raise ValueError(f"blind admission shard {index} array fields differ")
+        for name in locked_fields:
+            if item.manifest.get(name) != reference.manifest.get(name):
+                raise ValueError(
+                    f"blind admission shard {index} changes locked field {name}")
+        actual = _canonical_hash(item.manifest, item.arrays)
+        if item.manifest.get("content_sha256") != actual:
+            raise ValueError(f"blind admission shard {index} content hash mismatch")
+        hashes.append(actual)
+        source_seeds.append(int(item.manifest.get("source_seed", -1)))
+        policy_steps.append(int(item.manifest.get("policy_training_step", -1)))
+        for name in keys:
+            value = np.asarray(item.arrays[name])
+            ref_value = np.asarray(reference.arrays[name])
+            if value.ndim == 0 or value.shape[0] != len(
+                    np.asarray(item.arrays["proposal_id"])):
+                raise ValueError(
+                    f"blind admission shard {index} field {name} is not proposal-first")
+            if value.shape[1:] != ref_value.shape[1:] or (
+                    value.dtype.kind not in "US" and value.dtype != ref_value.dtype):
+                raise ValueError(
+                    f"blind admission shard {index} field {name} shape/dtype drifted")
+    if len(set(source_seeds)) != len(items) or any(seed < 0 for seed in source_seeds):
+        raise ValueError("blind admission source seeds must be unique/nonnegative")
+    for name in (
+        "proposal_id", "state_hash", "admission_crn_id",
+        "admission_rollout_seed", "admission_perturbation_seed",
+    ):
+        combined = np.concatenate([
+            np.asarray(item.arrays[name]).reshape(-1) for item in items
+        ])
+        if len(np.unique(combined)) != combined.size:
+            raise ValueError(f"blind admission shards overlap on {name}")
+    if "admission_candidate_seed" in keys:
+        combined = np.concatenate([
+            np.asarray(item.arrays["admission_candidate_seed"]).reshape(-1)
+            for item in items
+        ])
+        if len(np.unique(combined)) != combined.size:
+            raise ValueError(
+                "blind admission shards overlap on admission_candidate_seed")
+    arrays = {
+        name: np.concatenate([np.asarray(item.arrays[name]) for item in items], axis=0)
+        for name in sorted(keys)
+    }
+    arrays["proposal_index"] = np.arange(
+        len(np.asarray(arrays["proposal_id"])), dtype=np.int64)
+    manifest = {name: copy.deepcopy(reference.manifest[name]) for name in locked_fields}
+    manifest["source_seeds"] = source_seeds
+    manifest["policy_training_steps"] = policy_steps
+    manifest["shards"] = [
+        {
+            "ordinal": index,
+            "source_seed": source_seeds[index],
+            "policy_training_step": policy_steps[index],
+            "proposals": int(len(np.asarray(item.arrays["proposal_id"]))),
+            "content_sha256": hashes[index],
+        }
+        for index, item in enumerate(items)
+    ]
+    manifest["content_sha256"] = _canonical_hash(manifest, arrays)
+    return AdmissionLedger(manifest, arrays)
+
+
+def save_admission_ledger_blind(ledger: AdmissionLedger, path: str | Path) -> Path:
+    """Write an admission shard without semantic outcome validation."""
+    output = assert_development_path(assert_safe_evidence_output(path))
+    if output.suffix != ".npz":
+        raise ValueError("admission ledger must use .npz")
+    manifest = copy.deepcopy(ledger.manifest)
+    manifest["content_sha256"] = _canonical_hash(manifest, ledger.arrays)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        output,
+        manifest_json=np.asarray(json.dumps(
+            manifest, sort_keys=True, separators=(",", ":"))),
+        **ledger.arrays,
+    )
+    ledger.manifest = manifest
+    ledger.path = output
+    return output
+
+
 @dataclass
 class AdmissionPrivilegedView:
     manifest: dict[str, Any]

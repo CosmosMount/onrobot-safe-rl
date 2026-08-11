@@ -24,9 +24,21 @@ import numpy as np
 
 from safety_data.closed_loop_recovery_collector import (
     AdmissionLedger,
+    load_admission_ledger_blind,
     merge_admission_ledgers,
+    merge_admission_ledgers_blind,
+    save_admission_ledger_blind,
 )
-from safety_data.merge import merge_grouped_shards, merge_privileged_shards
+from safety_data.merge import (
+    load_grouped_shard_blind,
+    load_privileged_shard_blind,
+    merge_grouped_shards,
+    merge_grouped_shards_blind,
+    merge_privileged_shards,
+    merge_privileged_shards_blind,
+    save_grouped_shard_blind,
+    save_privileged_shard_blind,
+)
 from safety_data.paths import (
     STAGE_B_EXECUTION_PROTOCOL_NAME,
     STAGE_B_MODEL_TEST_REPORT_SCHEMA,
@@ -64,6 +76,7 @@ from safety_data.state_dependent_recovery_v5_stage_b import (
     ROLE_ORDER,
     ROLE_ACTOR_SEEDS,
     ROLE_SOURCE_SEEDS,
+    StageBAdmissionIdentityView,
     STAGE_A_DISPOSITION_COMMIT,
     STAGE_A_REPORT_SHA256,
     StageBSplitIdentityView,
@@ -73,8 +86,12 @@ from safety_data.state_dependent_recovery_v5_stage_b import (
     _actor_identities_by_role,
     assignment_for,
     canonical_sha256,
+    compile_partition_rng_disjointness,
     compile_split_disjointness,
+    make_admission_identity_view,
     make_split_identity_view,
+    load_admission_identity_view,
+    load_split_identity_view,
 )
 from safety_data.state_dependent_recovery_v5_stage_b_collector import (
     StageBRoleCollectionResult,
@@ -98,7 +115,7 @@ COMPLETION_SCHEMA_VERSION = (
 ROLE_REPORT_SCHEMA_VERSION = (
     "qsafe.state_dependent_recovery_v5.stage_b_role_outcome_free_report.v1")
 SPLIT_REPORT_SCHEMA_VERSION = (
-    "qsafe.state_dependent_recovery_v5.stage_b_split_disjointness_bound.v2")
+    "qsafe.state_dependent_recovery_v5.stage_b_split_disjointness_bound.v3")
 
 _SPLIT_IDENTITY_ARRAY_NAMES = (
     "group_id",
@@ -1036,13 +1053,19 @@ def _load_development_split_inputs(
     *,
     stage_b_root: Path,
     generator_commit: str,
-) -> tuple[dict[str, StageBSplitIdentityView], dict[str, dict[str, object]]]:
+) -> tuple[
+    dict[str, StageBSplitIdentityView],
+    dict[str, StageBAdmissionIdentityView],
+    dict[str, dict[str, object]],
+]:
     """Load the four completed development aggregates under exact scopes."""
-    datasets: dict[str, GroupedBranchDataset] = {}
+    datasets: dict[str, StageBSplitIdentityView] = {}
+    admissions: dict[str, StageBAdmissionIdentityView] = {}
     bindings: dict[str, dict[str, object]] = {}
     for development_role in ROLE_ORDER[:-1]:
         role_paths = stage_b_role_paths(stage_b_root, development_role)
         label_path = Path(role_paths["label"])
+        admission_path = Path(role_paths["admission"])
         report_path = Path(role_paths["report"])
         with ExitStack() as stack:
             stack.enter_context(stage_b_evidence_read_scope(
@@ -1052,11 +1075,18 @@ def _load_development_split_inputs(
             ))
             stack.enter_context(stage_b_evidence_read_scope(
                 scientific_role=development_role,
+                evidence_kind="admission",
+                path=admission_path,
+            ))
+            stack.enter_context(stage_b_evidence_read_scope(
+                scientific_role=development_role,
                 evidence_kind="report",
                 path=report_path,
             ))
-            dataset = GroupedBranchDataset.load(label_path)
+            dataset = load_split_identity_view(label_path)
             label_file_sha256 = _file_sha256(label_path)
+            admission_file_sha256 = _file_sha256(admission_path)
+            admission_identity = load_admission_identity_view(admission_path)
             report, report_file_sha256 = _regular_canonical_json(
                 report_path, f"{development_role} outcome-free role report")
         if report.get("schema_version") != ROLE_REPORT_SCHEMA_VERSION or (
@@ -1079,15 +1109,32 @@ def _load_development_split_inputs(
         ) != "label" or label_records[0].get("sha256") != label_file_sha256:
             raise StageBExecutionError(
                 f"{development_role} role report does not bind its aggregate")
-        datasets[development_role] = make_split_identity_view(dataset)
+        admission_relative = _relative_stage_b(admission_path)
+        admission_records = [
+            item for item in artifacts
+            if isinstance(item, Mapping) and item.get("path") == admission_relative
+        ]
+        if len(admission_records) != 1 or admission_records[0].get(
+            "kind") != "admission" or admission_records[0].get(
+                "sha256") != admission_file_sha256:
+            raise StageBExecutionError(
+                f"{development_role} role report does not bind admission aggregate")
+        datasets[development_role] = dataset
+        admissions[development_role] = admission_identity
         bindings[development_role] = {
             "path": label_relative,
             "file_sha256": label_file_sha256,
             "content_sha256": datasets[development_role].content_sha256,
             "groups": datasets[development_role].group_count,
             "role_report_file_sha256": report_file_sha256,
+            "admission_path": admission_relative,
+            "admission_file_sha256": admission_file_sha256,
+            "admission_content_sha256": admissions[
+                development_role].content_sha256,
+            "admission_proposals": admissions[
+                development_role].proposal_count,
         }
-    return datasets, bindings
+    return datasets, admissions, bindings
 
 
 @contextmanager
@@ -1210,10 +1257,22 @@ def finalize_stage_b_role(
                 _relative_stage_b(source["source_report"])
             ] = report_sha256
 
-            admission = AdmissionLedger.load(source["admission"])
-            label = GroupedBranchDataset.load(source["label"])
-            view = PrivilegedBranchView.load(
-                source["label_privileged"], deployable=label)
+            admission = (
+                load_admission_ledger_blind(source["admission"])
+                if role == "model_test"
+                else AdmissionLedger.load(source["admission"])
+            )
+            label = (
+                load_grouped_shard_blind(source["label"])
+                if role == "model_test"
+                else GroupedBranchDataset.load(source["label"])
+            )
+            view = (
+                load_privileged_shard_blind(source["label_privileged"])
+                if role == "model_test"
+                else PrivilegedBranchView.load(
+                    source["label_privileged"], deployable=label)
+            )
             if admission.manifest.get("source_seed") != source_seed or (
                 label.group_count != GROUPS_PER_SOURCE[role]
             ):
@@ -1230,18 +1289,26 @@ def finalize_stage_b_role(
             ) or label.horizon_steps != HORIZON_POLICY_STEPS or (
                 label.manifest.get("collection_protocol", {}).get("role")
                 != role
-            ) or int(admission.validate()["accepted"]) != (
-                GROUPS_PER_SOURCE[role]
+            ) or (
+                role != "model_test"
+                and int(admission.validate()["accepted"]) != GROUPS_PER_SOURCE[role]
             ):
                 raise StageBExecutionError(
                     "source shard replicas/candidates/horizon/admission drifted")
-            accepted = np.asarray(admission["accepted"], dtype=bool)
-            if not np.array_equal(
-                np.asarray(admission["proposal_id"])[accepted].astype(str),
-                np.asarray(label["group_id"]).astype(str),
-            ):
-                raise StageBExecutionError(
-                    "accepted admission order differs from label groups")
+            if role != "model_test":
+                accepted = np.asarray(admission["accepted"], dtype=bool)
+                if not np.array_equal(
+                    np.asarray(admission["proposal_id"])[accepted].astype(str),
+                    np.asarray(label["group_id"]).astype(str),
+                ):
+                    raise StageBExecutionError(
+                        "accepted admission order differs from label groups")
+            else:
+                proposal_ids = set(np.asarray(admission["proposal_id"]).astype(str))
+                label_ids = np.asarray(label["group_id"]).astype(str)
+                if not set(label_ids).issubset(proposal_ids):
+                    raise StageBExecutionError(
+                        "model-test label identities are absent from admission")
             assignment = assignment_for(role, source_seed)
             if set(map(int, np.asarray(label["policy_training_seed"]))) != {
                 assignment.actor_training_seed
@@ -1277,8 +1344,16 @@ def finalize_stage_b_role(
                 "artifact_sha256": dict(sorted(artifact_hashes.items())),
             })
 
-        merged_admission = merge_admission_ledgers(admissions)
-        merged_labels = merge_grouped_shards(labels)
+        merged_admission = (
+            merge_admission_ledgers_blind(admissions)
+            if role == "model_test"
+            else merge_admission_ledgers(admissions)
+        )
+        merged_labels = (
+            merge_grouped_shards_blind(labels)
+            if role == "model_test"
+            else merge_grouped_shards(labels)
+        )
         merged_labels.manifest["stage_b_role"] = role
         merged_labels.manifest["source_seed_order"] = list(
             ROLE_SOURCE_SEEDS[role])
@@ -1286,14 +1361,19 @@ def finalize_stage_b_role(
             actor_bank_manifest_file_sha256)
         merged_labels.manifest["actor_bank_contract_sha256"] = actor_bank[
             "actor_bank_contract_sha256"]
-        merged_labels.validate(verify_hash=False)
-        merged_privileged = merge_privileged_shards(
-            privileged, labels, merged_labels)
+        if role != "model_test":
+            merged_labels.validate(verify_hash=False)
+        merged_privileged = (
+            merge_privileged_shards_blind(privileged, labels, merged_labels)
+            if role == "model_test"
+            else merge_privileged_shards(privileged, labels, merged_labels)
+        )
 
         expected_groups = len(ROLE_SOURCE_SEEDS[role]) * GROUPS_PER_SOURCE[role]
-        if merged_labels.group_count != expected_groups or int(
-            merged_admission.validate()["accepted"]
-        ) != expected_groups:
+        if merged_labels.group_count != expected_groups or (
+            role != "model_test"
+            and int(merged_admission.validate()["accepted"]) != expected_groups
+        ):
             raise StageBExecutionError("merged role group count has drifted")
         if tuple(int(value) for value in merged_labels["source_seed"]) != tuple(
             source_seed
@@ -1307,12 +1387,21 @@ def finalize_stage_b_role(
             staging["split_disjointness_report"] = _staging_path(
                 split_output)
         try:
-            merged_admission.save(staging["admission"])
-            merged_labels.save(staging["label"])
-            merged_privileged.manifest[
-                "deployable_content_sha256"
-            ] = merged_labels.validate()["content_sha256"]
-            merged_privileged.save(staging["label_privileged"])
+            if role == "model_test":
+                save_admission_ledger_blind(merged_admission, staging["admission"])
+            else:
+                merged_admission.save(staging["admission"])
+            if role == "model_test":
+                save_grouped_shard_blind(merged_labels, staging["label"])
+            else:
+                merged_labels.save(staging["label"])
+            merged_privileged.manifest["deployable_content_sha256"] = str(
+                merged_labels.manifest["content_sha256"])
+            if role == "model_test":
+                save_privileged_shard_blind(
+                    merged_privileged, staging["label_privileged"])
+            else:
+                merged_privileged.save(staging["label_privileged"])
             staging["step_log"].write_bytes(bytes(combined_steps))
 
             merged_hashes = {
@@ -1323,7 +1412,7 @@ def finalize_stage_b_role(
             }
             split_report_sha256: str | None = None
             if role == "model_test":
-                development_datasets, aggregate_bindings = (
+                development_datasets, development_admissions, aggregate_bindings = (
                     _load_development_split_inputs(
                         stage_b_root=Path(stage_b_root),
                         generator_commit=generator_commit,
@@ -1344,6 +1433,18 @@ def finalize_stage_b_role(
                     role_datasets=ordered_role_datasets,
                     actor_bank_manifest=actor_bank,
                 )
+                ordered_role_admissions = {
+                    **development_admissions,
+                    "model_test": make_admission_identity_view(
+                        merged_admission,
+                        content_sha256=merged_admission.manifest.get(
+                            "content_sha256"),
+                    ),
+                }
+                partition_rng_proof = compile_partition_rng_disjointness(
+                    role_admissions=ordered_role_admissions,
+                    role_labels=ordered_role_datasets,
+                )
                 aggregate_bindings["model_test"] = {
                     "path": _relative_stage_b(paths["label"]),
                     "file_sha256": merged_hashes["label"],
@@ -1352,6 +1453,14 @@ def finalize_stage_b_role(
                     ].content_sha256,
                     "groups": merged_labels.group_count,
                     "role_report_file_sha256": None,
+                    "admission_path": _relative_stage_b(paths["admission"]),
+                    "admission_file_sha256": merged_hashes["admission"],
+                    "admission_content_sha256": ordered_role_admissions[
+                        "model_test"
+                    ].content_sha256,
+                    "admission_proposals": ordered_role_admissions[
+                        "model_test"
+                    ].proposal_count,
                 }
                 split_basis: dict[str, object] = {
                     "schema_version": SPLIT_REPORT_SCHEMA_VERSION,
@@ -1364,10 +1473,28 @@ def finalize_stage_b_role(
                     ],
                     "role_order": list(ROLE_ORDER),
                     "role_aggregate_labels": [
-                        {"role": split_role, **aggregate_bindings[split_role]}
+                        {"role": split_role, **{
+                            key: aggregate_bindings[split_role][key]
+                            for key in (
+                                "path", "file_sha256", "content_sha256",
+                                "groups", "role_report_file_sha256",
+                            )
+                        }}
+                        for split_role in ROLE_ORDER
+                    ],
+                    "role_aggregate_admissions": [
+                        {"role": split_role, **{
+                            key: aggregate_bindings[split_role][key]
+                            for key in (
+                                "admission_path", "admission_file_sha256",
+                                "admission_content_sha256",
+                                "admission_proposals",
+                            )
+                        }}
                         for split_role in ROLE_ORDER
                     ],
                     "identity_proof": identity_proof,
+                    "partition_rng_proof": partition_rng_proof,
                     "model_test_source": (
                         "in_memory_merged_dataset_and_staged_label_bytes_"
                         "before_role_report"
