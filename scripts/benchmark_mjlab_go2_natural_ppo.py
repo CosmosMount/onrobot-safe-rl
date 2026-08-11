@@ -171,7 +171,7 @@ def main() -> None:
     external_force_nonzero = False
     env = None
     with GpuSampler() as gpu:
-        torch.cuda.reset_peak_memory_stats("cuda:0")
+        torch.cuda.reset_peak_memory_stats(0)
         started_initialization = time.perf_counter()
         env = ManagerBasedRlEnv(cfg=cfg, device="cuda:0")
         observation, _ = env.reset()
@@ -205,9 +205,9 @@ def main() -> None:
         finally:
             env.close()
         process_peak_allocated_mib = int(
-            torch.cuda.max_memory_allocated("cuda:0") / (1024 * 1024))
+            torch.cuda.max_memory_allocated(0) / (1024 * 1024))
         process_peak_reserved_mib = int(
-            torch.cuda.max_memory_reserved("cuda:0") / (1024 * 1024))
+            torch.cuda.max_memory_reserved(0) / (1024 * 1024))
 
     measured_start = gpu.measurement_start_index
     measured_memory = (
