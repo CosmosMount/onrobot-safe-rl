@@ -1,0 +1,123 @@
+schema_version: qsafe.natural_ppo_falls.v1
+protocol_name: objective1_natural_ppo_state_proposal
+created_at: "2026-08-11T19:15:00+08:00"
+claim_eligible: false
+
+purpose:
+  ppo_role: state_proposal_only
+  ppo_transition_as_qsafe_label: forbidden
+  final_label_policy: target_sac_same_state_branching
+  model_test_state_source: sac_only
+  objective2_before_objective1_authorization: forbidden
+
+supersedes:
+  protocol: objective1_state_dependent_recovery_qsafe_v5_stage_b_reduced7_amendment
+  scope: fixed_perturbation_source_collection_only
+  actor_bank_reusable: true
+  aborted_attempt_path: saved/qsafe_development/state_dependent_recovery_v5/stage-b/aborted-fixed-perturbation-db761ac
+  aborted_generator_commit: db761ac2791d87e0195615fd197923077698ba93
+  aborted_source_attempts: 10
+  completed_sources: 0
+  reason: fixed_perturbation_distribution_rejected
+
+environment:
+  task: Unitree-Go2-Flat
+  command: {vx_mps: 0.30, vy_mps: 0.0, yaw_rate_rps: 0.0}
+  policy_frequency_hz: 50
+  low_level_frequency_hz: 500
+  external_force:
+    xfrc_applied_nonzero: forbidden
+    impulse: forbidden
+    velocity_injection: forbidden
+    push_event: disabled
+  domain_randomization:
+    source: upstream_go2_flat_defaults
+    enabled: [friction, body_mass_and_com, initial_joint_state, actuator_parameters]
+    every_realized_value_recorded: true
+
+backend:
+  preferred: unitree_mjlab_mujoco_warp_rsl_rl
+  fallback: mjx_jax_mature_ppo
+  native_subprocess_512_or_1024: forbidden
+  parity_states: 100
+  parity_policy_steps_per_state: 100
+  capacity_ladder: [256, 512, 1024, 2048]
+  capacity_warm_run_seconds: 300
+  selected_capacity_stability_seconds: 1800
+  max_peak_vram_mib: 20480
+  min_upgrade_throughput_gain_fraction: 0.15
+
+ppo:
+  implementation: rsl_rl_clipped_ppo
+  training_from_zero: true
+  fixed_policy_env_steps: 30000000
+  checkpoint_steps: [0, 1000000, 2000000, 5000000, 10000000, 20000000, 30000000]
+  checkpoint_or_seed_filter_by_return_or_falls: forbidden
+  optional_stopping_or_top_up: forbidden
+
+fall_collection:
+  first_terminal_fall_per_episode_only: true
+  reset_in_same_vector_step: true
+  post_terminal_fallen_stepping: forbidden
+  ring_policy_steps: 65
+  prefall_offsets: [1, 2, 4, 8, 16, 32, 64]
+  short_episode_policy: retain_with_availability_mask
+  store_every_independent_fall: true
+  outcome_severity_or_type_filter: forbidden
+  snapshot_fields:
+    - integration_state
+    - qpos
+    - qvel
+    - act
+    - ctrl
+    - observation_history_5x46
+    - previous_action_requested
+    - previous_action_executed
+    - previous_action_q_target
+    - action_filter_state
+    - ppo_training_step
+    - environment_identity
+    - episode_identity
+    - policy_step_identity
+    - randomization_values
+    - rng_identity
+
+normal_collection:
+  selection: fixed_hash_before_branch_outcomes
+  minimum_distance_from_terminal_steps: 96
+  match_strata: [ppo_checkpoint_age, randomization_stratum]
+  target_ratio_per_available_prefall_state: 1
+
+storage:
+  format: compressed_npz_shards
+  events_per_shard: 1024
+  atomic_publication: true
+  manifest_last: true
+  duplicate_snapshot_identity: fail_closed
+  large_artifacts_in_git: forbidden
+
+native_import:
+  backend: train.mujoco_snapshot_env.MujocoSnapshotEnv
+  settle_after_import: forbidden
+  call_mj_forward_only: true
+  reconstruct_application_state: true
+  parity_failure_action: retain_in_raw_archive_but_exclude_from_qsafe_dataset
+  parity_rejection_top_up: forbidden
+
+qsafe_labeling:
+  candidate_count: 9
+  nominal_candidate_count: 1
+  recovery_option_count: 8
+  continuation_policy: frozen_target_sac
+  horizon_policy_steps: 96
+  common_random_numbers_across_candidates: true
+  fit_source_mix: {ppo_proposed_fraction: 0.70, sac_proposed_fraction: 0.30}
+  calibration_source: sac_only
+  model_test_source: sac_only
+  development_group_ladder: [1000, 3000, 10000]
+  production_group_count_if_10k_slope_positive: 50000
+
+reporting:
+  periodic_user_updates: disabled
+  external_watcher_or_automation: forbidden
+  report_only_at_phase_or_terminal_result: true

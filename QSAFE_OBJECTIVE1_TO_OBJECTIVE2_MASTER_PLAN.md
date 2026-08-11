@@ -2,7 +2,7 @@
 
 **Repository:** `onrobot-safe-rl`
 **Scope:** Go2 MuJoCo safety critic and SAC training evidence
-**Status:** plan frozen for implementation; Objective 1 and Objective 2 are not yet passed
+**Status:** natural-PPO proposal route frozen for implementation; Objective 1 and Objective 2 are not yet passed
 **Primary route:** SAC-from-zero at `0.30 m/s`, followed by mechanically gated speed expansion
 
 ## 1. Research conclusion
@@ -18,6 +18,15 @@ PPO will therefore be used for broad state coverage, representation pretraining,
 and boundary-state proposal. Claim-bearing Q_safe labels must come from
 same-state multi-action branching with a frozen continuation policy, common
 random numbers across candidates, and independent replicas.
+
+The fixed-impulse Stage-B source attempt was terminated before any source
+completed.  Its ten source attempts are preserved under
+`stage-b/aborted-fixed-perturbation-db761ac` and are permanently excluded from
+future data.  The replacement protocol is
+`config/qsafe_natural_ppo_falls_v1.yaml`: PPO-from-zero runs on flat terrain
+with ordinary domain randomization but no external push, impulse, or artificial
+velocity injection.  Every independent first fall is retained together with
+its preceding 64 policy steps; PPO outcomes remain proposal metadata only.
 
 This follows complementary lessons from [SQRL](https://arxiv.org/abs/2010.14603),
 [Recovery RL](https://arxiv.org/abs/2010.15920),
