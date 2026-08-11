@@ -1,10 +1,10 @@
-"""Result-blind natural-fall recording for parallel PPO state proposals.
+"""Natural-fall recording for direct PPO Q_safe supervision.
 
 The recorder is backend independent.  A simulator adapter supplies one
 ``NaturalPpoFrame`` per policy step and calls :meth:`finish_episode` exactly
-once at a terminal boundary.  PPO fall outcomes are deliberately not Q_safe
-labels; the stored snapshots are proposal states for later target-SAC
-same-state branching.
+once at a terminal boundary. Registered pre-fall states directly supervise
+state and executed-action risk under PPO continuation. They never provide
+labels for unexecuted counterfactual recovery actions.
 """
 
 from __future__ import annotations
@@ -309,6 +309,13 @@ class NaturalFallShardWriter:
             ppo_training_step=np.asarray(
                 [event.terminal.ppo_training_step for event in events], dtype=np.int64),
             availability=np.stack([event.availability for event in events]),
+            prefall_fall_within_96_steps=np.stack(
+                [event.availability for event in events]),
+            prefall_steps_to_fall=np.asarray([
+                [offset if frame is not None else 0
+                 for offset, frame in zip(PREFALL_OFFSETS, event.prefall)]
+                for event in events
+            ], dtype=np.int16),
             prefall_identity=np.asarray([
                 [b"" if frame is None else frame.identity.encode("ascii")
                  for frame in event.prefall] for event in events], dtype="S64"),
@@ -370,8 +377,13 @@ class NaturalFallShardWriter:
             raise RuntimeError("writer is already closed")
         self._flush()
         manifest = {
-            "schema_version": "qsafe.natural_ppo_fall_archive.v1",
-            "ppo_outcomes_are_qsafe_labels": False,
+            "schema_version": "qsafe.natural_ppo_fall_archive.v2",
+            "direct_qsafe_supervision": {
+                "state_risk": True,
+                "executed_action_risk_under_ppo_continuation": True,
+                "counterfactual_recovery_action_risk": False,
+                "horizon_policy_steps": NORMAL_TERMINAL_DISTANCE,
+            },
             "external_force": "forbidden",
             "prefall_offsets": list(PREFALL_OFFSETS),
             "event_count": sum(item["event_count"] for item in self._shards),

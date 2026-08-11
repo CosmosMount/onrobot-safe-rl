@@ -2,33 +2,40 @@
 
 **Repository:** `onrobot-safe-rl`
 **Scope:** Go2 MuJoCo safety critic and SAC training evidence
-**Status:** natural-PPO proposal route frozen for implementation; Objective 1 and Objective 2 are not yet passed
+**Status:** natural-PPO direct-supervision route frozen for implementation; Objective 1 and Objective 2 are not yet passed
 **Primary route:** SAC-from-zero at `0.30 m/s`, followed by mechanically gated speed expansion
 
 ## 1. Research conclusion
 
 The local feasibility report concludes that large-batch PPO/MJX or MuJoCo-Warp
-is technically useful, but PPO transitions alone do not identify the target
+is technically useful.  PPO transitions directly identify on-policy state risk
+and executed-action risk under PPO continuation, but do not by themselves
+identify the target-SAC counterfactual
 
 \[
-P(\mathrm{fall}_{H32}\mid s,a,\pi_{\mathrm{filtered\ SAC}}).
+P(\mathrm{fall}_{H96}\mid s,a,\pi_{\mathrm{filtered\ SAC}}).
 \]
 
-PPO will therefore be used for broad state coverage, representation pretraining,
-and boundary-state proposal. Claim-bearing Q_safe labels must come from
-same-state multi-action branching with a frozen continuation policy, common
-random numbers across candidates, and independent replicas.
+PPO fall/pre-fall and delayed-normal states therefore directly supervise the
+Q_safe state-risk and executed-action-risk heads.  Same-state target-SAC
+multi-action branching, common random numbers, and independent replicas are
+retained only for counterfactual recovery-action supervision, calibration, and
+claim-bearing SAC validation.
 
 The fixed-impulse Stage-B source attempt was terminated before any source
 completed.  Its ten source attempts are preserved under
 `stage-b/aborted-fixed-perturbation-db761ac` and are permanently excluded from
 future data.  The replacement protocol is
-`config/qsafe_natural_ppo_falls_v1.yaml`: PPO-from-zero runs on flat terrain
+`config/qsafe_natural_ppo_falls_v2.yaml`: PPO-from-zero runs on flat terrain
 with ordinary domain randomization and a constant forward command of
-`+0.4 m/s`, but no external push, impulse, or artificial velocity injection.
+`+0.30 m/s`, but no external push, impulse, or artificial velocity injection.
+This deliberately matches the existing target-SAC task and checkpoint bank.
 Every realized command is recorded.  Every independent first fall
-is retained together with its preceding 64 policy steps; PPO outcomes remain
-proposal metadata only.  Objective-1 target SAC remains fixed at `+0.30 m/s`.
+is retained together with its preceding 64 policy steps.  Registered pre-fall
+states are positive `fall-within-H96` examples; matched states that survive at
+least 96 future steps are negative examples.  Splits are made by whole PPO
+episode, never by individual frame.  Objective-1 target SAC remains fixed at
+`+0.30 m/s`.
 
 This follows complementary lessons from [SQRL](https://arxiv.org/abs/2010.14603),
 [Recovery RL](https://arxiv.org/abs/2010.15920),
@@ -129,9 +136,11 @@ contains K9 candidates, H96 continuation, five corrected observation frames,
 requested/executed/q-target action representations, per-replica outcomes,
 CRN identities, and a physically separate privileged diagnostic view.
 
-PPO-generated states may enter representation pretraining or proposal mining,
-but final Q_safe evidence must retain target-SAC actor/source identities and
-same-state labels.
+PPO-generated fall and normal states enter Q_safe fitting directly. Their
+labels supervise state risk and the actually executed PPO action only; they
+cannot label unexecuted recovery candidates. Counterfactual candidate heads,
+calibration, Model-Test, and final causal evidence retain target-SAC
+actor/source identities and same-state labels.
 
 ### B3 — Fit, calibrate, and freeze
 

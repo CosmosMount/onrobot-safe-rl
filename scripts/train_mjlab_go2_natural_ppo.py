@@ -73,7 +73,7 @@ def main() -> None:
     cfg.curriculum = {}
     twist = cfg.commands["twist"]
     twist.rel_standing_envs = 0.0
-    twist.ranges.lin_vel_x = (0.40, 0.40)
+    twist.ranges.lin_vel_x = (0.30, 0.30)
     twist.ranges.lin_vel_y = (0.0, 0.0)
     twist.ranges.ang_vel_z = (0.0, 0.0)
     agent_cfg.seed = args.seed
@@ -118,7 +118,7 @@ def main() -> None:
         "seed": args.seed,
         "environments": args.envs,
         "fixed_exposure": args.exposure,
-        "command_vx_mps": 0.40,
+        "command_vx_mps": 0.30,
         "push_event": False,
     })
 
@@ -164,7 +164,7 @@ def main() -> None:
             "recorded_falls": capture.fall_count,
         },
         "command_distribution": {
-            "type": "constant", "vx": 0.40,
+            "type": "constant", "vx": 0.30,
             "vy": 0.0, "yaw_rate": 0.0,
         },
         "checkpoint_selection_uses_outcomes": False,

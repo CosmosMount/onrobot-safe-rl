@@ -26,6 +26,26 @@ from safety_data.natural_ppo_falls import (
 MJLAB_TO_TARGET_JOINT = (3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8)
 CAPTURE_RING_STEPS = 97
 NORMAL_HASH_MODULUS = 32
+RISK_HORIZON_POLICY_STEPS = 96
+
+
+def target_order_action_and_qtarget(
+    action: torch.Tensor,
+    *,
+    scale: torch.Tensor | float,
+    offset: torch.Tensor | float,
+    encoder_bias: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Map the action applied at this state into target joint order."""
+    if action.ndim != 2 or action.shape[1] != len(MJLAB_TO_TARGET_JOINT):
+        raise ValueError("action must have shape [N, 12]")
+    if encoder_bias.shape != action.shape:
+        raise ValueError("encoder_bias must match action shape")
+    permutation = torch.as_tensor(
+        MJLAB_TO_TARGET_JOINT, dtype=torch.long, device=action.device)
+    raw = action.to(torch.float32)
+    absolute = raw * scale + offset - encoder_bias
+    return raw[:, permutation], absolute[:, permutation].to(torch.float32)
 
 
 def target_fall_predicate(qpos: torch.Tensor) -> torch.Tensor:
@@ -103,13 +123,18 @@ class MjlabFallShardWriter:
     def close(self, provenance: Mapping[str, Any]) -> Path:
         self.flush()
         manifest = {
-            "schema_version": "qsafe.mjlab_natural_falls.v1",
+            "schema_version": "qsafe.mjlab_natural_falls.v2",
             "event_count": sum(item["event_count"] for item in self.shards),
             "prefall_offsets": list(PREFALL_OFFSETS),
             "terminal_state_captured_before_vector_reset": True,
             "reset_occurs_in_same_environment_step": True,
             "external_force": "verified_zero",
-            "ppo_outcomes_are_qsafe_labels": False,
+            "direct_qsafe_supervision": {
+                "state_risk": True,
+                "executed_action_risk_under_ppo_continuation": True,
+                "counterfactual_recovery_action_risk": False,
+                "horizon_policy_steps": RISK_HORIZON_POLICY_STEPS,
+            },
             "shards": self.shards,
             "provenance": dict(provenance),
         }
@@ -153,7 +178,7 @@ class MjlabNormalShardWriter(MjlabFallShardWriter):
     def close(self, provenance: Mapping[str, Any]) -> Path:
         self.flush()
         manifest = {
-            "schema_version": "qsafe.mjlab_natural_normals.v1",
+            "schema_version": "qsafe.mjlab_natural_normals.v2",
             "event_count": sum(item["event_count"] for item in self.shards),
             "minimum_future_nonterminal_steps": NORMAL_TERMINAL_DISTANCE,
             "selection": "deterministic_hash_modulo_32_before_branch_outcomes",
@@ -223,11 +248,11 @@ class MjlabNaturalFallCapture:
             MJLAB_TO_TARGET_JOINT, dtype=torch.long, device=action.device)
         joint_q = robot.data.joint_pos[:, permutation]
         joint_dq = robot.data.joint_vel[:, permutation]
-        q_target = robot.data.joint_pos_target[:, permutation]
+        previous_q_target = robot.data.joint_pos_target[:, permutation]
         observation = torch.cat((
             joint_q, joint_dq, robot.data.root_link_ang_vel_b,
             robot.data.root_link_lin_vel_b, robot.data.root_link_quat_w,
-            q_target,
+            previous_q_target,
         ), dim=1).to(torch.float32)
         if observation.shape != (self.num_envs, 46):
             raise RuntimeError("corrected MjLab proposal observation is not 46D")
@@ -244,10 +269,17 @@ class MjlabNaturalFallCapture:
         self.qvel[ids, slot] = env.sim.data.qvel.to(torch.float64)
         self.ctrl[ids, slot] = env.sim.data.ctrl.to(torch.float64)
         self.obs_history[ids, slot] = self.history
-        previous = env.action_manager.action.to(torch.float32)
-        self.action_requested[ids, slot] = previous
-        self.action_executed[ids, slot] = previous
-        self.q_target[ids, slot] = q_target
+        action_term = env.action_manager.get_term("joint_pos")
+        encoder_bias = robot.data.encoder_bias[:, action_term.target_ids]
+        requested, absolute_target = target_order_action_and_qtarget(
+            action,
+            scale=action_term.scale,
+            offset=action_term.offset,
+            encoder_bias=encoder_bias,
+        )
+        self.action_requested[ids, slot] = requested
+        self.action_executed[ids, slot] = requested
+        self.q_target[ids, slot] = absolute_target
         self.command[ids, slot] = env.command_manager.get_command("twist")
         self.episode_step[ids, slot] = env.episode_length_buf
         self.policy_step[ids, slot] = (
@@ -312,6 +344,9 @@ class MjlabNaturalFallCapture:
                 availability[offset_index] = True
                 prefall_index[offset_index] = length - offset
 
+        steps_to_fall = np.zeros(RING_POLICY_STEPS, dtype=np.int16)
+        steps_to_fall[:length] = np.arange(length, 0, -1, dtype=np.int16)
+
         terminal_qpos = env.sim.data.qpos[environment_id].detach().cpu().numpy()
         terminal_qvel = env.sim.data.qvel[environment_id].detach().cpu().numpy()
         terminal_ctrl = env.sim.data.ctrl[environment_id].detach().cpu().numpy()
@@ -330,6 +365,8 @@ class MjlabNaturalFallCapture:
             "trajectory_mask": np.arange(RING_POLICY_STEPS) < length,
             "prefall_availability": availability,
             "prefall_trajectory_index": prefall_index,
+            "trajectory_steps_to_fall": steps_to_fall,
+            "trajectory_fall_within_96_steps": np.arange(RING_POLICY_STEPS) < length,
             "trajectory_qpos": padded(self.qpos),
             "trajectory_qvel": padded(self.qvel),
             "trajectory_ctrl": padded(self.ctrl),
@@ -344,7 +381,11 @@ class MjlabNaturalFallCapture:
             "terminal_qvel": terminal_qvel,
             "terminal_ctrl": terminal_ctrl,
             "terminal_action_requested": env.action_manager.action[
-                environment_id].detach().cpu().numpy().astype(np.float32),
+                environment_id, permutation].detach().cpu().numpy().astype(np.float32),
+            "terminal_action_executed": env.action_manager.action[
+                environment_id, permutation].detach().cpu().numpy().astype(np.float32),
+            "terminal_q_target": robot.data.joint_pos_target[
+                environment_id, permutation].detach().cpu().numpy().astype(np.float32),
             "terminal_command": env.command_manager.get_command("twist")[
                 environment_id].detach().cpu().numpy().astype(np.float32),
             "randomized_geom_friction": env.sim.model.geom_friction[
@@ -383,6 +424,9 @@ class MjlabNaturalFallCapture:
             "action_executed": cpu(self.action_executed),
             "q_target": cpu(self.q_target),
             "command": cpu(self.command),
+            "fall_within_96_steps": np.asarray(False),
+            "outcome_horizon_policy_steps": np.asarray(
+                RISK_HORIZON_POLICY_STEPS, dtype=np.int16),
             "qualification_future_nonterminal_steps": np.asarray(
                 NORMAL_TERMINAL_DISTANCE, dtype=np.int16),
             "randomized_geom_friction": env.sim.model.geom_friction[

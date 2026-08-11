@@ -7,12 +7,23 @@ import torch
 
 from safety_data.mjlab_natural_falls import (
     CAPTURE_RING_STEPS,
+    MJLAB_TO_TARGET_JOINT,
     ordered_ring_indices,
+    target_order_action_and_qtarget,
     target_fall_predicate,
 )
 
 
 class MjlabNaturalFallHelpersTest(unittest.TestCase):
+    def test_current_action_and_absolute_target_use_target_joint_order(self):
+        action = torch.arange(12, dtype=torch.float32).reshape(1, 12)
+        bias = torch.full_like(action, 0.1)
+        requested, target = target_order_action_and_qtarget(
+            action, scale=0.25, offset=1.0, encoder_bias=bias)
+        expected = action[:, MJLAB_TO_TARGET_JOINT]
+        self.assertTrue(torch.equal(requested, expected))
+        self.assertTrue(torch.allclose(target, expected * 0.25 + 0.9))
+
     def test_ring_indices_are_chronological_after_wrap(self):
         np.testing.assert_array_equal(ordered_ring_indices(3, 5), [0, 1, 2])
         np.testing.assert_array_equal(ordered_ring_indices(7, 5), [2, 3, 4, 0, 1])

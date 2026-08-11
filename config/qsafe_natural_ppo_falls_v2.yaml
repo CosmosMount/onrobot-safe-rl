@@ -1,12 +1,15 @@
-schema_version: qsafe.natural_ppo_falls.v1
-protocol_name: objective1_natural_ppo_state_proposal
+schema_version: qsafe.natural_ppo_falls.v2
+protocol_name: objective1_natural_ppo_direct_qsafe_supervision
 created_at: "2026-08-11T19:15:00+08:00"
 claim_eligible: false
 
 purpose:
-  ppo_role: state_proposal_only
-  ppo_transition_as_qsafe_label: forbidden
-  final_label_policy: target_sac_same_state_branching
+  ppo_role: direct_qsafe_training_and_state_coverage
+  ppo_transition_as_qsafe_label:
+    state_risk: allowed
+    executed_action_risk_under_ppo_continuation: allowed
+    counterfactual_recovery_action_risk: forbidden
+  counterfactual_recovery_label_policy: target_sac_same_state_branching
   model_test_state_source: sac_only
   objective2_before_objective1_authorization: forbidden
 
@@ -24,7 +27,7 @@ environment:
   task: Unitree-Go2-Flat
   ppo_command:
     distribution: constant
-    vx_mps: 0.40
+    vx_mps: 0.30
     vy_mps: 0.0
     yaw_rate_rps: 0.0
     standing_environment_fraction: 0.0
@@ -99,6 +102,18 @@ normal_collection:
   match_strata: [ppo_checkpoint_age, randomization_stratum]
   target_ratio_per_available_prefall_state: 1
 
+direct_ppo_supervision:
+  risk_horizon_policy_steps: 96
+  positive_examples: prefall_states_at_registered_offsets
+  positive_label: fall_within_96_steps
+  negative_examples: matched_normal_states
+  negative_label: survived_next_96_steps
+  supervised_heads: [state_risk, executed_action_risk]
+  continuation_semantics: ppo_on_policy
+  split_cluster: [ppo_seed, environment_identity, episode_identity]
+  split_individual_snapshots_across_roles: forbidden
+  use_for_counterfactual_recovery_action_head: forbidden
+
 storage:
   format: compressed_npz_shards
   events_per_shard: 1024
@@ -122,7 +137,8 @@ qsafe_labeling:
   continuation_policy: frozen_target_sac
   horizon_policy_steps: 96
   common_random_numbers_across_candidates: true
-  fit_source_mix: {ppo_proposed_fraction: 0.70, sac_proposed_fraction: 0.30}
+  direct_fit_source: matched_ppo_prefall_and_normal_states
+  counterfactual_action_fit_source: target_sac_same_state_branching
   calibration_source: sac_only
   model_test_source: sac_only
   development_group_ladder: [1000, 3000, 10000]

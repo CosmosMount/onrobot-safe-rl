@@ -101,7 +101,7 @@ class NormalReservoirTest(unittest.TestCase):
 
 
 class NaturalFallShardWriterTest(unittest.TestCase):
-    def test_manifest_is_published_last_and_forbids_direct_labels(self):
+    def test_manifest_publishes_direct_risk_but_no_counterfactual_labels(self):
         recorder = NaturalFallRecorder([0])
         for step in range(4):
             recorder.append(frame(step))
@@ -112,7 +112,12 @@ class NaturalFallShardWriterTest(unittest.TestCase):
             writer.add(event)
             manifest_path = writer.close(provenance={"commit": "abc"})
             manifest = json.loads(manifest_path.read_text())
-            self.assertFalse(manifest["ppo_outcomes_are_qsafe_labels"])
+            self.assertEqual(manifest["direct_qsafe_supervision"], {
+                "state_risk": True,
+                "executed_action_risk_under_ppo_continuation": True,
+                "counterfactual_recovery_action_risk": False,
+                "horizon_policy_steps": 96,
+            })
             self.assertEqual(manifest["event_count"], 1)
             shard = Path(temporary) / manifest["shards"][0]["path"]
             with np.load(shard, allow_pickle=False) as arrays:
@@ -124,7 +129,9 @@ class NaturalFallShardWriterTest(unittest.TestCase):
                 self.assertEqual(
                     arrays["prefall_previous_action_q_target"].shape,
                     (1, 7, 12))
-                self.assertNotIn("fall_label", arrays.files)
+                self.assertTrue(arrays["prefall_fall_within_96_steps"][0, 0])
+                self.assertEqual(arrays["prefall_steps_to_fall"][0, 0], 1)
+                self.assertNotIn("counterfactual_candidate_outcome", arrays.files)
             with self.assertRaisesRegex(RuntimeError, "already"):
                 writer.close(provenance={})
 

@@ -51,9 +51,11 @@ class NaturalPpoArchiveTest(unittest.TestCase):
             indices = np.full((1, 7), -1, dtype=np.int16)
             indices[0, :2] = [1, 0]
             commands = np.zeros((1, 65, 3), dtype=np.float32)
-            commands[0, :2, 0] = 0.4
+            commands[0, :2, 0] = 0.3
             policy_steps = np.zeros((1, 65), dtype=np.int64)
             policy_steps[0, :2] = [10, 11]
+            steps_to_fall = np.zeros((1, 65), dtype=np.int16)
+            steps_to_fall[0, :2] = [2, 1]
             randomization = {
                 "randomized_geom_friction": np.asarray(
                     [[[[0.8, 0.0, 0.0]]]], dtype=np.float32),
@@ -69,6 +71,8 @@ class NaturalPpoArchiveTest(unittest.TestCase):
                 prefall_availability=availability,
                 prefall_trajectory_index=indices,
                 trajectory_policy_step=policy_steps,
+                trajectory_steps_to_fall=steps_to_fall,
+                trajectory_fall_within_96_steps=mask,
                 **randomization,
             )
             np.savez_compressed(
@@ -76,7 +80,9 @@ class NaturalPpoArchiveTest(unittest.TestCase):
                 identity=np.asarray([b"normal-a", b"normal-b"], dtype="S64"),
                 qualification_future_nonterminal_steps=np.asarray(
                     [96, 96], dtype=np.int16),
-                command=np.asarray([[0.4, 0.0, 0.0]] * 2, dtype=np.float32),
+                fall_within_96_steps=np.asarray([False, False]),
+                outcome_horizon_policy_steps=np.asarray([96, 96], dtype=np.int16),
+                command=np.asarray([[0.3, 0.0, 0.0]] * 2, dtype=np.float32),
                 policy_step=np.asarray([20, 21], dtype=np.int64),
                 randomized_geom_friction=np.repeat(
                     randomization["randomized_geom_friction"], 2, axis=0),
@@ -90,7 +96,7 @@ class NaturalPpoArchiveTest(unittest.TestCase):
                 return hashlib.sha256(path.read_bytes()).hexdigest()
 
             (normal_root / "manifest.json").write_text(json.dumps({
-                "schema_version": "qsafe.mjlab_natural_normals.v1",
+                "schema_version": "qsafe.mjlab_natural_normals.v2",
                 "event_count": 2,
                 "minimum_future_nonterminal_steps": 96,
                 "shards": [{
@@ -100,11 +106,16 @@ class NaturalPpoArchiveTest(unittest.TestCase):
                 }],
             }), encoding="utf-8")
             (root / "manifest.json").write_text(json.dumps({
-                "schema_version": "qsafe.mjlab_natural_falls.v1",
+                "schema_version": "qsafe.mjlab_natural_falls.v2",
                 "event_count": 1,
                 "prefall_offsets": [1, 2, 4, 8, 16, 32, 64],
                 "external_force": "verified_zero",
-                "ppo_outcomes_are_qsafe_labels": False,
+                "direct_qsafe_supervision": {
+                    "state_risk": True,
+                    "executed_action_risk_under_ppo_continuation": True,
+                    "counterfactual_recovery_action_risk": False,
+                    "horizon_policy_steps": 96,
+                },
                 "shards": [{
                     "path": fall_path.name,
                     "sha256": digest(fall_path),

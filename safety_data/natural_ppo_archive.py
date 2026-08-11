@@ -109,12 +109,17 @@ def _load_manifest(path: Path, schema: str) -> dict[str, Any]:
 def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str, Any]:
     root = Path(root)
     output = Path(output)
-    falls = _load_manifest(root / "manifest.json", "qsafe.mjlab_natural_falls.v1")
+    falls = _load_manifest(root / "manifest.json", "qsafe.mjlab_natural_falls.v2")
     normals = _load_manifest(
         root / falls["provenance"]["normal_manifest"],
-        "qsafe.mjlab_natural_normals.v1")
-    if falls.get("ppo_outcomes_are_qsafe_labels") is not False:
-        raise ValueError("PPO archive attempted to provide Q_safe labels")
+        "qsafe.mjlab_natural_normals.v2")
+    supervision = falls.get("direct_qsafe_supervision", {})
+    if supervision != {
+            "state_risk": True,
+            "executed_action_risk_under_ppo_continuation": True,
+            "counterfactual_recovery_action_risk": False,
+            "horizon_policy_steps": 96}:
+        raise ValueError("PPO direct-supervision contract drifted")
     if falls.get("external_force") != "verified_zero":
         raise ValueError("natural archive lacks zero-force proof")
     if falls.get("prefall_offsets") != list(PREFALL_OFFSETS):
@@ -130,9 +135,9 @@ def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str
         if _sha256(path) != shard["sha256"]:
             raise ValueError(f"fall shard hash mismatch: {path}")
         with np.load(path, allow_pickle=False) as arrays:
-            forbidden = {"fall_label", "qsafe_label", "candidate_outcome"}
+            forbidden = {"counterfactual_candidate_outcome"}
             if forbidden.intersection(arrays.files):
-                raise ValueError("PPO shard contains forbidden Q_safe labels")
+                raise ValueError("PPO shard contains counterfactual action labels")
             count = len(arrays["identity"])
             if count != shard["event_count"]:
                 raise ValueError("fall shard count mismatch")
@@ -148,9 +153,17 @@ def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str
                 expected_mask = np.arange(RING_POLICY_STEPS) < length
                 if not np.array_equal(mask, expected_mask):
                     raise ValueError("fall trajectory mask is not contiguous")
+                if not np.array_equal(
+                        arrays["trajectory_fall_within_96_steps"][row], mask):
+                    raise ValueError("positive PPO state-risk labels drifted")
+                expected_steps = np.zeros(RING_POLICY_STEPS, dtype=np.int16)
+                expected_steps[:length] = np.arange(length, 0, -1)
+                if not np.array_equal(
+                        arrays["trajectory_steps_to_fall"][row], expected_steps):
+                    raise ValueError("PPO steps-to-fall labels drifted")
                 command = arrays["trajectory_command"][row][mask]
-                if not np.allclose(command, [0.4, 0.0, 0.0], atol=1e-6):
-                    raise ValueError("PPO command drifted from constant +0.4 m/s")
+                if not np.allclose(command, [0.3, 0.0, 0.0], atol=1e-6):
+                    raise ValueError("PPO command drifted from constant +0.3 m/s")
                 availability = arrays["prefall_availability"][row]
                 expected = np.asarray(
                     [length >= offset for offset in PREFALL_OFFSETS], dtype=bool)
@@ -190,8 +203,14 @@ def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str
                     arrays["qualification_future_nonterminal_steps"]
                     == NORMAL_TERMINAL_DISTANCE):
                 raise ValueError("normal state lacks 96-step future survival")
-            if not np.allclose(arrays["command"], [0.4, 0.0, 0.0], atol=1e-6):
-                raise ValueError("normal command drifted from constant +0.4 m/s")
+            if np.any(arrays["fall_within_96_steps"]):
+                raise ValueError("normal state has a positive fall label")
+            if not np.all(
+                    arrays["outcome_horizon_policy_steps"]
+                    == NORMAL_TERMINAL_DISTANCE):
+                raise ValueError("normal outcome horizon drifted")
+            if not np.allclose(arrays["command"], [0.3, 0.0, 0.0], atol=1e-6):
+                raise ValueError("normal command drifted from constant +0.3 m/s")
             for row in range(count):
                 identity = bytes(arrays["identity"][row]).decode("ascii")
                 if identity in seen:
@@ -224,9 +243,10 @@ def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str
         "one_to_one_matching_complete": len(pairs) == len(prefall_rows),
         "pair_file": output.name,
         "pair_file_sha256": _sha256(output),
-        "command_vx_mps": 0.4,
+        "command_vx_mps": 0.3,
         "external_force_verified_zero": True,
-        "ppo_outcomes_are_qsafe_labels": False,
+        "ppo_direct_state_and_executed_action_supervision": True,
+        "ppo_counterfactual_recovery_labels": False,
     }
     report_path = output.with_suffix(".report.json")
     _atomic_json(report_path, report)
