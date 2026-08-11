@@ -117,6 +117,18 @@ train:
                 expected_rng.integers(0, 2**31, size=8),
             )
 
+    def test_inference_session_matches_checked_sampling(self):
+        with tempfile.TemporaryDirectory() as raw_directory:
+            actor, config = self._fixture(Path(raw_directory))
+            policy = self._load(actor, config)
+            observation = np.zeros(self.observation_dim, dtype=np.float32)
+            expected = policy.sample_action(
+                observation, np.random.default_rng(901))
+            with policy.inference_session() as sample_action:
+                observed = sample_action(
+                    observation, np.random.default_rng(901))
+            np.testing.assert_array_equal(observed, expected)
+
     def test_manifest_records_hashes_steps_config_and_is_immutable(self):
         with tempfile.TemporaryDirectory() as raw_directory:
             actor, config = self._fixture(Path(raw_directory))

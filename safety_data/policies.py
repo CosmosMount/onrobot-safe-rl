@@ -7,13 +7,14 @@ never constructs a training agent, critic, optimizer, or replay buffer.
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 from dataclasses import asdict
 import hashlib
 import io
 import json
 from pathlib import Path
 import re
-from typing import Any, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 import numpy as np
 from omegaconf import OmegaConf
@@ -313,9 +314,18 @@ class FrozenDroQPolicy:
         the selected CUDA generator when relevant) even if inference raises.
         This keeps branch ordering from contaminating other stochastic code.
         """
+        self.require_live_integrity()
+        action = self._sample_action_impl(observation, rng)
+        self.require_live_integrity()
+        return action
+
+    def _sample_action_impl(
+        self,
+        observation: np.ndarray,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
         if not isinstance(rng, np.random.Generator):
             raise TypeError("rng must be numpy.random.Generator")
-        self.require_live_integrity()
         torch_seed = int(rng.integers(0, np.iinfo(np.int64).max))
         device = self._policy.device
         cuda_devices: list[int] = []
@@ -334,8 +344,25 @@ class FrozenDroQPolicy:
             decision = self._policy.decide(
                 self._observation(observation), training=True)
         action = self._checked_action(decision.action_requested)
-        self.require_live_integrity()
         return action
+
+    @contextmanager
+    def inference_session(
+        self,
+    ) -> Iterator[Callable[[np.ndarray, np.random.Generator], np.ndarray]]:
+        """Amortize integrity hashing across one fail-closed rollout.
+
+        The session exposes only the validated stochastic action operation.
+        Integrity is checked before the first action and again before any
+        caller can publish results.  This is intended for single-threaded,
+        trusted collection loops where hashing all actor weights twice per
+        50-Hz transition would dominate MuJoCo execution.
+        """
+        self.require_live_integrity()
+        try:
+            yield self._sample_action_impl
+        finally:
+            self.require_live_integrity()
 
     def __call__(
         self,
