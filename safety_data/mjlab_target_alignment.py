@@ -60,6 +60,15 @@ def target_alignment_manifest() -> dict[str, Any]:
         "passive_joint_damping": TARGET_PASSIVE_JOINT_DAMPING,
         "joint_frictionloss": TARGET_FRICTIONLOSS,
         "joint_armature": TARGET_ARMATURE,
+        "collision": {
+            "nonfoot": {"condim": 1, "friction": [0.4, 0.005, 0.0001]},
+            "foot": {
+                "condim": 6,
+                "priority": 1,
+                "friction": [0.4, 0.02, 0.01],
+                "local_position_x_m": -0.002,
+            },
+        },
         "effort_limit": {
             "hip_and_thigh": TARGET_HIP_THIGH_EFFORT,
             "calf": TARGET_CALF_EFFORT,
@@ -104,6 +113,7 @@ def configure_target_aligned_go2(cfg: Any) -> Any:
     """Mutate one fresh ``Unitree-Go2-Flat`` config to target SAC semantics."""
     from mjlab.actuator import BuiltinPositionActuatorCfg
     from mjlab.managers import TerminationTermCfg
+    from mjlab.utils.spec_config import CollisionCfg
 
     cfg.sim.mujoco.timestep = TARGET_PHYSICS_TIMESTEP_S
     cfg.sim.mujoco.integrator = "euler"
@@ -130,11 +140,33 @@ def configure_target_aligned_go2(cfg: Any) -> Any:
     def target_spec_fn():
         spec = upstream_spec_fn()
         for joint in spec.joints:
-            if joint.name and joint.name.endswith("_joint"):
+            # The upstream floating joint is named ``floating_base_joint``.
+            # The native target leaves its six base DoFs undamped; only the
+            # twelve motor joints inherit the Go2 joint damping default.
+            if joint.name and joint.name != "floating_base_joint" and (
+                    joint.name.endswith("_joint")):
                 joint.damping = TARGET_PASSIVE_JOINT_DAMPING
+        for geom in spec.geoms:
+            if geom.name and geom.name.endswith("_collision"):
+                geom.margin = 0.001
+                if geom.name.endswith("_foot_collision"):
+                    geom.pos[0] = -0.002
         return spec
 
     robot.spec_fn = target_spec_fn
+    foot_pattern = r"^[FR][LR]_foot_collision$"
+    robot.collisions = (CollisionCfg(
+        geom_names_expr=(r".*_collision",),
+        contype=1,
+        conaffinity=1,
+        condim={foot_pattern: 6, r".*_collision": 1},
+        priority={foot_pattern: 1, r".*_collision": 0},
+        friction={
+            foot_pattern: (0.4, 0.02, 0.01),
+            r".*_collision": (0.4, 0.005, 0.0001),
+        },
+        disable_other_geoms=True,
+    ),)
 
     if robot.articulation is None:
         raise ValueError("Go2 target alignment requires articulated actuators")
