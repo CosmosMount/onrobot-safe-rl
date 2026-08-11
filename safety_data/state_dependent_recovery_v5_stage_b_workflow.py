@@ -73,6 +73,8 @@ from safety_data.state_dependent_recovery_v5_stage_b import (
     GROUPS_PER_SOURCE,
     HORIZON_POLICY_STEPS,
     LABEL_REPLICAS,
+    REDUCED7_AMENDMENT_CONTRACT_SHA256,
+    REDUCED7_AMENDMENT_FILE_SHA256,
     ROLE_ORDER,
     ROLE_ACTOR_SEEDS,
     ROLE_SOURCE_SEEDS,
@@ -97,7 +99,7 @@ from safety_data.state_dependent_recovery_v5_stage_b_collector import (
     StageBRoleCollectionResult,
 )
 from train.state_dependent_recovery_v5_stage_b_actor_bank import (
-    ACTOR_BANK_SCHEMA_VERSION,
+    REDUCED7_ACTOR_BANK_SCHEMA_VERSION,
     actor_identity_for,
 )
 
@@ -380,11 +382,14 @@ def _validate_actor_bank(
     actor_bank_manifest_file_sha256: str,
     generator_commit: str,
 ) -> dict[str, Any]:
-    if actor_bank_manifest.get("schema_version") != ACTOR_BANK_SCHEMA_VERSION:
+    if actor_bank_manifest.get("schema_version") != (
+        REDUCED7_ACTOR_BANK_SCHEMA_VERSION
+    ):
         raise StageBExecutionError("actor-bank manifest schema has drifted")
-    if actor_bank_manifest.get("generator_commit") != generator_commit:
+    if actor_bank_manifest.get("stage_b_generator_commit") != generator_commit:
         raise StageBExecutionError(
-            "actor-bank generator differs from Stage-B generator")
+            "actor-bank amendment generator differs from Stage-B generator")
+    actor_source_commit = actor_bank_manifest.get("generator_commit")
     contract_sha256 = actor_bank_manifest.get("actor_bank_contract_sha256")
     if not _is_lower_hex(contract_sha256, 64) or not _is_lower_hex(
         actor_bank_manifest_file_sha256, 64
@@ -394,8 +399,10 @@ def _validate_actor_bank(
         raise StageBExecutionError("generator_commit must be lowercase Git SHA")
     required_fields = {
         "schema_version", "protocol_binding", "execution_supplement_binding",
+        "roster_amendment_binding",
         "stage_a_report_binding", "training_config_binding",
         "actor_bank_attempt_binding", "generator_commit",
+        "stage_b_generator_commit", "upstream_actor_training_seeds",
         "actor_training_seeds", "checkpoint_steps", "checkpoint_semantics",
         "identity_count", "expected_identity_count", "actor_inclusion_rule",
         "return_or_fall_filtering", "checkpoint_substitution",
@@ -411,9 +418,14 @@ def _validate_actor_bank(
         raise StageBExecutionError("actor-bank self-hash is invalid")
     identities_by_role = _actor_identities_by_role(actor_bank_manifest)
     identities = actor_bank_manifest.get("identities")
+    expected_identity_count = sum(
+        len(values) for values in ROLE_ACTOR_SEEDS.values()
+    ) * len(CHECKPOINT_STEPS)
     if not isinstance(identities, list) or sum(
-        len(values) for values in identities_by_role.values()) != 42:
-        raise StageBExecutionError("actor-bank must bind exactly 42 identities")
+        len(values) for values in identities_by_role.values()
+    ) != expected_identity_count:
+        raise StageBExecutionError(
+            "actor-bank must bind the complete amended identities")
     expected_identity_order = [
         (role, actor_seed, checkpoint_step)
         for role in ROLE_ORDER
@@ -432,9 +444,9 @@ def _validate_actor_bank(
         raise StageBExecutionError(
             "actor-bank identities are not in the exact frozen order")
     for index, identity in enumerate(identities):
-        if identity.get("generator_commit") != generator_commit:
+        if identity.get("generator_commit") != actor_source_commit:
             raise StageBExecutionError(
-                f"actor-bank identity {index} changes generator commit")
+                f"actor-bank identity {index} changes actor source commit")
         for name in (
             "actor_checkpoint_sha256", "actor_sha256",
             "actor_state_dict_sha256", "policy_fingerprint_sha256",
@@ -472,6 +484,10 @@ def _frozen_identity(generator_commit: str) -> dict[str, object]:
             EXECUTION_PROTOCOL_CONTRACT_SHA256
         ),
         "execution_protocol_file_sha256": EXECUTION_PROTOCOL_FILE_SHA256,
+        "roster_amendment_contract_sha256": (
+            REDUCED7_AMENDMENT_CONTRACT_SHA256
+        ),
+        "roster_amendment_file_sha256": REDUCED7_AMENDMENT_FILE_SHA256,
         "stage_a_report_sha256": STAGE_A_REPORT_SHA256,
         "stage_a_disposition_commit": STAGE_A_DISPOSITION_COMMIT,
         "generator_commit": generator_commit,

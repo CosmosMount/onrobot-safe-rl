@@ -28,6 +28,7 @@ from safety_data.state_dependent_recovery_v5_stage_b import (
     ROLE_SOURCE_SEEDS,
     assignment_for,
     load_stage_b_execution_protocol,
+    load_stage_b_reduced7_amendment,
     require_clean_stage_b_generator,
     stage_b_artifact_root,
     validate_stage_a_authorization,
@@ -51,7 +52,7 @@ from train.config import load_app_config
 from train.mujoco_snapshot_env import MujocoSnapshotEnv
 from train.state_dependent_recovery_v5_stage_b_actor_bank import (
     actor_identity_for,
-    load_actor_bank_manifest,
+    load_reduced7_actor_bank_manifest,
 )
 
 
@@ -89,6 +90,7 @@ def _load_context(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError("Stage-B CLI requires the canonical frozen protocols")
     parent = load_state_dependent_recovery_v5_protocol(protocol_path)
     execution = load_stage_b_execution_protocol(supplement_path)
+    load_stage_b_reduced7_amendment()
     validate_stage_a_authorization(execution)
     generator_commit = require_clean_stage_b_generator()
     root = stage_b_artifact_root(parent)
@@ -98,9 +100,9 @@ def _load_context(args: argparse.Namespace) -> dict[str, Any]:
         strict=False
     ):
         raise RuntimeError("Stage-B CLI requires the canonical actor bank")
-    actor_bank = load_actor_bank_manifest(
+    actor_bank = load_reduced7_actor_bank_manifest(
         actor_bank_path,
-        expected_bindings={"generator_commit": generator_commit},
+        expected_bindings={"stage_b_generator_commit": generator_commit},
     )
     actor_bank_file_sha256 = _sha256(actor_bank_path)
     return {
@@ -122,13 +124,13 @@ def _revalidate_live_context(context: Mapping[str, Any]) -> None:
     actor_bank_path = Path(context["actor_bank_path"])
     if _sha256(actor_bank_path) != context["actor_bank_file_sha256"]:
         raise RuntimeError("actor-bank manifest bytes changed after CLI preflight")
-    observed = load_actor_bank_manifest(
+    observed = load_reduced7_actor_bank_manifest(
         actor_bank_path,
         expected_bindings={
             "manifest_file_sha256": context["actor_bank_file_sha256"],
             "actor_bank_contract_sha256": context["actor_bank"][
                 "actor_bank_contract_sha256"],
-            "generator_commit": generator_commit,
+            "stage_b_generator_commit": generator_commit,
         },
     )
     if observed != context["actor_bank"]:

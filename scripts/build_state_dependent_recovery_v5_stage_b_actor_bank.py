@@ -10,6 +10,7 @@ from train.state_dependent_recovery_v5_stage_b_actor_bank import (
     PRODUCTION_ACTION_DIM,
     PRODUCTION_OBSERVATION_DIM,
     compile_actor_bank_manifest,
+    compile_reduced7_actor_bank_manifest,
     prepare_actor_run_contracts,
 )
 
@@ -44,11 +45,39 @@ def _parser() -> argparse.ArgumentParser:
         "compile", help="validate all 42 identities and publish the bank")
     common(compile_parser)
     compile_parser.add_argument("--output", required=True)
+    reduced = subparsers.add_parser(
+        "compile-reduced7",
+        help="compile the explicit pre-outcome seven-seed roster amendment",
+    )
+    reduced.add_argument("--amendment", required=True)
+    reduced.add_argument("--training-config", required=True)
+    reduced.add_argument("--actor-root", required=True)
+    reduced.add_argument("--contracts-root", required=True)
+    reduced.add_argument("--output", required=True)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.operation == "compile-reduced7":
+        manifest, file_sha256 = compile_reduced7_actor_bank_manifest(
+            amendment_path=args.amendment,
+            training_config_path=args.training_config,
+            actor_root=args.actor_root,
+            contracts_root=args.contracts_root,
+            output_path=args.output,
+            observation_dim=PRODUCTION_OBSERVATION_DIM,
+            action_dim=PRODUCTION_ACTION_DIM,
+        )
+        print(json.dumps({
+            "operation": "compile-reduced7",
+            "actor_bank_manifest": args.output,
+            "actor_bank_manifest_file_sha256": file_sha256,
+            "actor_bank_contract_sha256": manifest[
+                "actor_bank_contract_sha256"],
+            "identity_count": manifest["identity_count"],
+        }, sort_keys=True, indent=2))
+        return 0
     common = {
         "supplement_path": args.supplement,
         "protocol_path": args.protocol,

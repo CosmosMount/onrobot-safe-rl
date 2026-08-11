@@ -295,7 +295,7 @@ class StageBRoleCollectorTest(unittest.TestCase):
     def test_production_builder_matches_frozen_source_assignment(self) -> None:
         config = production_collection_config(
             role="model_test",
-            source_seed=8724,
+            source_seed=8722,
             max_episode_steps=100,
             max_trajectories=2048,
             proposal_cooldown_steps=5,
@@ -306,7 +306,7 @@ class StageBRoleCollectorTest(unittest.TestCase):
             proposal_min_tilt_rad=0.10,
             proposal_max_height_m=0.32,
         )
-        self.assertEqual(config.policy_training_seed, 56)
+        self.assertEqual(config.policy_training_seed, 49)
         self.assertEqual(config.policy_training_step, 100_000)
         self.assertEqual(config.target_groups, 64)
         self.assertEqual(config.admission_replicas, 32)

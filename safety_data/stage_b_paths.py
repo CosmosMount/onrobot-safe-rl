@@ -46,6 +46,8 @@ from safety_data.state_dependent_recovery_v5 import (
 from safety_data.state_dependent_recovery_v5_stage_b import (
     EXECUTION_PROTOCOL_CONTRACT_SHA256,
     EXECUTION_PROTOCOL_FILE_SHA256,
+    REDUCED7_AMENDMENT_CONTRACT_SHA256,
+    REDUCED7_AMENDMENT_FILE_SHA256,
     STAGE_A_DISPOSITION_COMMIT,
     STAGE_A_REPORT_SHA256,
     require_clean_stage_b_generator,
@@ -74,6 +76,8 @@ _MODEL_TEST_REPORT_FIELDS = frozenset({
     "execution_protocol_name",
     "execution_protocol_contract_sha256",
     "execution_protocol_file_sha256",
+    "roster_amendment_contract_sha256",
+    "roster_amendment_file_sha256",
     "stage_a_report_sha256",
     "stage_a_disposition_commit",
     "generator_commit",
@@ -170,6 +174,7 @@ def _validate_outcome_free_report(
     for name in (
         "parent_protocol_contract_sha256", "parent_protocol_file_sha256",
         "execution_protocol_contract_sha256", "execution_protocol_file_sha256",
+        "roster_amendment_contract_sha256", "roster_amendment_file_sha256",
         "stage_a_report_sha256",
         "producer_attempt_sha256",
     ):
@@ -182,6 +187,9 @@ def _validate_outcome_free_report(
         "execution_protocol_contract_sha256": (
             EXECUTION_PROTOCOL_CONTRACT_SHA256),
         "execution_protocol_file_sha256": EXECUTION_PROTOCOL_FILE_SHA256,
+        "roster_amendment_contract_sha256": (
+            REDUCED7_AMENDMENT_CONTRACT_SHA256),
+        "roster_amendment_file_sha256": REDUCED7_AMENDMENT_FILE_SHA256,
         "stage_a_report_sha256": STAGE_A_REPORT_SHA256,
     }
     for name, expected in expected_hashes.items():
@@ -199,7 +207,8 @@ def _validate_outcome_free_report(
             "outcome-free report Stage-A disposition commit has drifted")
     expected_seeds = list(_STAGE_B_ROLE_SOURCE_SEEDS["model_test"])
     if value.get("source_seeds") != expected_seeds or value.get(
-            "groups") != 768 or value.get("admission_replicas") != 32 or (
+            "groups") != len(expected_seeds) * 64 or value.get(
+                "admission_replicas") != 32 or (
                 value.get("label_replicas") != 64):
         raise ProtectedEvidencePathError(
             "outcome-free report Model-Test cohort is invalid")

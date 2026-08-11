@@ -45,13 +45,11 @@ _GENERIC_FORBIDDEN_AUDIT_COMPONENTS = (
     _LOCKED_AUDIT_BASENAMES | _AMBIGUOUS_AUDIT_BASENAMES)
 
 _STAGE_B_ROLE_SOURCE_SEEDS = {
-    "fit": (8501, 8502, 8503, 8504, 8511, 8512, 8513, 8514,
-            8521, 8522, 8523, 8524),
-    "probability_calibration": (8601, 8602, 8611, 8612, 8621, 8622),
-    "uncertainty_calibration": (8631, 8632, 8641, 8642, 8651, 8652),
-    "selector_calibration": (8661, 8662, 8671, 8672, 8681, 8682),
-    "model_test": (8701, 8702, 8703, 8704, 8711, 8712,
-                   8713, 8714, 8721, 8722, 8723, 8724),
+    "fit": (8501, 8502, 8511, 8512, 8521, 8522),
+    "probability_calibration": (8601, 8611, 8621),
+    "uncertainty_calibration": (8631, 8641, 8651),
+    "selector_calibration": (8661, 8671, 8681),
+    "model_test": (8701, 8702, 8711, 8712, 8721, 8722),
 }
 _STAGE_B_ROLE_DIRECTORIES = {
     role: role.replace("_", "-") for role in _STAGE_B_ROLE_SOURCE_SEEDS

@@ -46,6 +46,17 @@ EXECUTION_PROTOCOL_FILE_SHA256 = (
 EXECUTION_PROTOCOL_CONTRACT_SHA256 = (
     "17c1ae4f8109f2d786f958830e838c52da7a03e61561dfaa9f790d75b9f70086"
 )
+REDUCED7_AMENDMENT_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "config"
+    / "qsafe_state_dependent_recovery_v5_stage_b_reduced7_amendment.yaml"
+)
+REDUCED7_AMENDMENT_FILE_SHA256 = (
+    "b43cc3cb0f2f1202e9d02a2267e19d12791259b01439b48dfe8344b36df79968"
+)
+REDUCED7_AMENDMENT_CONTRACT_SHA256 = (
+    "3ef2d5402ea7e4c618b03992e0353108de3e8e23abfc4067325516756531ad68"
+)
 STAGE_A_REPORT_SHA256 = (
     "e7ea56546bf8006cfc4d8ade4f5b2c26dbfcbc132e0568e054a98c2be3174b2e"
 )
@@ -64,20 +75,18 @@ ROLE_ORDER = (
     "model_test",
 )
 ROLE_ACTOR_SEEDS: Mapping[str, tuple[int, ...]] = {
-    "fit": (43, 44, 45, 46),
-    "probability_calibration": (47, 48),
-    "uncertainty_calibration": (49, 50),
-    "selector_calibration": (51, 52),
-    "model_test": (53, 54, 55, 56),
+    "fit": (43, 44),
+    "probability_calibration": (45,),
+    "uncertainty_calibration": (46,),
+    "selector_calibration": (47,),
+    "model_test": (48, 49),
 }
 ROLE_SOURCE_SEEDS: Mapping[str, tuple[int, ...]] = {
-    "fit": (8501, 8502, 8503, 8504, 8511, 8512, 8513, 8514,
-            8521, 8522, 8523, 8524),
-    "probability_calibration": (8601, 8602, 8611, 8612, 8621, 8622),
-    "uncertainty_calibration": (8631, 8632, 8641, 8642, 8651, 8652),
-    "selector_calibration": (8661, 8662, 8671, 8672, 8681, 8682),
-    "model_test": (8701, 8702, 8703, 8704, 8711, 8712, 8713, 8714,
-                   8721, 8722, 8723, 8724),
+    "fit": (8501, 8502, 8511, 8512, 8521, 8522),
+    "probability_calibration": (8601, 8611, 8621),
+    "uncertainty_calibration": (8631, 8641, 8651),
+    "selector_calibration": (8661, 8671, 8681),
+    "model_test": (8701, 8702, 8711, 8712, 8721, 8722),
 }
 CHECKPOINT_STEPS = (25_000, 50_000, 100_000)
 GROUPS_PER_SOURCE: Mapping[str, int] = {
@@ -487,6 +496,67 @@ def load_stage_b_execution_protocol(
     return protocol
 
 
+def load_stage_b_reduced7_amendment(
+    path: str | Path = REDUCED7_AMENDMENT_PATH,
+) -> dict[str, Any]:
+    """Load the explicit seven-seed decision made before branch outcomes."""
+    checked = Path(path).resolve(strict=True)
+    if checked != REDUCED7_AMENDMENT_PATH.resolve(strict=True):
+        raise StageBExecutionError(
+            "Stage-B roster amendment must use the canonical path")
+    raw = checked.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != REDUCED7_AMENDMENT_FILE_SHA256:
+        raise StageBExecutionError("Stage-B roster amendment bytes changed")
+    parsed = yaml.safe_load(raw)
+    if not isinstance(parsed, dict) or canonical_sha256(parsed) != (
+        REDUCED7_AMENDMENT_CONTRACT_SHA256
+    ):
+        raise StageBExecutionError("Stage-B roster amendment hash changed")
+    actor_bank = _mapping(parsed.get("actor_bank"), "amendment actor_bank")
+    stage_b = _mapping(parsed.get("stage_B"), "amendment stage_B")
+    authorization = _mapping(
+        parsed.get("authorization"), "amendment authorization")
+    _require_equal(
+        actor_bank.get("actor_training_seeds"),
+        {role: list(ROLE_ACTOR_SEEDS[role]) for role in ROLE_ORDER},
+        "amendment actor roster",
+    )
+    _require_equal(
+        actor_bank.get("retained_training_seeds_exact"),
+        [seed for role in ROLE_ORDER for seed in ROLE_ACTOR_SEEDS[role]],
+        "amendment retained seeds",
+    )
+    _require_equal(
+        actor_bank.get("checkpoint_steps_exact"),
+        list(CHECKPOINT_STEPS),
+        "amendment checkpoint steps",
+    )
+    _require_equal(
+        stage_b.get("source_seeds"),
+        {role: list(ROLE_SOURCE_SEEDS[role]) for role in ROLE_ORDER},
+        "amendment source roster",
+    )
+    _require_equal(
+        stage_b.get("groups_per_source_seed"),
+        dict(GROUPS_PER_SOURCE),
+        "amendment groups per source",
+    )
+    _require_equal(
+        authorization.get("decision_made_before_any_stage_b_branch_outcome"),
+        True,
+        "amendment outcome timing",
+    )
+    _require_equal(
+        authorization.get("outcome_dependent_seed_selection"),
+        "forbidden",
+        "amendment outcome selection",
+    )
+    return parsed | {
+        "amendment_file_sha256": REDUCED7_AMENDMENT_FILE_SHA256,
+        "amendment_contract_sha256": REDUCED7_AMENDMENT_CONTRACT_SHA256,
+    }
+
+
 def _validate_execution_semantics(protocol: Mapping[str, Any]) -> None:
     authorization = _mapping(protocol.get("authorization"), "authorization")
     expected_authorization = {
@@ -762,7 +832,7 @@ class StageBSourceAssignment:
 
 
 def source_assignments() -> tuple[StageBSourceAssignment, ...]:
-    """Return the immutable 42-source roster in role/age/actor order."""
+    """Return the amended source roster in role/age/actor order."""
     result: list[StageBSourceAssignment] = []
     for role in ROLE_ORDER:
         actors = ROLE_ACTOR_SEEDS[role]
@@ -782,8 +852,13 @@ def source_assignments() -> tuple[StageBSourceAssignment, ...]:
                     admission_replicas=ADMISSION_REPLICAS,
                     label_replicas=LABEL_REPLICAS[role],
                 ))
-    if len(result) != 42 or len({row.source_seed for row in result}) != 42:
-        raise AssertionError("Stage-B source roster must contain 42 unique sources")
+    expected_count = sum(len(values) for values in ROLE_SOURCE_SEEDS.values())
+    if len(result) != expected_count or len({row.source_seed for row in result}) != (
+        expected_count
+    ):
+        raise AssertionError(
+            "Stage-B source roster must contain the amended unique sources"
+        )
     return tuple(result)
 
 
@@ -940,6 +1015,10 @@ def execution_identity(protocol: Mapping[str, Any]) -> dict[str, Any]:
         "execution_protocol_contract_sha256": protocol[
             "execution_protocol_contract_sha256"
         ],
+        "roster_amendment_file_sha256": REDUCED7_AMENDMENT_FILE_SHA256,
+        "roster_amendment_contract_sha256": (
+            REDUCED7_AMENDMENT_CONTRACT_SHA256
+        ),
         "stage_a_report_sha256": STAGE_A_REPORT_SHA256,
         "stage_a_disposition_commit": STAGE_A_DISPOSITION_COMMIT,
         "recovery_library_fingerprint_sha256": (
@@ -952,8 +1031,13 @@ def _actor_identities_by_role(
     actor_bank_manifest: Mapping[str, Any],
 ) -> dict[str, list[Mapping[str, Any]]]:
     identities = actor_bank_manifest.get("identities")
-    if not isinstance(identities, list) or len(identities) != 42:
-        raise StageBExecutionError("actor bank must contain exactly 42 identities")
+    expected_count = sum(len(values) for values in ROLE_ACTOR_SEEDS.values()) * len(
+        CHECKPOINT_STEPS
+    )
+    if not isinstance(identities, list) or len(identities) != expected_count:
+        raise StageBExecutionError(
+            "actor bank must contain the complete amended identity roster"
+        )
     result: dict[str, list[Mapping[str, Any]]] = {role: [] for role in ROLE_ORDER}
     required = {
         "role", "actor_training_seed", "checkpoint_step",
@@ -1225,6 +1309,7 @@ def compile_partition_rng_disjointness(
 def preflight_stage_b_execution() -> dict[str, Any]:
     """Perform the outcome-free authorization/RNG/roster preflight."""
     protocol = load_stage_b_execution_protocol()
+    load_stage_b_reduced7_amendment()
     validate_stage_a_authorization(protocol)
     rng = validate_role_seed_disjointness()
     if not rng["pass"]:
@@ -1235,11 +1320,8 @@ def preflight_stage_b_execution() -> dict[str, Any]:
         for role in ROLE_ORDER
     }
     expected_totals = {
-        "fit": 1536,
-        "probability_calibration": 384,
-        "uncertainty_calibration": 384,
-        "selector_calibration": 384,
-        "model_test": 768,
+        role: len(ROLE_SOURCE_SEEDS[role]) * GROUPS_PER_SOURCE[role]
+        for role in ROLE_ORDER
     }
     if totals != expected_totals:
         raise StageBExecutionError("Stage-B group totals have drifted")
@@ -1249,7 +1331,9 @@ def preflight_stage_b_execution() -> dict[str, Any]:
         ),
         "execution_identity": execution_identity(protocol),
         "source_assignments": len(assignments),
-        "actor_training_seeds": list(range(43, 57)),
+        "actor_training_seeds": [
+            seed for role in ROLE_ORDER for seed in ROLE_ACTOR_SEEDS[role]
+        ],
         "checkpoint_steps": list(CHECKPOINT_STEPS),
         "group_totals": totals,
         "candidate_label_rollouts": sum(
@@ -1273,6 +1357,9 @@ __all__ = [
     "GROUPS_PER_SOURCE",
     "HORIZON_POLICY_STEPS",
     "LABEL_REPLICAS",
+    "REDUCED7_AMENDMENT_CONTRACT_SHA256",
+    "REDUCED7_AMENDMENT_FILE_SHA256",
+    "REDUCED7_AMENDMENT_PATH",
     "RECOVERY_LIBRARY_FINGERPRINT_SHA256",
     "ROLE_ACTOR_SEEDS",
     "ROLE_ORDER",
@@ -1299,6 +1386,7 @@ __all__ = [
     "execution_identity",
     "file_sha256",
     "load_stage_b_execution_protocol",
+    "load_stage_b_reduced7_amendment",
     "preflight_stage_b_execution",
     "require_clean_stage_b_generator",
     "source_assignments",

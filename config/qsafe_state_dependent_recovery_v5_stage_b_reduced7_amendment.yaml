@@ -1,0 +1,83 @@
+schema_version: 1
+protocol_name: objective1_state_dependent_recovery_qsafe_v5_stage_b_reduced7_amendment
+created_at: "2026-08-11T18:55:00+08:00"
+scope: pre_branch_outcome_actor_roster_reduction
+claim_eligible: true
+
+authorization:
+  parent_protocol_path: config/qsafe_state_dependent_recovery_v5.yaml
+  parent_execution_supplement_path: config/qsafe_state_dependent_recovery_v5_stage_b_execution.yaml
+  actor_source_generator_commit: ba888507388cd3842e8faa8acb3284a997002951
+  decision_source: explicit_user_instruction
+  decision_rule: retain_every_fully_completed_seed_through_the_active_seed_49
+  decision_made_before_any_stage_b_branch_outcome: true
+  role_attempt_markers_required_absent_at_freeze: true
+  outcome_dependent_seed_selection: forbidden
+  checkpoint_selection: exact_cartesian_product_only
+
+actor_bank:
+  upstream_training_seeds_exact: [43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56]
+  retained_training_seeds_exact: [43, 44, 45, 46, 47, 48, 49]
+  checkpoint_steps_exact: [25000, 50000, 100000]
+  checkpoint_count_exact: 21
+  actor_training_seeds:
+    fit: [43, 44]
+    probability_calibration: [45]
+    uncertainty_calibration: [46]
+    selector_calibration: [47]
+    model_test: [48, 49]
+  actor_role_reassignment_is_outcome_free: true
+  every_retained_seed_and_checkpoint_required: true
+  nearby_checkpoint_substitution: forbidden
+
+stage_B:
+  source_seeds:
+    fit: [8501, 8502, 8511, 8512, 8521, 8522]
+    probability_calibration: [8601, 8611, 8621]
+    uncertainty_calibration: [8631, 8641, 8651]
+    selector_calibration: [8661, 8671, 8681]
+    model_test: [8701, 8702, 8711, 8712, 8721, 8722]
+  actor_source_assignment:
+    actor_checkpoint_steps: [25000, 50000, 100000]
+    by_role:
+      fit:
+        "43": [8501, 8511, 8521]
+        "44": [8502, 8512, 8522]
+      probability_calibration:
+        "45": [8601, 8611, 8621]
+      uncertainty_calibration:
+        "46": [8631, 8641, 8651]
+      selector_calibration:
+        "47": [8661, 8671, 8681]
+      model_test:
+        "48": [8701, 8711, 8721]
+        "49": [8702, 8712, 8722]
+  groups_per_source_seed:
+    fit: 128
+    probability_calibration: 64
+    uncertainty_calibration: 64
+    selector_calibration: 64
+    model_test: 64
+  groups_exact:
+    fit: 768
+    probability_calibration: 192
+    uncertainty_calibration: 192
+    selector_calibration: 192
+    model_test: 384
+  admission_replicas_exact: 32
+  label_replicas_exact:
+    fit: 32
+    probability_calibration: 32
+    uncertainty_calibration: 32
+    selector_calibration: 32
+    model_test: 64
+  candidate_count_exact: 9
+  horizon_policy_steps_exact: 96
+
+inference_scope:
+  status: reduced_power_confirmatory_stage_b
+  thresholds_unchanged_from_parent_v5: true
+  model_test_one_shot_firewall_unchanged: true
+  physical_role_separation_unchanged: true
+  stage_c_authorization_requires_all_parent_metrics: true
+  objective1_not_authorized_by_stage_b_alone: true

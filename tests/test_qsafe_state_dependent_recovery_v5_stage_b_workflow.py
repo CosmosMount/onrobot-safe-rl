@@ -45,7 +45,8 @@ from safety_data.state_dependent_recovery_v5_stage_b_collector import (
     StageBRoleCollectionResult,
 )
 from train.state_dependent_recovery_v5_stage_b_actor_bank import (
-    ACTOR_BANK_SCHEMA_VERSION,
+    REDUCED7_ACTOR_BANK_SCHEMA_VERSION,
+    ROLE_SEEDS as UPSTREAM_ROLE_SEEDS,
 )
 
 
@@ -70,6 +71,7 @@ def _actor_bank() -> dict[str, object]:
                 actor_hash = _digest(prefix + ":actor")
                 identities.append({
                     "role": role,
+                    "upstream_role": role,
                     "actor_training_seed": actor_seed,
                     "checkpoint_step": checkpoint_step,
                     "checkpoint_path": f"/tmp/{prefix}/agent",
@@ -86,13 +88,16 @@ def _actor_bank() -> dict[str, object]:
                         prefix + ":snapshot"),
                 })
     basis: dict[str, object] = {
-        "schema_version": ACTOR_BANK_SCHEMA_VERSION,
+        "schema_version": REDUCED7_ACTOR_BANK_SCHEMA_VERSION,
         "protocol_binding": {
             "path": "protocol", "file_sha256": _digest("protocol"),
             "contract_sha256": _digest("protocol-contract")},
         "execution_supplement_binding": {
             "path": "execution", "file_sha256": _digest("execution"),
             "contract_sha256": _digest("execution-contract")},
+        "roster_amendment_binding": {
+            "path": "amendment", "file_sha256": _digest("amendment"),
+            "contract_sha256": _digest("amendment-contract")},
         "stage_a_report_binding": {
             "path": "stage-a", "file_sha256": _digest("stage-a")},
         "training_config_binding": {
@@ -101,15 +106,18 @@ def _actor_bank() -> dict[str, object]:
             "path": "attempt", "file_sha256": _digest("attempt"),
             "contract_sha256": _digest("attempt-contract")},
         "generator_commit": _GENERATOR,
+        "stage_b_generator_commit": _GENERATOR,
+        "upstream_actor_training_seeds": {
+            role: list(UPSTREAM_ROLE_SEEDS[role]) for role in ROLE_ORDER},
         "actor_training_seeds": {
             role: list(ROLE_ACTOR_SEEDS[role]) for role in ROLE_ORDER},
         "checkpoint_steps": list(CHECKPOINT_STEPS),
         "checkpoint_semantics": (
             "after_transition_and_scheduled_update_before_next_transition"),
-        "identity_count": 42,
-        "expected_identity_count": 42,
+        "identity_count": len(identities),
+        "expected_identity_count": len(identities),
         "actor_inclusion_rule": (
-            "all_preregistered_seed_step_identities_no_filtering"),
+            "all_preoutcome_amendment_retained_seed_step_identities"),
         "return_or_fall_filtering": "forbidden",
         "checkpoint_substitution": "forbidden",
         "nearby_checkpoint_substitution": "forbidden",
@@ -371,7 +379,7 @@ class StageBRoleWorkflowTest(unittest.TestCase):
 
         missing = json.loads(json.dumps(_actor_bank()))
         missing["identities"].pop()
-        missing["identity_count"] = 41
+        missing["identity_count"] = len(missing["identities"])
         cases["missing model-test identity"] = reseal(missing)
 
         duplicated = json.loads(json.dumps(_actor_bank()))
@@ -383,7 +391,7 @@ class StageBRoleWorkflowTest(unittest.TestCase):
                 root = Path(directory) / "stage-b"
                 with self.assertRaisesRegex(
                     workflow.StageBExecutionError,
-                    "42 identities|model_test.*incomplete|exact frozen order",
+                    "complete amended identity|model_test.*incomplete|exact frozen order",
                 ):
                     workflow.prepare_stage_b_role(
                         stage_b_root=root,

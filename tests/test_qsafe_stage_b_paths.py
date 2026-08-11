@@ -32,6 +32,8 @@ from safety_data.state_dependent_recovery_v5 import (
 from safety_data.state_dependent_recovery_v5_stage_b import (
     EXECUTION_PROTOCOL_CONTRACT_SHA256,
     EXECUTION_PROTOCOL_FILE_SHA256,
+    REDUCED7_AMENDMENT_CONTRACT_SHA256,
+    REDUCED7_AMENDMENT_FILE_SHA256,
     STAGE_A_DISPOSITION_COMMIT,
     STAGE_A_REPORT_SHA256,
 )
@@ -87,16 +89,18 @@ class StageBEvidencePathTest(unittest.TestCase):
             "execution_protocol_contract_sha256": (
                 EXECUTION_PROTOCOL_CONTRACT_SHA256),
             "execution_protocol_file_sha256": EXECUTION_PROTOCOL_FILE_SHA256,
+            "roster_amendment_contract_sha256": (
+                REDUCED7_AMENDMENT_CONTRACT_SHA256
+            ),
+            "roster_amendment_file_sha256": (
+                REDUCED7_AMENDMENT_FILE_SHA256
+            ),
             "stage_a_report_sha256": STAGE_A_REPORT_SHA256,
             "stage_a_disposition_commit": STAGE_A_DISPOSITION_COMMIT,
             "generator_commit": "e" * 40,
             "role": "model_test",
-            "source_seeds": [
-                8701, 8702, 8703, 8704,
-                8711, 8712, 8713, 8714,
-                8721, 8722, 8723, 8724,
-            ],
-            "groups": 768,
+            "source_seeds": [8701, 8702, 8711, 8712, 8721, 8722],
+            "groups": 384,
             "admission_replicas": 32,
             "label_replicas": 64,
             "evidence_artifacts": artifacts,

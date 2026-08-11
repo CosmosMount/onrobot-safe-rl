@@ -90,13 +90,14 @@ from safety_data.state_dependent_recovery_v5_stage_b import (
     assignment_for,
     canonical_sha256,
     execution_identity,
+    load_stage_b_reduced7_amendment,
     load_stage_b_execution_protocol,
     require_clean_stage_b_generator,
     stage_b_artifact_root,
     validate_stage_a_authorization,
 )
 from train.state_dependent_recovery_v5_stage_b_actor_bank import (
-    load_actor_bank_manifest,
+    load_reduced7_actor_bank_manifest,
 )
 
 
@@ -825,6 +826,7 @@ def _frozen_identity(
 def load_frozen_development_inputs() -> StageBFrozenDevelopmentInputs:
     """Load and bind the canonical four-role cohort without Model-Test data."""
     execution_protocol = load_stage_b_execution_protocol()
+    load_stage_b_reduced7_amendment()
     validate_stage_a_authorization(execution_protocol)
     generator_commit = require_clean_stage_b_generator()
     parent_protocol = load_state_dependent_recovery_v5_protocol()
@@ -838,7 +840,7 @@ def load_frozen_development_inputs() -> StageBFrozenDevelopmentInputs:
     _require_outputs_absent(stage_b_root)
     actor_path = stage_b_root / "actor-bank-manifest.json"
     actor_file_sha256 = _file_sha256(actor_path, "actor-bank manifest")
-    actor_manifest = load_actor_bank_manifest(
+    actor_manifest = load_reduced7_actor_bank_manifest(
         actor_path,
         expected_bindings={
             "manifest_file_sha256": actor_file_sha256,
@@ -851,14 +853,12 @@ def load_frozen_development_inputs() -> StageBFrozenDevelopmentInputs:
                 EXECUTION_PROTOCOL_CONTRACT_SHA256
             ),
             "stage_a_report_sha256": STAGE_A_REPORT_SHA256,
-            "generator_commit": generator_commit,
+            "stage_b_generator_commit": generator_commit,
         },
-        enforce_canonical_path=True,
-        verify_bound_files=True,
         verify_checkpoint_files=True,
     )
-    if actor_manifest.get("generator_commit") != generator_commit:
-        raise StageBFitError("actor bank generator commit differs")
+    if actor_manifest.get("stage_b_generator_commit") != generator_commit:
+        raise StageBFitError("actor bank amendment generator commit differs")
 
     roles = {
         role: _load_role_input(

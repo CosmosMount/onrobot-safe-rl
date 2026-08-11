@@ -55,6 +55,8 @@ RUN_COMPLETION_SCHEMA_VERSION = (
     "qsafe.state_dependent_recovery_v5_stage_b.actor_run_complete.v1")
 ACTOR_BANK_SCHEMA_VERSION = (
     "qsafe.state_dependent_recovery_v5.stage_b_actor_bank.v1")
+REDUCED7_ACTOR_BANK_SCHEMA_VERSION = (
+    "qsafe.state_dependent_recovery_v5.stage_b_actor_bank.reduced7.v1")
 CHECKPOINT_SEMANTICS = (
     "after_transition_and_scheduled_update_before_next_transition")
 EXACT_CHECKPOINT_STEPS = (25_000, 50_000, 100_000)
@@ -65,6 +67,17 @@ ROLE_SEEDS: dict[str, tuple[int, ...]] = {
     "selector_calibration": (51, 52),
     "model_test": (53, 54, 55, 56),
 }
+REDUCED7_ROLE_SEEDS: dict[str, tuple[int, ...]] = {
+    "fit": (43, 44),
+    "probability_calibration": (45,),
+    "uncertainty_calibration": (46,),
+    "selector_calibration": (47,),
+    "model_test": (48, 49),
+}
+REDUCED7_ALL_ACTOR_SEEDS = tuple(
+    seed for seeds in REDUCED7_ROLE_SEEDS.values() for seed in seeds)
+REDUCED7_EXPECTED_IDENTITY_COUNT = (
+    len(REDUCED7_ALL_ACTOR_SEEDS) * len(EXACT_CHECKPOINT_STEPS))
 ALL_ACTOR_SEEDS = tuple(
     seed for seeds in ROLE_SEEDS.values() for seed in seeds)
 EXPECTED_IDENTITY_COUNT = len(ALL_ACTOR_SEEDS) * len(EXACT_CHECKPOINT_STEPS)
@@ -81,6 +94,11 @@ _CANONICAL_ACTOR_BANK_MANIFEST = (
     Path(__file__).resolve().parents[1]
     / "saved" / "qsafe_development" / "state_dependent_recovery_v5"
     / "stage-b" / "actor-bank-manifest.json"
+).resolve(strict=False)
+_REDUCED7_AMENDMENT_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "config"
+    / "qsafe_state_dependent_recovery_v5_stage_b_reduced7_amendment.yaml"
 ).resolve(strict=False)
 
 
@@ -1322,6 +1340,244 @@ def compile_actor_bank_manifest(
     return manifest, output_file_sha256
 
 
+def compile_reduced7_actor_bank_manifest(
+    *,
+    amendment_path: str | Path,
+    actor_root: str | Path,
+    contracts_root: str | Path,
+    training_config_path: str | Path,
+    output_path: str | Path,
+    observation_dim: int = PRODUCTION_OBSERVATION_DIM,
+    action_dim: int = PRODUCTION_ACTION_DIM,
+    policy_inspector: Callable[
+        [Path, Path, int, int, int], Mapping[str, Any]
+    ] = _inspect_policy_default,
+) -> tuple[dict[str, Any], str]:
+    """Compile the explicit pre-outcome seven-seed roster amendment.
+
+    The source checkpoints retain their original frozen run-contract identity.
+    Only their downstream evidence roles are reassigned.  No return, fall, or
+    branch-outcome file is opened by this compiler.
+    """
+    amendment_checked = _checked_input(amendment_path, "roster amendment")
+    if amendment_checked != _REDUCED7_AMENDMENT_PATH.resolve(strict=True):
+        raise StageBActorBankError(
+            "reduced actor bank requires the canonical roster amendment")
+    amendment = _read_yaml(amendment_checked, "roster amendment")
+    actor_bank_node = amendment.get("actor_bank")
+    stage_b_node = amendment.get("stage_B")
+    authorization = amendment.get("authorization")
+    if not isinstance(actor_bank_node, Mapping) or not isinstance(
+        stage_b_node, Mapping
+    ) or not isinstance(authorization, Mapping):
+        raise StageBActorBankError("roster amendment is incomplete")
+    expected_reduced_roster = {
+        role: list(seeds) for role, seeds in REDUCED7_ROLE_SEEDS.items()
+    }
+    if actor_bank_node.get("actor_training_seeds") != expected_reduced_roster or (
+        actor_bank_node.get("retained_training_seeds_exact")
+        != list(REDUCED7_ALL_ACTOR_SEEDS)
+    ) or actor_bank_node.get("upstream_training_seeds_exact") != list(
+        ALL_ACTOR_SEEDS
+    ) or actor_bank_node.get("checkpoint_steps_exact") != list(
+        EXACT_CHECKPOINT_STEPS
+    ) or actor_bank_node.get("checkpoint_count_exact") != (
+        REDUCED7_EXPECTED_IDENTITY_COUNT
+    ):
+        raise StageBActorBankError("roster amendment actor bank differs")
+    if authorization.get("decision_made_before_any_stage_b_branch_outcome") is not (
+        True
+    ) or authorization.get("outcome_dependent_seed_selection") != "forbidden":
+        raise StageBActorBankError("roster amendment is not outcome-blind")
+
+    live_commit, dirty = _git_identity()
+    if dirty:
+        raise StageBActorBankError(
+            "reduced actor-bank compilation requires a clean amendment commit")
+    actor_source_commit = str(
+        authorization.get("actor_source_generator_commit", ""))
+    if _HEX40.fullmatch(actor_source_commit) is None:
+        raise StageBActorBankError("actor source generator commit is invalid")
+    if observation_dim != PRODUCTION_OBSERVATION_DIM or action_dim != (
+        PRODUCTION_ACTION_DIM
+    ):
+        raise StageBActorBankError(
+            "reduced actor bank requires observation_dim=46 and action_dim=12")
+
+    actor_root_path = _validate_actor_root_shape(actor_root)
+    contracts_root_path = assert_development_path(contracts_root)
+    output = assert_development_path(output_path)
+    if output != _CANONICAL_ACTOR_BANK_MANIFEST:
+        raise StageBActorBankError(
+            "reduced actor-bank manifest output is not canonical")
+    role_directories = tuple(role.replace("_", "-") for role in REDUCED7_ROLE_SEEDS)
+    occupied_role_evidence = [
+        actor_root_path.parent / directory
+        for directory in role_directories
+        if os.path.lexists(actor_root_path.parent / directory)
+    ]
+    if occupied_role_evidence:
+        raise StageBActorBankError(
+            "roster amendment must precede every Stage-B role attempt")
+    if os.path.lexists(output):
+        raise StageBActorBankError(
+            f"refusing to clobber actor-bank manifest: {output}")
+
+    config_path = _checked_input(training_config_path, "training config")
+    identities: list[dict[str, Any]] = []
+    shared_bindings: dict[str, Any] | None = None
+    shared_attempt: dict[str, Any] | None = None
+    unique_paths: set[str] = set()
+    unique_fingerprints: set[str] = set()
+    for role, seeds in REDUCED7_ROLE_SEEDS.items():
+        for seed in seeds:
+            contract_path = contracts_root_path / f"seed-{seed}.json"
+            contract = load_actor_run_contract(
+                contract_path,
+                verify_live_bindings=True,
+                require_clean_git=False,
+            )
+            if contract.get("generator_commit") != actor_source_commit:
+                raise StageBActorBankError(
+                    f"seed {seed} actor source commit differs")
+            bindings = dict(contract["bindings"])
+            attempt = dict(contract["actor_bank_attempt_binding"])
+            if shared_bindings is None:
+                shared_bindings = bindings
+                shared_attempt = attempt
+            elif bindings != shared_bindings or attempt != shared_attempt:
+                raise StageBActorBankError(
+                    "retained actor runs do not share frozen upstream bindings")
+
+            seed_root = actor_root_path / f"seed-{seed}"
+            completion = _read_json(
+                seed_root / "actor-run-completed.json", "actor run completion")
+            _validate_self_hash(
+                completion,
+                "completion_contract_sha256",
+                "actor run completion",
+            )
+            if completion.get("actor_training_seed") != seed or (
+                completion.get("checkpoint_steps")
+                != list(EXACT_CHECKPOINT_STEPS)
+            ) or completion.get("run_contract_sha256") != contract.get(
+                "run_contract_sha256"
+            ):
+                raise StageBActorBankError(
+                    f"seed {seed} completion identity differs")
+            completion_hashes = completion.get("snapshot_manifest_file_sha256")
+            if not isinstance(completion_hashes, Mapping):
+                raise StageBActorBankError(
+                    f"seed {seed} completion hashes are missing")
+
+            for step in EXACT_CHECKPOINT_STEPS:
+                step_dir = seed_root / _checkpoint_directory_name(step)
+                actor_dir = step_dir / "agent"
+                if not actor_dir.is_dir() or actor_dir.is_symlink() or sorted(
+                    item.name for item in actor_dir.iterdir()
+                ) != ["actor.pt"]:
+                    raise StageBActorBankError(
+                        f"checkpoint is not policy-only: seed={seed} step={step}")
+                snapshot, snapshot_file_sha256 = _validate_snapshot_manifest(
+                    step_dir / "snapshot-manifest.json",
+                    contract=contract,
+                    seed=seed,
+                    step=step,
+                )
+                if completion_hashes.get(str(step)) != snapshot_file_sha256:
+                    raise StageBActorBankError(
+                        f"seed {seed} completion does not bind step {step}")
+                policy = dict(policy_inspector(
+                    actor_dir, config_path, observation_dim, action_dim, step))
+                if policy.get("actor_sha256") != snapshot.get("actor_sha256") or (
+                    policy.get("actor_state_dict_sha256")
+                    != snapshot.get("actor_state_dict_sha256")
+                ):
+                    raise StageBActorBankError(
+                        f"loaded actor identity differs for seed={seed} step={step}")
+                fingerprint = str(policy.get("checkpoint_fingerprint_sha256"))
+                actor_path_text = str(actor_dir)
+                if _HEX64.fullmatch(fingerprint) is None or actor_path_text in (
+                    unique_paths
+                ) or fingerprint in unique_fingerprints:
+                    raise StageBActorBankError(
+                        f"duplicate actor identity for seed={seed} step={step}")
+                unique_paths.add(actor_path_text)
+                unique_fingerprints.add(fingerprint)
+                identities.append({
+                    "role": role,
+                    "upstream_role": contract["role"],
+                    "actor_training_seed": seed,
+                    "checkpoint_step": step,
+                    "checkpoint_path": actor_path_text,
+                    "actor_checkpoint_sha256": policy["actor_sha256"],
+                    "actor_sha256": policy["actor_sha256"],
+                    "actor_state_dict_sha256": policy[
+                        "actor_state_dict_sha256"],
+                    "policy_fingerprint_sha256": policy[
+                        "policy_fingerprint_sha256"],
+                    "checkpoint_fingerprint_sha256": fingerprint,
+                    "policy_config_sha256": shared_bindings[
+                        "training_config"]["file_sha256"],
+                    "generator_commit": actor_source_commit,
+                    "run_contract_sha256": contract["run_contract_sha256"],
+                    "snapshot_manifest_file_sha256": snapshot_file_sha256,
+                })
+
+    if shared_bindings is None or shared_attempt is None or len(identities) != (
+        REDUCED7_EXPECTED_IDENTITY_COUNT
+    ):
+        raise StageBActorBankError("reduced actor identities are incomplete")
+    expected_order = [
+        (role, seed, step)
+        for role, seeds in REDUCED7_ROLE_SEEDS.items()
+        for seed in seeds
+        for step in EXACT_CHECKPOINT_STEPS
+    ]
+    if [
+        (item["role"], item["actor_training_seed"], item["checkpoint_step"])
+        for item in identities
+    ] != expected_order:
+        raise StageBActorBankError("reduced actor identity order differs")
+
+    amendment_binding = _binding(amendment_checked, "roster amendment")
+    amendment_binding["contract_sha256"] = canonical_sha256(amendment)
+    manifest = _self_hashed({
+        "schema_version": REDUCED7_ACTOR_BANK_SCHEMA_VERSION,
+        "protocol_binding": shared_bindings["protocol"],
+        "execution_supplement_binding": shared_bindings[
+            "execution_supplement"],
+        "roster_amendment_binding": amendment_binding,
+        "stage_a_report_binding": shared_bindings["stage_a_report"],
+        "training_config_binding": shared_bindings["training_config"],
+        "actor_bank_attempt_binding": shared_attempt,
+        "generator_commit": actor_source_commit,
+        "stage_b_generator_commit": live_commit,
+        "upstream_actor_training_seeds": {
+            original_role: list(original_seeds)
+            for original_role, original_seeds in ROLE_SEEDS.items()
+        },
+        "actor_training_seeds": expected_reduced_roster,
+        "checkpoint_steps": list(EXACT_CHECKPOINT_STEPS),
+        "checkpoint_semantics": CHECKPOINT_SEMANTICS,
+        "identity_count": len(identities),
+        "expected_identity_count": REDUCED7_EXPECTED_IDENTITY_COUNT,
+        "actor_inclusion_rule": (
+            "all_preoutcome_amendment_retained_seed_step_identities"),
+        "return_or_fall_filtering": "forbidden",
+        "checkpoint_substitution": "forbidden",
+        "nearby_checkpoint_substitution": "forbidden",
+        "policy_only": True,
+        "identities": identities,
+    }, "actor_bank_contract_sha256")
+    output_file_sha256 = _atomic_no_clobber_json(
+        output,
+        manifest,
+        allow_canonical_actor_bank_manifest=True,
+    )
+    return manifest, output_file_sha256
+
+
 def load_actor_bank_manifest(
     path: str | Path = _CANONICAL_ACTOR_BANK_MANIFEST,
     *,
@@ -1607,6 +1863,194 @@ def load_actor_bank_manifest(
     return json.loads(json.dumps(manifest))
 
 
+def load_reduced7_actor_bank_manifest(
+    path: str | Path = _CANONICAL_ACTOR_BANK_MANIFEST,
+    *,
+    expected_bindings: Mapping[str, str] | None = None,
+    verify_checkpoint_files: bool = True,
+) -> dict[str, Any]:
+    """Load the complete outcome-blind seven-seed amended actor bank."""
+    manifest_path = _checked_input(path, "reduced actor-bank manifest")
+    if manifest_path != _CANONICAL_ACTOR_BANK_MANIFEST:
+        raise StageBActorBankError(
+            "reduced actor-bank loader requires the canonical manifest")
+    manifest = _read_json(manifest_path, "reduced actor-bank manifest")
+    _validate_self_hash(
+        manifest, "actor_bank_contract_sha256", "reduced actor-bank manifest")
+    required = {
+        "schema_version", "protocol_binding", "execution_supplement_binding",
+        "roster_amendment_binding", "stage_a_report_binding",
+        "training_config_binding", "actor_bank_attempt_binding",
+        "generator_commit", "stage_b_generator_commit",
+        "upstream_actor_training_seeds", "actor_training_seeds",
+        "checkpoint_steps", "checkpoint_semantics", "identity_count",
+        "expected_identity_count", "actor_inclusion_rule",
+        "return_or_fall_filtering", "checkpoint_substitution",
+        "nearby_checkpoint_substitution", "policy_only", "identities",
+        "actor_bank_contract_sha256",
+    }
+    if set(manifest) != required or manifest.get("schema_version") != (
+        REDUCED7_ACTOR_BANK_SCHEMA_VERSION
+    ):
+        raise StageBActorBankError(
+            "reduced actor-bank manifest fields differ")
+    reduced_roster = {
+        role: list(seeds) for role, seeds in REDUCED7_ROLE_SEEDS.items()
+    }
+    upstream_roster = {
+        role: list(seeds) for role, seeds in ROLE_SEEDS.items()
+    }
+    if manifest.get("actor_training_seeds") != reduced_roster or (
+        manifest.get("upstream_actor_training_seeds") != upstream_roster
+    ) or manifest.get("checkpoint_steps") != list(EXACT_CHECKPOINT_STEPS) or (
+        manifest.get("checkpoint_semantics") != CHECKPOINT_SEMANTICS
+    ) or manifest.get("identity_count") != REDUCED7_EXPECTED_IDENTITY_COUNT or (
+        manifest.get("expected_identity_count")
+        != REDUCED7_EXPECTED_IDENTITY_COUNT
+    ) or manifest.get("actor_inclusion_rule") != (
+        "all_preoutcome_amendment_retained_seed_step_identities"
+    ) or manifest.get("return_or_fall_filtering") != "forbidden" or (
+        manifest.get("checkpoint_substitution") != "forbidden"
+    ) or manifest.get("nearby_checkpoint_substitution") != "forbidden" or (
+        manifest.get("policy_only") is not True
+    ):
+        raise StageBActorBankError("reduced actor-bank contract values differ")
+    actor_source_commit = str(manifest.get("generator_commit", ""))
+    stage_b_commit = str(manifest.get("stage_b_generator_commit", ""))
+    if _HEX40.fullmatch(actor_source_commit) is None or _HEX40.fullmatch(
+        stage_b_commit
+    ) is None:
+        raise StageBActorBankError("reduced actor-bank commits are malformed")
+
+    binding_specs = {
+        "protocol_binding": ("protocol_file_sha256", "protocol_contract_sha256"),
+        "execution_supplement_binding": (
+            "execution_supplement_file_sha256",
+            "execution_supplement_contract_sha256",
+        ),
+        "roster_amendment_binding": (
+            "roster_amendment_file_sha256",
+            "roster_amendment_contract_sha256",
+        ),
+        "stage_a_report_binding": ("stage_a_report_sha256", None),
+        "training_config_binding": ("training_config_sha256", None),
+    }
+    observed: dict[str, str] = {
+        "manifest_file_sha256": _sha256_file(
+            manifest_path, "reduced actor-bank manifest"),
+        "actor_bank_contract_sha256": str(
+            manifest["actor_bank_contract_sha256"]),
+        "generator_commit": actor_source_commit,
+        "stage_b_generator_commit": stage_b_commit,
+    }
+    for field, (file_key, contract_key) in binding_specs.items():
+        binding = manifest.get(field)
+        expected_fields = {"path", "file_sha256"}
+        if contract_key is not None:
+            expected_fields.add("contract_sha256")
+        if not isinstance(binding, Mapping) or set(binding) != expected_fields:
+            raise StageBActorBankError(
+                f"reduced actor-bank {field} is malformed")
+        if _sha256_file(str(binding["path"]), field) != binding["file_sha256"]:
+            raise StageBActorBankError(
+                f"reduced actor-bank {field} bytes changed")
+        observed[file_key] = str(binding["file_sha256"])
+        if contract_key is not None:
+            parsed = _read_yaml(str(binding["path"]), field)
+            if canonical_sha256(parsed) != binding["contract_sha256"]:
+                raise StageBActorBankError(
+                    f"reduced actor-bank {field} contract changed")
+            observed[contract_key] = str(binding["contract_sha256"])
+    amendment_binding = manifest["roster_amendment_binding"]
+    if Path(str(amendment_binding["path"])).resolve(strict=True) != (
+        _REDUCED7_AMENDMENT_PATH.resolve(strict=True)
+    ):
+        raise StageBActorBankError("reduced roster amendment path differs")
+    supplied = dict(expected_bindings or {})
+    if not set(supplied).issubset(observed):
+        raise StageBActorBankError(
+            "reduced actor-bank loader received an unknown expected binding")
+    if any(observed[name] != value for name, value in supplied.items()):
+        raise StageBActorBankError(
+            "reduced actor-bank expected binding differs")
+
+    identities = manifest.get("identities")
+    if not isinstance(identities, list) or len(identities) != (
+        REDUCED7_EXPECTED_IDENTITY_COUNT
+    ):
+        raise StageBActorBankError("reduced actor-bank identities are incomplete")
+    required_identity_fields = {
+        "role", "upstream_role", "actor_training_seed", "checkpoint_step",
+        "checkpoint_path", "actor_checkpoint_sha256", "actor_sha256",
+        "actor_state_dict_sha256", "policy_fingerprint_sha256",
+        "checkpoint_fingerprint_sha256", "policy_config_sha256",
+        "generator_commit", "run_contract_sha256",
+        "snapshot_manifest_file_sha256",
+    }
+    expected_order = [
+        (role, seed, step)
+        for role, seeds in REDUCED7_ROLE_SEEDS.items()
+        for seed in seeds
+        for step in EXACT_CHECKPOINT_STEPS
+    ]
+    observed_order: list[tuple[str, int, int]] = []
+    contract_cache: dict[int, dict[str, Any]] = {}
+    actor_root = _CANONICAL_ACTOR_BANK_MANIFEST.parent / "actor-bank"
+    for raw in identities:
+        if not isinstance(raw, Mapping) or set(raw) != required_identity_fields:
+            raise StageBActorBankError(
+                "reduced actor identity fields differ")
+        role = str(raw["role"])
+        seed = int(raw["actor_training_seed"])
+        step = int(raw["checkpoint_step"])
+        observed_order.append((role, seed, step))
+        contract = contract_cache.get(seed)
+        if contract is None:
+            contract = load_actor_run_contract(
+                actor_root.parent / "actor-contracts" / f"seed-{seed}.json",
+                verify_live_bindings=True,
+                require_clean_git=False,
+            )
+            contract_cache[seed] = contract
+        if raw.get("upstream_role") != contract.get("role") or (
+            raw.get("run_contract_sha256")
+            != contract.get("run_contract_sha256")
+        ) or raw.get("generator_commit") != actor_source_commit:
+            raise StageBActorBankError(
+                f"reduced actor upstream identity differs for {role}/{seed}/{step}")
+        checkpoint = assert_development_path(str(raw["checkpoint_path"]))
+        expected_checkpoint = (
+            actor_root / f"seed-{seed}" / _checkpoint_directory_name(step) / "agent"
+        )
+        if checkpoint != expected_checkpoint or raw.get(
+            "actor_checkpoint_sha256"
+        ) != raw.get("actor_sha256"):
+            raise StageBActorBankError(
+                f"reduced actor path differs for {role}/{seed}/{step}")
+        for hash_field in (
+            "actor_checkpoint_sha256", "actor_sha256",
+            "actor_state_dict_sha256", "policy_fingerprint_sha256",
+            "checkpoint_fingerprint_sha256", "policy_config_sha256",
+            "run_contract_sha256", "snapshot_manifest_file_sha256",
+        ):
+            if _HEX64.fullmatch(str(raw.get(hash_field))) is None:
+                raise StageBActorBankError(
+                    f"reduced actor hash malformed for {role}/{seed}/{step}")
+        if verify_checkpoint_files:
+            if _sha256_file(checkpoint / "actor.pt", "reduced actor") != raw[
+                "actor_sha256"
+            ] or _sha256_file(
+                checkpoint.parent / "snapshot-manifest.json",
+                "reduced actor snapshot",
+            ) != raw["snapshot_manifest_file_sha256"]:
+                raise StageBActorBankError(
+                    f"reduced actor bytes changed for {role}/{seed}/{step}")
+    if observed_order != expected_order:
+        raise StageBActorBankError(
+            "reduced actor identities are missing, duplicated, or reordered")
+    return json.loads(json.dumps(manifest))
+
+
 def actor_identity_for(
     manifest: Mapping[str, Any],
     *,
@@ -1615,11 +2059,17 @@ def actor_identity_for(
     checkpoint_step: int,
 ) -> dict[str, Any]:
     """Return one exact identity from a validated actor-bank manifest."""
-    if role not in ROLE_SEEDS or actor_seed not in ROLE_SEEDS[role] or (
+    roster = manifest.get("actor_training_seeds")
+    if not isinstance(roster, Mapping) or role not in roster or actor_seed not in (
+        roster[role]
+    ) or (
             checkpoint_step not in EXACT_CHECKPOINT_STEPS):
         raise StageBActorBankError(
             "requested actor identity is outside the frozen Stage-B roster")
-    if manifest.get("schema_version") != ACTOR_BANK_SCHEMA_VERSION:
+    if manifest.get("schema_version") not in {
+        ACTOR_BANK_SCHEMA_VERSION,
+        REDUCED7_ACTOR_BANK_SCHEMA_VERSION,
+    }:
         raise StageBActorBankError("actor-bank manifest schema is invalid")
     identities = manifest.get("identities")
     if not isinstance(identities, list):

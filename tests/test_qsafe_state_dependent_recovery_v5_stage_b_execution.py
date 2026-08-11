@@ -25,27 +25,27 @@ class StageBExecutionProtocolTest(unittest.TestCase):
             stage_b.EXECUTION_PROTOCOL_CONTRACT_SHA256,
         )
         rows = stage_b.source_assignments()
-        self.assertEqual(len(rows), 42)
-        self.assertEqual(len({row.source_seed for row in rows}), 42)
-        self.assertEqual({row.actor_training_seed for row in rows}, set(range(43, 57)))
+        self.assertEqual(len(rows), 21)
+        self.assertEqual(len({row.source_seed for row in rows}), 21)
+        self.assertEqual({row.actor_training_seed for row in rows}, set(range(43, 50)))
         self.assertEqual(
-            sum(row.groups for row in rows if row.role == "fit"), 1536
+            sum(row.groups for row in rows if row.role == "fit"), 768
         )
         self.assertEqual(
-            sum(row.groups for row in rows if row.role == "model_test"), 768
+            sum(row.groups for row in rows if row.role == "model_test"), 384
         )
         self.assertEqual(
             sum(row.groups * 9 * row.label_replicas for row in rows),
-            1_216_512,
+            608_256,
         )
 
     def test_actor_source_age_mapping_is_exact(self) -> None:
         expected = {
             ("fit", 8501): (43, 25_000, 128, 32),
-            ("fit", 8514): (46, 50_000, 128, 32),
-            ("probability_calibration", 8622): (48, 100_000, 64, 32),
-            ("model_test", 8703): (55, 25_000, 64, 64),
-            ("model_test", 8724): (56, 100_000, 64, 64),
+            ("fit", 8512): (44, 50_000, 128, 32),
+            ("probability_calibration", 8621): (45, 100_000, 64, 32),
+            ("model_test", 8702): (49, 25_000, 64, 64),
+            ("model_test", 8722): (49, 100_000, 64, 64),
         }
         for (role, source_seed), frozen in expected.items():
             row = stage_b.assignment_for(role, source_seed)
@@ -197,8 +197,8 @@ class StageBPreflightTest(unittest.TestCase):
         authorization.assert_called_once()
         self.assertTrue(result["pass"])
         self.assertFalse(result["model_test_opened"])
-        self.assertEqual(result["source_assignments"], 42)
-        self.assertEqual(result["candidate_label_rollouts"], 1_216_512)
+        self.assertEqual(result["source_assignments"], 21)
+        self.assertEqual(result["candidate_label_rollouts"], 608_256)
         payload = dict(result)
         digest = payload.pop("preflight_sha256")
         self.assertEqual(digest, stage_b.canonical_sha256(payload))

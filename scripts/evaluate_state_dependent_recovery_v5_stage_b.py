@@ -70,13 +70,14 @@ from safety_data.state_dependent_recovery_v5_stage_b import (
     TRAJECTORY_FINGERPRINT_CONTRACT,
     assignment_for,
     load_stage_b_execution_protocol,
+    load_stage_b_reduced7_amendment,
     require_clean_stage_b_generator,
     stage_b_artifact_root,
     validate_stage_a_authorization,
 )
 from train.state_dependent_recovery_v5_stage_b_actor_bank import (
     actor_identity_for,
-    load_actor_bank_manifest,
+    load_reduced7_actor_bank_manifest,
 )
 
 
@@ -565,7 +566,7 @@ def _load_frozen_prerequisites(
         raw_json[name] = value
         hashes[name] = digest
 
-    actor_bank = load_actor_bank_manifest(
+    actor_bank = load_reduced7_actor_bank_manifest(
         paths["actor_bank_manifest"],
         expected_bindings={
             "manifest_file_sha256": hashes["actor_bank_manifest"],
@@ -578,7 +579,7 @@ def _load_frozen_prerequisites(
             "stage_a_report_sha256": STAGE_A_REPORT_SHA256,
         },
     )
-    generator_commit = actor_bank.get("generator_commit")
+    generator_commit = actor_bank.get("stage_b_generator_commit")
     if not isinstance(generator_commit, str) or len(generator_commit) != 40:
         raise StageBModelTestError("actor-bank generator commit is invalid")
 
@@ -1298,6 +1299,7 @@ def evaluate_canonical_stage_b_model_test(
         raise StageBModelTestError(
             "expected Model-Test commitment must be lowercase SHA-256")
     execution = load_stage_b_execution_protocol()
+    load_stage_b_reduced7_amendment()
     validate_stage_a_authorization(execution)
     parent = load_state_dependent_recovery_v5_protocol()
     stage_root = stage_b_artifact_root(parent)
@@ -1329,7 +1331,8 @@ def evaluate_canonical_stage_b_model_test(
         commitment_sha256=expected_commitment_sha256,
         committed_model_test_label_sha256=committed_label_sha256,
     )
-    generator_commit = str(prerequisites.actor_bank["generator_commit"])
+    generator_commit = str(
+        prerequisites.actor_bank["stage_b_generator_commit"])
     _require_generator_commit_alignment(
         evaluator_commit=evaluator_commit,
         actor_bank_generator_commit=generator_commit,
