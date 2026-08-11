@@ -115,6 +115,13 @@ def _git_head() -> str:
         capture_output=True, text=True).stdout.strip()
 
 
+def _git_clean() -> bool:
+    root = Path(__file__).resolve().parents[1]
+    return not bool(subprocess.run(
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        cwd=root, check=True, capture_output=True).stdout)
+
+
 def _edge_median(values: list[int], *, first: bool) -> float:
     if not values:
         return 0.0
@@ -129,6 +136,7 @@ def capacity_run_passes(
     push_event_present: bool, gpu_sampling_error: bool = False,
     initialization_peak_monitored: bool = True,
     measured_gpu_memory_samples: int = 0,
+    generator_worktree_clean: bool = True,
 ) -> bool:
     return bool(
         elapsed_seconds >= minimum_seconds
@@ -140,6 +148,7 @@ def capacity_run_passes(
         and not gpu_sampling_error
         and initialization_peak_monitored
         and (minimum_seconds == 0.0 or measured_gpu_memory_samples >= 10)
+        and (minimum_seconds == 0.0 or generator_worktree_clean)
     )
 
 
@@ -155,6 +164,10 @@ def main() -> None:
     if args.envs <= 0 or args.warmup_steps < 0 or args.steps <= 0 or (
             args.minimum_measured_seconds < 0.0):
         raise ValueError("envs and steps must be positive")
+    generator_commit = _git_head()
+    generator_worktree_clean = _git_clean()
+    if args.minimum_measured_seconds >= 300.0 and not generator_worktree_clean:
+        raise RuntimeError("formal capacity run requires a clean generator worktree")
 
     import mjlab.tasks  # noqa: F401
     import src.tasks  # type: ignore  # noqa: F401
@@ -227,7 +240,8 @@ def main() -> None:
         "schema_version": "qsafe.mjlab_go2_capacity.v1",
         "backend": "unitree_mjlab_mujoco_warp",
         "algorithm_path": "official_size_ppo_actor_inference_no_update",
-        "generator_commit": _git_head(),
+        "generator_commit": generator_commit,
+        "generator_worktree_clean_at_launch": generator_worktree_clean,
         "envs": args.envs,
         "policy_steps": args.steps,
         "policy_env_steps": args.envs * args.steps,
@@ -273,6 +287,7 @@ def main() -> None:
         gpu_sampling_error=gpu.error is not None,
         initialization_peak_monitored=True,
         measured_gpu_memory_samples=len(measured_memory),
+        generator_worktree_clean=generator_worktree_clean,
     )
     rendered = json.dumps(result, sort_keys=True, indent=2)
     print(rendered)

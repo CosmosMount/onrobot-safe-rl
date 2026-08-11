@@ -18,6 +18,7 @@ class MjlabCapacityBenchmarkTest(unittest.TestCase):
             gpu_sampling_error=False,
             initialization_peak_monitored=True,
             measured_gpu_memory_samples=600,
+            generator_worktree_clean=True,
         )
         self.assertTrue(capacity_run_passes(**valid))
         for field, value in (
@@ -30,6 +31,7 @@ class MjlabCapacityBenchmarkTest(unittest.TestCase):
             ("gpu_sampling_error", True),
             ("initialization_peak_monitored", False),
             ("measured_gpu_memory_samples", 9),
+            ("generator_worktree_clean", False),
         ):
             with self.subTest(field=field):
                 invalid = {**valid, field: value}
