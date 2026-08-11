@@ -146,6 +146,9 @@ def main() -> None:
     upstream = Path.cwd()
     manifest = {
         "schema_version": "qsafe.natural_ppo_training.v1",
+        "run_scope": (
+            "fixed_30m_production" if args.exposure == 30_000_000
+            else "development_pilot_not_claim_eligible"),
         "algorithm": "rsl_rl_clipped_ppo",
         "training_from_zero": True,
         "seed": args.seed,
