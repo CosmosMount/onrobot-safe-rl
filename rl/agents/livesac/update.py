@@ -25,6 +25,10 @@ def _step(loss: torch.Tensor, network: Network, *, use_amp: bool,
     else:
         loss.backward()
         network.optimizer.step()
+    if network.scheduler is not None:
+        network.scheduler.step()
+    if getattr(network, "_use_weight_normalization", False):
+        network.normalize_parameters()
 
 
 def update_critic(actor: Network, critic: Network, target_critic: Network, temperature: Network,
@@ -63,6 +67,8 @@ def update_critic(actor: Network, critic: Network, target_critic: Network, tempe
         loss = -(target_probs.detach().unsqueeze(0) * pred).sum(dim=-1).mean()
     _step(loss, critic, use_amp=use_amp, grad_scaler=grad_scaler)
     target_critic.ema_update_parameters()
+    if getattr(target_critic, "_use_weight_normalization", False):
+        target_critic.normalize_parameters()
     pred_probs = pred.exp()
     low, high = boundary_mass(pred_probs)
     tlow, thigh = boundary_mass(target_probs)
@@ -101,6 +107,10 @@ def update_actor(actor: Network, critic: Network, temperature: Network,
         grad_scaler.step(actor.optimizer); grad_scaler.update()
     else:
         actor.optimizer.step()
+    if actor.scheduler is not None:
+        actor.scheduler.step()
+    if getattr(actor, "_use_weight_normalization", False):
+        actor.normalize_parameters()
     return {"actor/loss": loss.detach(), "actor/entropy": -log_prob.mean().detach(), "actor/q_mean": q.mean().detach(),
             "actor/action_mean": actions.mean().detach(), "actor/action_std": actions.std(unbiased=False).detach(),
             "actor/action_saturation": (actions.abs() >= .99).float().mean().detach(), "actor/log_std_mean": info["log_std"].mean().detach(),

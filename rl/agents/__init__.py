@@ -40,6 +40,11 @@ def create_agent(
         config = DroQConfig(**cfg_dict)  # type: ignore
         agent = DroQAgent(observation_space, action_space, env_info, config)
 
+    elif agent_type == "categorical_droq":
+        from rl.agents.categorical_droq.agent import CategoricalDroQAgent, CategoricalDroQConfig
+        config = CategoricalDroQConfig(**cfg_dict)  # type: ignore
+        agent = CategoricalDroQAgent(observation_space, action_space, env_info, config)
+
     elif agent_type == "livesac":
         from rl.agents.livesac.agent import LiveSACAgent, LiveSACConfig
         config = LiveSACConfig(**cfg_dict)  # type: ignore

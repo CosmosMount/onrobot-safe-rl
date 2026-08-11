@@ -124,6 +124,14 @@ train:
     compile_mode: reduce-overhead
     use_amp: false
 
+  # Controlled categorical-DroQ experiment: all optimizer, actor, replay,
+  # target, dropout, normalization and update settings come from DroQ; only
+  # the critic scalar head is replaced by a categorical head.
+  categorical_droq:
+    critic_num_bins: 101
+    critic_min_v: -5.0
+    critic_max_v: 5.0
+
   livesac:
     device_type: cuda
     buffer_device_type: cuda
@@ -131,10 +139,15 @@ train:
     actor_lr: 3.0e-4
     critic_lr: 3.0e-4
     temp_lr: 3.0e-4
+    learning_rate_init: 1.0e-6
+    learning_rate_peak: 3.0e-4
+    learning_rate_end: 1.0e-6
+    learning_rate_warmup_step: 1000
+    learning_rate_decay_step: 1000000
     actor_hidden_dims: [256, 256]
     critic_hidden_dim: 256
     critic_expansion: 4
-    critic_num_blocks: 1
+    critic_num_blocks: 2
     critic_num_qs: 5
     critic_num_bins: 101
     critic_dropout_rate: 0.01

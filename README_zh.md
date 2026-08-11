@@ -96,7 +96,8 @@ python -m runtime.inference.runtime --config-profile go2
 python -m train
 ```
 
-默认使用 `config/go2.yaml` 里的 DroQ。也可以不改 YAML，直接用命令行切换 agent：
+默认使用 `config/go2.yaml` 里的 categorical-DroQ 对照实验：复用 DroQ actor 和完整
+critic backbone，只把 scalar head 换成 categorical head。也可以不改 YAML，直接用命令行切换 agent：
 
 ```bash
 python -m train --agent droq

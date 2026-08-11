@@ -411,7 +411,10 @@ _LIVESAC_DEFAULTS: dict[str, Any] = {
     'device_type': 'cuda', 'buffer_device_type': 'cpu', 'buffer_min_length': 1000,
     'actor_lr': 3.0e-4, 'critic_lr': 3.0e-4, 'temp_lr': 3.0e-4,
     'actor_hidden_dims': [256, 256], 'critic_hidden_dim': 256, 'critic_expansion': 2,
-    'critic_num_blocks': 1, 'critic_num_qs': 2, 'critic_num_bins': 101, 'critic_dropout_rate': 0.01,
+    'learning_rate_init': 1.0e-6, 'learning_rate_peak': 3.0e-4,
+    'learning_rate_end': 1.0e-6, 'learning_rate_warmup_step': 1000,
+    'learning_rate_decay_step': 1_000_000,
+    'critic_num_blocks': 2, 'critic_num_qs': 2, 'critic_num_bins': 101, 'critic_dropout_rate': 0.01,
     'critic_min_v': -5.0, 'critic_max_v': 5.0, 'critic_target_update_tau': 0.005,
     # These are the non-distributional parts of the DroQ update contract.
     'num_min_qs': 2, 'sampled_backup': True, 'target_q_min': -100.0,
@@ -423,6 +426,11 @@ _LIVESAC_DEFAULTS: dict[str, Any] = {
     'load_reward_normalizer': True,
 }
 
+_CATEGORICAL_DROQ_DEFAULTS: dict[str, Any] = dict(_DROQ_DEFAULTS)
+_CATEGORICAL_DROQ_DEFAULTS.update({
+    'critic_num_bins': 101, 'critic_min_v': -5.0, 'critic_max_v': 5.0,
+})
+
 
 def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, dict[str, Any]]]:
     train_node = dict(node)
@@ -431,6 +439,7 @@ def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, dict[str,
     safe_droq = train_node.pop('safe_droq', {})
     paper_sqrl = train_node.pop('paper_sqrl', {})
     livesac = train_node.pop('livesac', {})
+    categorical_droq = train_node.pop('categorical_droq', {})
 
     cfg = TrainConfig()
     for key, value in train_node.items():
@@ -453,12 +462,10 @@ def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, dict[str,
             not np.all(np.isfinite(cfg.max_joint_delta)) or np.any(cfg.max_joint_delta <= 0)):
         raise ValueError('max_joint_delta must be finite and positive when enabled')
     if cfg.async_collection and str(cfg.agent).lower() not in {
-            'droq', 'flashsac', 'safe_droq', 'paper_sqrl', 'livesac'}:
+            'droq', 'categorical_droq', 'flashsac', 'safe_droq', 'paper_sqrl', 'livesac'}:
         raise ValueError(
             'train.async_collection requires agent= droq, flashsac, '
-            'safe_droq, paper_sqrl, or livesac')
-    if str(cfg.agent).lower() == 'livesac' and int(cfg.utd_ratio) != 5:
-        raise ValueError('LiveSAC v1.0 requires train.utd_ratio=5')
+            'categorical_droq, safe_droq, paper_sqrl, or livesac')
 
     return cfg, {
         'flashsac': dict(flashsac),
@@ -466,6 +473,7 @@ def _parse_train(node: dict[str, Any]) -> tuple[TrainConfig, dict[str, dict[str,
         'safe_droq': dict(safe_droq),
         'paper_sqrl': dict(paper_sqrl),
         'livesac': dict(livesac),
+        'categorical_droq': dict(categorical_droq),
     }
 
 
@@ -485,6 +493,10 @@ def _parse_agent(train_cfg: TrainConfig, agent_nodes: dict[str, dict[str, Any]])
         if 'actor_update_interval' not in node and 'actor_update_period' in node:
             values['actor_update_interval'] = values['actor_update_period']
             values['actor_update_unit'] = 'policy_step'
+    elif agent_type == 'categorical_droq':
+        values = dict(_CATEGORICAL_DROQ_DEFAULTS)
+        values.update(agent_nodes.get('droq', {}))
+        values.update(agent_nodes.get('categorical_droq', {}))
     elif agent_type == 'safe_droq':
         values = dict(_DROQ_DEFAULTS)
         values.update({
@@ -554,8 +566,6 @@ def _parse_agent(train_cfg: TrainConfig, agent_nodes: dict[str, dict[str, Any]])
     elif agent_type == 'livesac':
         values = dict(_LIVESAC_DEFAULTS)
         values.update(agent_nodes.get('livesac', {}))
-        if int(train_cfg.utd_ratio) != 5:
-            raise ValueError('LiveSAC v1.0 requires train.utd_ratio=5')
     else:
         raise ValueError(f'Unsupported train.agent={train_cfg.agent!r}')
 
@@ -565,6 +575,8 @@ def _parse_agent(train_cfg: TrainConfig, agent_nodes: dict[str, dict[str, Any]])
         'buffer_max_length': train_cfg.buffer_size,
         'sample_batch_size': train_cfg.batch_size,
     })
+    if agent_type == 'livesac':
+        values['utd_ratio'] = int(train_cfg.utd_ratio)
     if values.get('temp_target_entropy') == 'null':
         values['temp_target_entropy'] = 0.0
     if values.get('target_entropy') == 'null':

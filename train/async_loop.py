@@ -19,6 +19,7 @@ from train.loop import (
     _agent_hashes,
     _git_metadata,
     latest_snapshot,
+    prepare_save_dir,
     restore_snapshot,
     save_snapshot,
 )
@@ -56,7 +57,11 @@ def _replace_latest(q: Any, payload: Any) -> None:
 def run_async_training(agent: Any, env: Any, cfg: Any,
                        robot_cfg: Any) -> Any:
     """Collect at runtime rate while this process performs learner updates."""
-    os.makedirs(cfg.save_dir, exist_ok=True)
+    prepare_save_dir(
+        cfg.save_dir,
+        resume=bool(cfg.resume_checkpoint and cfg.save_checkpoints),
+        benchmark=bool(cfg.benchmark_only),
+    )
     start_i = 0
     resume_state: dict[str, Any] = {}
     if cfg.resume_checkpoint and cfg.save_checkpoints:

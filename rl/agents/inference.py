@@ -23,6 +23,7 @@ def build_inference_policy(observation_dim: int, action_dim: int,
         "safe_droq": SafeDroQInferencePolicy,
         "paper_sqrl": PaperSQRLInferencePolicy,
         "livesac": LiveSACInferencePolicy,
+        "categorical_droq": DroQInferencePolicy,
     }
     try:
         return factories[agent_type](observation_dim, action_dim, cfg)

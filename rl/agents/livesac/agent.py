@@ -15,8 +15,8 @@ from rl.agents.base.network import Network
 from rl.agents.base.update import PolicyUpdateRequest, UpdateCounters
 from rl.agents.droq.network import DroQTemperature
 from rl.agents.flashsac.reward_normalization import RewardNormalizer
-from rl.agents.livesac.constants import LIVESAC_UTD_RATIO
 from rl.agents.livesac.network import LiveSACActor, LiveSACDoubleCritic
+from rl.agents.base.scheduler import warmup_cosine_decay_scheduler
 from rl.agents.livesac.update import update_actor, update_critic, update_temperature
 from rl.buffers.torch_buffer import TorchUniformBuffer
 from rl.utils.types import NDArray, Tensor
@@ -26,6 +26,9 @@ from rl.utils.types import NDArray, Tensor
 class LiveSACConfig:
     seed: int; device_type: str; buffer_device_type: str; buffer_max_length: int; buffer_min_length: int; sample_batch_size: int
     actor_lr: float; critic_lr: float; temp_lr: float; actor_hidden_dims: Sequence[int]
+    utd_ratio: int
+    learning_rate_init: float; learning_rate_peak: float; learning_rate_end: float
+    learning_rate_warmup_step: int; learning_rate_decay_step: int
     critic_hidden_dim: int; critic_expansion: int; critic_num_blocks: int; critic_num_qs: int; critic_num_bins: int; critic_dropout_rate: float
     critic_min_v: float; critic_max_v: float; critic_target_update_tau: float
     num_min_qs: Optional[int]; sampled_backup: bool; target_q_min: Optional[float]
@@ -51,6 +54,22 @@ class LiveSACAgent(BaseAgent[LiveSACConfig]):
         self._actor_observation_dim = int(env_info["actor_observation_size"][-1]) if cfg.asymmetric_observation else self._critic_observation_dim
         fused = self._device.type == "cuda" and torch.cuda.is_available()
         torch.manual_seed(cfg.seed)
+        lr_schedule = warmup_cosine_decay_scheduler(
+            init_value=cfg.learning_rate_init,
+            peak_value=cfg.learning_rate_peak,
+            end_value=cfg.learning_rate_end,
+            warmup_steps=cfg.learning_rate_warmup_step,
+            decay_steps=cfg.learning_rate_decay_step,
+        )
+
+        def optimizer_and_scheduler(parameters):
+            optimizer = optim.Adam(parameters, lr=cfg.learning_rate_peak, fused=fused)
+            scheduler = torch.optim.lr_scheduler.LambdaLR(
+                optimizer,
+                lr_lambda=lambda step: lr_schedule(step) / cfg.learning_rate_peak,
+            )
+            return optimizer, scheduler
+
         actor_hidden_dim = int(cfg.actor_hidden_dims[-1])
         actor_net = LiveSACActor(
             num_blocks=max(1, len(cfg.actor_hidden_dims)),
@@ -58,16 +77,33 @@ class LiveSACAgent(BaseAgent[LiveSACConfig]):
             hidden_dim=actor_hidden_dim,
             action_dim=self._action_dim,
         ).to(self._device)
-        self._actor = Network(actor_net, optim.Adam(actor_net.parameters(), lr=cfg.actor_lr, fused=fused))
+        actor_optimizer, actor_scheduler = optimizer_and_scheduler(actor_net.parameters())
+        self._actor = Network(
+            actor_net, actor_optimizer, scheduler=actor_scheduler,
+            use_weight_normalization=True,
+        )
         critic_net = LiveSACDoubleCritic(self._critic_observation_dim, self._action_dim, cfg.critic_hidden_dim, cfg.critic_expansion,
                                          cfg.critic_num_blocks, cfg.critic_num_qs, cfg.critic_num_bins, cfg.critic_min_v, cfg.critic_max_v, cfg.critic_dropout_rate).to(self._device)
-        self._critic = Network(critic_net, optim.Adam(critic_net.parameters(), lr=cfg.critic_lr, fused=fused), use_weight_normalization=False)
+        critic_optimizer, critic_scheduler = optimizer_and_scheduler(critic_net.parameters())
+        self._critic = Network(
+            critic_net, critic_optimizer, scheduler=critic_scheduler,
+            use_weight_normalization=True,
+        )
         target_net = LiveSACDoubleCritic(self._critic_observation_dim, self._action_dim, cfg.critic_hidden_dim, cfg.critic_expansion,
                                          cfg.critic_num_blocks, cfg.critic_num_qs, cfg.critic_num_bins, cfg.critic_min_v, cfg.critic_max_v, cfg.critic_dropout_rate).to(self._device)
         target_net.load_state_dict(critic_net.state_dict())
-        self._target_critic = Network(target_net, use_weight_normalization=False, ema_source=self._critic, ema_tau=cfg.critic_target_update_tau)
+        self._target_critic = Network(
+            target_net, use_weight_normalization=True,
+            ema_source=self._critic, ema_tau=cfg.critic_target_update_tau,
+        )
         temp_net = DroQTemperature(cfg.temp_initial_value).to(self._device)
-        self._temperature = Network(temp_net, optim.Adam(temp_net.parameters(), lr=cfg.temp_lr, fused=fused))
+        temp_optimizer, temp_scheduler = optimizer_and_scheduler(temp_net.parameters())
+        self._temperature = Network(
+            temp_net, temp_optimizer, scheduler=temp_scheduler,
+        )
+        self._actor.normalize_parameters()
+        self._critic.normalize_parameters()
+        self._target_critic.normalize_parameters()
         self._target_entropy = -0.5 * self._action_dim if cfg.target_entropy is None else float(cfg.target_entropy)
         self._support = critic_net.bin_values
         self._reward_normalizer = (RewardNormalizer(cfg.gamma, cfg.normalized_G_max,
@@ -143,10 +179,13 @@ class LiveSACAgent(BaseAgent[LiveSACConfig]):
         return metrics
 
     def update_policy_steps(self, request: PolicyUpdateRequest) -> dict[str, Any]:
-        if request.policy_steps != 1 or request.critic_updates_per_policy_step != LIVESAC_UTD_RATIO:
-            raise ValueError("LiveSAC v1.0 requires exactly one policy step and a fixed critic_updates_per_policy_step=5")
+        if request.policy_steps != 1 or request.critic_updates_per_policy_step != self._cfg.utd_ratio:
+            raise ValueError(
+                "LiveSAC requires exactly one policy step and a configured integer UTD ratio"
+            )
         metrics: dict[str, Any] = {}; last_batch = None
-        for _ in range(LIVESAC_UTD_RATIO):
+        critic_updates = request.critic_updates
+        for _ in range(critic_updates):
             last_batch = self._batch()
             info = update_critic(
                 self._actor, self._critic, self._target_critic, self._temperature,
@@ -174,15 +213,15 @@ class LiveSACAgent(BaseAgent[LiveSACConfig]):
             self._update_counters.temperature_steps += 1
             actor_calls = 1
         self._update_step = self._update_counters.critic_steps
-        metrics = self._attach(metrics, {"policy_steps": 1, "critic_steps": 5,
-                                          "target_steps": 5, "actor_steps": actor_calls,
+        metrics = self._attach(metrics, {"policy_steps": 1, "critic_steps": critic_updates,
+                                          "target_steps": critic_updates, "actor_steps": actor_calls,
                                           "temperature_steps": actor_calls,
                                           "auxiliary_steps": 0})
         self._metrics = dict(metrics)
         return metrics
 
     def update(self) -> dict[str, Any]:
-        return self.update_policy_steps(PolicyUpdateRequest(1, LIVESAC_UTD_RATIO))
+        return self.update_policy_steps(PolicyUpdateRequest(1, self._cfg.utd_ratio))
 
     def save(self, path: str) -> None:
         os.makedirs(path, exist_ok=True)

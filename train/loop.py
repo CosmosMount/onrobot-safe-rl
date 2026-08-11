@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import shutil
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -184,6 +185,26 @@ def _snapshot_dir(save_dir: str, step: int) -> Path:
     return Path(save_dir) / f"step_{step:012d}"
 
 
+def prepare_save_dir(save_dir: str, *, resume: bool, benchmark: bool = False) -> Path:
+    """Prepare a fresh experiment directory without mixing runs."""
+    root = Path(save_dir).expanduser()
+    if root.exists() and not root.is_dir():
+        raise NotADirectoryError(f"train.save_dir is not a directory: {root}")
+    root.mkdir(parents=True, exist_ok=True)
+    if resume or benchmark:
+        return root
+    resolved = root.resolve()
+    if resolved in {Path("/").resolve(), Path.cwd().resolve()}:
+        raise ValueError(f"Refusing to clear unsafe train.save_dir: {resolved}")
+    for child in root.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+    _log(f"[train] cleared fresh experiment directory: {root}")
+    return root
+
+
 def latest_snapshot(save_dir: str) -> Path | None:
     root = Path(save_dir)
     if not root.exists():
@@ -304,7 +325,11 @@ def _update_agent(agent, cfg: TrainConfig, source_step: int) -> tuple[dict[str, 
 
 
 def run_training(agent, env, cfg: TrainConfig):
-    os.makedirs(cfg.save_dir, exist_ok=True)
+    prepare_save_dir(
+        cfg.save_dir,
+        resume=bool(cfg.resume_checkpoint and cfg.save_checkpoints),
+        benchmark=bool(cfg.benchmark_only),
+    )
 
     start_i = 0
     if cfg.save_checkpoints and cfg.resume_checkpoint and not cfg.benchmark_only:
