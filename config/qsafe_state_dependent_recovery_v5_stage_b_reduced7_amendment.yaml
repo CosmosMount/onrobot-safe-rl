@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 protocol_name: objective1_state_dependent_recovery_qsafe_v5_stage_b_reduced7_amendment
 created_at: "2026-08-11T18:55:00+08:00"
 scope: pre_branch_outcome_actor_roster_reduction
@@ -14,6 +14,11 @@ authorization:
   role_attempt_markers_required_absent_at_freeze: true
   outcome_dependent_seed_selection: forbidden
   checkpoint_selection: exact_cartesian_product_only
+  prior_preflight_attempt:
+    generator_commit: afe93996137a1a168f3ec95404f6c1322a70270a
+    status: aborted_before_any_source_attempt_or_branch_outcome
+    reason: source_policy_identity_adapter_omitted_training_step_alias
+    evidence_preserved_under: stage-b/aborted-preflight-afe939
 
 actor_bank:
   upstream_training_seeds_exact: [43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56]

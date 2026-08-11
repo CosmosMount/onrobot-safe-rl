@@ -196,7 +196,11 @@ def _runtime_preflight(
         training_step=int(mature_entry["training_step"]),
         device="cpu",
     )
-    _verify_policy(early_policy, identity, "Stage-B source")
+    _verify_policy(
+        early_policy,
+        dict(identity) | {"training_step": assignment.checkpoint_step},
+        "Stage-B source",
+    )
     _verify_policy(mature_policy, mature_entry, "Stage-B mature recovery")
     env = MujocoSnapshotEnv(
         Path(str(target["model_mjcf"])),
