@@ -1434,13 +1434,25 @@ def compile_reduced7_actor_bank_manifest(
             contract_path = contracts_root_path / f"seed-{seed}.json"
             contract = load_actor_run_contract(
                 contract_path,
-                verify_live_bindings=True,
+                verify_live_bindings=False,
                 require_clean_git=False,
             )
             if contract.get("generator_commit") != actor_source_commit:
                 raise StageBActorBankError(
                     f"seed {seed} actor source commit differs")
             bindings = dict(contract["bindings"])
+            for binding_name, raw_binding in bindings.items():
+                if _sha256_file(
+                    str(raw_binding["path"]), f"{binding_name} binding"
+                ) != raw_binding["file_sha256"]:
+                    raise StageBActorBankError(
+                        f"seed {seed} {binding_name} binding changed")
+                if "contract_sha256" in raw_binding and canonical_sha256(
+                    _read_yaml(
+                        str(raw_binding["path"]), f"{binding_name} binding")
+                ) != raw_binding["contract_sha256"]:
+                    raise StageBActorBankError(
+                        f"seed {seed} {binding_name} contract changed")
             attempt = dict(contract["actor_bank_attempt_binding"])
             if shared_bindings is None:
                 shared_bindings = bindings
@@ -2008,7 +2020,7 @@ def load_reduced7_actor_bank_manifest(
         if contract is None:
             contract = load_actor_run_contract(
                 actor_root.parent / "actor-contracts" / f"seed-{seed}.json",
-                verify_live_bindings=True,
+                verify_live_bindings=False,
                 require_clean_git=False,
             )
             contract_cache[seed] = contract
@@ -2018,6 +2030,15 @@ def load_reduced7_actor_bank_manifest(
         ) or raw.get("generator_commit") != actor_source_commit:
             raise StageBActorBankError(
                 f"reduced actor upstream identity differs for {role}/{seed}/{step}")
+        expected_contract_bindings = {
+            "protocol": manifest["protocol_binding"],
+            "execution_supplement": manifest["execution_supplement_binding"],
+            "stage_a_report": manifest["stage_a_report_binding"],
+            "training_config": manifest["training_config_binding"],
+        }
+        if contract.get("bindings") != expected_contract_bindings:
+            raise StageBActorBankError(
+                f"reduced actor source bindings differ for seed {seed}")
         checkpoint = assert_development_path(str(raw["checkpoint_path"]))
         expected_checkpoint = (
             actor_root / f"seed-{seed}" / _checkpoint_directory_name(step) / "agent"
