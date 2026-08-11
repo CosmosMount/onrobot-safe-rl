@@ -16,7 +16,11 @@ from typing import Any, Mapping
 import numpy as np
 import torch
 
-from safety_data.natural_ppo_falls import PREFALL_OFFSETS, RING_POLICY_STEPS
+from safety_data.natural_ppo_falls import (
+    NORMAL_TERMINAL_DISTANCE,
+    PREFALL_OFFSETS,
+    RING_POLICY_STEPS,
+)
 
 
 MJLAB_TO_TARGET_JOINT = (3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8)
@@ -151,7 +155,7 @@ class MjlabNormalShardWriter(MjlabFallShardWriter):
         manifest = {
             "schema_version": "qsafe.mjlab_natural_normals.v1",
             "event_count": sum(item["event_count"] for item in self.shards),
-            "minimum_future_nonterminal_steps": 96,
+            "minimum_future_nonterminal_steps": NORMAL_TERMINAL_DISTANCE,
             "selection": "deterministic_hash_modulo_32_before_branch_outcomes",
             "shards": self.shards,
             "provenance": dict(provenance),
@@ -379,6 +383,8 @@ class MjlabNaturalFallCapture:
             "action_executed": cpu(self.action_executed),
             "q_target": cpu(self.q_target),
             "command": cpu(self.command),
+            "qualification_future_nonterminal_steps": np.asarray(
+                NORMAL_TERMINAL_DISTANCE, dtype=np.int16),
             "randomized_geom_friction": env.sim.model.geom_friction[
                 environment_id].detach().cpu().numpy(),
             "randomized_body_ipos": env.sim.model.body_ipos[
