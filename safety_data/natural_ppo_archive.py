@@ -20,6 +20,12 @@ from safety_data.natural_ppo_falls import (
 
 AGE_BOUNDARIES = (1_000_000, 2_000_000, 5_000_000, 10_000_000,
                   20_000_000, 30_000_001)
+ROLE_BY_BUCKET = (
+    "fit", "fit", "fit", "fit", "fit", "fit", "fit",
+    "fit", "fit", "fit", "fit", "fit", "fit", "fit",
+    "calibration", "calibration", "calibration",
+    "test", "test", "test",
+)
 
 
 def _sha256(path: Path) -> str:
@@ -44,7 +50,12 @@ def _atomic_npz(path: Path, **arrays: np.ndarray) -> None:
     np.savez_compressed(temporary, **arrays)
     with temporary.open("rb") as stream:
         os.fsync(stream.fileno())
-    os.replace(temporary, path)
+    try:
+        os.link(temporary, path)
+    except FileExistsError as exc:
+        raise FileExistsError(
+            f"refusing to overwrite archive validation output: {path}") from exc
+    temporary.unlink()
     _fsync_directory(path.parent)
 
 
@@ -55,7 +66,12 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
         stream.write(content)
         stream.flush()
         os.fsync(stream.fileno())
-    os.replace(temporary, path)
+    try:
+        os.link(temporary, path)
+    except FileExistsError as exc:
+        raise FileExistsError(
+            f"refusing to overwrite archive validation report: {path}") from exc
+    temporary.unlink()
     _fsync_directory(path.parent)
 
 
@@ -66,6 +82,13 @@ def checkpoint_age_bucket(policy_step: int) -> int:
         if policy_step < boundary:
             return index
     raise ValueError("policy_step exceeds registered 30M exposure")
+
+
+def episode_split_role(seed: int, environment_id: int, episode_id: int) -> str:
+    values = f"{int(seed)}:{int(environment_id)}:{int(episode_id)}".encode("ascii")
+    digest = hashlib.sha256(
+        b"qsafe.ppo.direct.episode.role.v1\0" + values).hexdigest()
+    return ROLE_BY_BUCKET[int(digest[:16], 16) % len(ROLE_BY_BUCKET)]
 
 
 def randomization_stratum(friction: np.ndarray, body_ipos: np.ndarray,
@@ -99,6 +122,30 @@ def deterministic_pairs(
     return result
 
 
+def deterministic_role_pairs(
+    prefall: Iterable[tuple[str, int, str, str]],
+    normals: Iterable[tuple[str, str, str]],
+) -> list[tuple[str, int, str, str, str]]:
+    """Match within fixed whole-episode roles and randomization strata."""
+    by_key: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for identity, stratum, role in normals:
+        by_key[(stratum, role)].append(identity)
+    for values in by_key.values():
+        values.sort()
+    consumed: dict[tuple[str, str], int] = defaultdict(int)
+    result = []
+    for fall_identity, offset, stratum, role in sorted(prefall):
+        key = (stratum, role)
+        index = consumed[key]
+        candidates = by_key.get(key, [])
+        if index >= len(candidates):
+            raise RuntimeError(
+                f"insufficient {role} normal states in stratum {stratum}")
+        result.append((fall_identity, offset, candidates[index], stratum, role))
+        consumed[key] += 1
+    return result
+
+
 def _load_manifest(path: Path, schema: str) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if value.get("schema_version") != schema:
@@ -109,6 +156,8 @@ def _load_manifest(path: Path, schema: str) -> dict[str, Any]:
 def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str, Any]:
     root = Path(root)
     output = Path(output)
+    if output.exists() or output.with_suffix(".report.json").exists():
+        raise FileExistsError("archive validation output path was already consumed")
     falls = _load_manifest(root / "manifest.json", "qsafe.mjlab_natural_falls.v2")
     normals = _load_manifest(
         root / falls["provenance"]["normal_manifest"],
@@ -128,7 +177,8 @@ def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str
         raise ValueError("normal archive terminal-distance contract drifted")
 
     seen: set[str] = set()
-    prefall_rows: list[tuple[str, int, str]] = []
+    seed = int(falls["provenance"]["seed"])
+    prefall_rows: list[tuple[str, int, str, str]] = []
     fall_count = 0
     for shard in falls["shards"]:
         path = root / shard["path"]
@@ -181,14 +231,17 @@ def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str
                         raise ValueError("prefall index does not match registered offset")
                     policy_step = int(arrays["trajectory_policy_step"][row, index])
                     stratum = f"{checkpoint_age_bucket(policy_step)}:{stratum_base}"
-                    prefall_rows.append((identity, offset, stratum))
+                    role = episode_split_role(
+                        seed, int(arrays["environment_id"][row]),
+                        int(arrays["episode_id"][row]))
+                    prefall_rows.append((identity, offset, stratum, role))
             fall_count += count
     if fall_count != falls["event_count"]:
         raise ValueError("aggregate fall count mismatch")
     if fall_count != falls["provenance"]["independent_fall_episodes"]:
         raise ValueError("fall event count is not independent episode count")
 
-    normal_rows: list[tuple[str, str]] = []
+    normal_rows: list[tuple[str, str, str]] = []
     normal_count = 0
     normal_root = (root / falls["provenance"]["normal_manifest"]).parent
     for shard in normals["shards"]:
@@ -221,18 +274,22 @@ def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str
                     arrays["randomized_body_ipos"][row],
                     arrays["randomized_encoder_bias"][row])
                 age = checkpoint_age_bucket(int(arrays["policy_step"][row]))
-                normal_rows.append((identity, f"{age}:{base}"))
+                role = episode_split_role(
+                    seed, int(arrays["environment_id"][row]),
+                    int(arrays["episode_id"][row]))
+                normal_rows.append((identity, f"{age}:{base}", role))
             normal_count += count
     if normal_count != normals["event_count"]:
         raise ValueError("aggregate normal count mismatch")
 
-    pairs = deterministic_pairs(prefall_rows, normal_rows)
+    pairs = deterministic_role_pairs(prefall_rows, normal_rows)
     _atomic_npz(
         output,
         fall_identity=np.asarray([row[0] for row in pairs], dtype="S64"),
         prefall_offset=np.asarray([row[1] for row in pairs], dtype=np.int16),
         normal_identity=np.asarray([row[2] for row in pairs], dtype="S64"),
         stratum=np.asarray([row[3] for row in pairs], dtype="S64"),
+        split_role=np.asarray([row[4] for row in pairs], dtype="S16"),
     )
     report = {
         "schema_version": "qsafe.natural_ppo_archive_validation.v1",
@@ -240,6 +297,10 @@ def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str
         "available_prefall_states": len(prefall_rows),
         "normal_candidates": normal_count,
         "matched_normal_states": len(pairs),
+        "matched_pairs_by_role": {
+            role: sum(row[4] == role for row in pairs)
+            for role in ("fit", "calibration", "test")
+        },
         "one_to_one_matching_complete": len(pairs) == len(prefall_rows),
         "pair_file": output.name,
         "pair_file_sha256": _sha256(output),

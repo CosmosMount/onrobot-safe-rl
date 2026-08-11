@@ -8,9 +8,12 @@ import unittest
 
 import numpy as np
 
+from safety_data.natural_ppo_direct_dataset import compile_direct_qsafe_dataset
 from safety_data.natural_ppo_archive import (
     checkpoint_age_bucket,
     deterministic_pairs,
+    deterministic_role_pairs,
+    episode_split_role,
     validate_and_match_archive,
 )
 
@@ -37,6 +40,18 @@ class NaturalPpoArchiveTest(unittest.TestCase):
             deterministic_pairs([("a", 1, "s"), ("b", 1, "s")],
                                 [("n", "s")])
 
+    def test_role_matching_never_crosses_episode_split(self):
+        pairs = deterministic_role_pairs(
+            [("fall-fit", 1, "s", "fit"),
+             ("fall-test", 1, "s", "test")],
+            [("normal-test", "s", "test"),
+             ("normal-fit", "s", "fit")],
+        )
+        self.assertEqual(pairs, [
+            ("fall-fit", 1, "normal-fit", "s", "fit"),
+            ("fall-test", 1, "normal-test", "s", "test"),
+        ])
+
     def test_complete_archive_is_validated_and_matched(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "archive"
@@ -62,15 +77,33 @@ class NaturalPpoArchiveTest(unittest.TestCase):
                 "randomized_body_ipos": np.zeros((1, 1, 3), dtype=np.float32),
                 "randomized_encoder_bias": np.zeros((1, 12), dtype=np.float32),
             }
+            fall_environment = 1
+            fall_episode = 2
+            fall_role = episode_split_role(43, fall_environment, fall_episode)
+            normal_episodes = []
+            candidate = 10
+            while len(normal_episodes) < 2:
+                if episode_split_role(43, 2, candidate) == fall_role:
+                    normal_episodes.append(candidate)
+                candidate += 1
             np.savez_compressed(
                 fall_path,
                 identity=np.asarray([b"fall"], dtype="S64"),
+                environment_id=np.asarray([fall_environment], dtype=np.int32),
+                episode_id=np.asarray([fall_episode], dtype=np.int64),
                 trajectory_length=np.asarray([2], dtype=np.int16),
                 trajectory_mask=mask,
                 trajectory_command=commands,
                 prefall_availability=availability,
                 prefall_trajectory_index=indices,
                 trajectory_policy_step=policy_steps,
+                trajectory_observation_history=np.zeros(
+                    (1, 65, 5, 46), dtype=np.float32),
+                trajectory_action_requested=np.zeros(
+                    (1, 65, 12), dtype=np.float32),
+                trajectory_action_executed=np.zeros(
+                    (1, 65, 12), dtype=np.float32),
+                trajectory_q_target=np.zeros((1, 65, 12), dtype=np.float32),
                 trajectory_steps_to_fall=steps_to_fall,
                 trajectory_fall_within_96_steps=mask,
                 **randomization,
@@ -78,12 +111,18 @@ class NaturalPpoArchiveTest(unittest.TestCase):
             np.savez_compressed(
                 normal_path,
                 identity=np.asarray([b"normal-a", b"normal-b"], dtype="S64"),
+                environment_id=np.asarray([2, 2], dtype=np.int32),
+                episode_id=np.asarray(normal_episodes, dtype=np.int64),
                 qualification_future_nonterminal_steps=np.asarray(
                     [96, 96], dtype=np.int16),
                 fall_within_96_steps=np.asarray([False, False]),
                 outcome_horizon_policy_steps=np.asarray([96, 96], dtype=np.int16),
                 command=np.asarray([[0.3, 0.0, 0.0]] * 2, dtype=np.float32),
                 policy_step=np.asarray([20, 21], dtype=np.int64),
+                observation_history=np.zeros((2, 5, 46), dtype=np.float32),
+                action_requested=np.zeros((2, 12), dtype=np.float32),
+                action_executed=np.zeros((2, 12), dtype=np.float32),
+                q_target=np.zeros((2, 12), dtype=np.float32),
                 randomized_geom_friction=np.repeat(
                     randomization["randomized_geom_friction"], 2, axis=0),
                 randomized_body_ipos=np.repeat(
@@ -124,14 +163,30 @@ class NaturalPpoArchiveTest(unittest.TestCase):
                 "provenance": {
                     "normal_manifest": "normals/manifest.json",
                     "independent_fall_episodes": 1,
+                    "seed": 43,
                 },
             }), encoding="utf-8")
             output = root / "matched.npz"
             report = validate_and_match_archive(root, output)
             self.assertEqual(report["available_prefall_states"], 2)
             self.assertEqual(report["matched_normal_states"], 2)
+            self.assertEqual(report["matched_pairs_by_role"][fall_role], 2)
             self.assertTrue(output.is_file())
             self.assertTrue(output.with_suffix(".report.json").is_file())
+            direct_output = root / "direct.npz"
+            direct_report = compile_direct_qsafe_dataset(
+                root, output, direct_output)
+            self.assertEqual(direct_report["sample_count"], 4)
+            with np.load(direct_output, allow_pickle=False) as direct:
+                self.assertEqual(direct["label"].tolist(), [True, False] * 2)
+                self.assertEqual(set(map(bytes, direct["role"])), {
+                    fall_role.encode("ascii")})
+                roles_by_episode = {}
+                for episode, role in zip(
+                        direct["episode_identity"], direct["role"], strict=True):
+                    roles_by_episode.setdefault(bytes(episode), set()).add(bytes(role))
+                self.assertTrue(all(len(value) == 1
+                                    for value in roles_by_episode.values()))
 
 
 if __name__ == "__main__":
