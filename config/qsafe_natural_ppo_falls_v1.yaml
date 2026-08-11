@@ -22,7 +22,16 @@ supersedes:
 
 environment:
   task: Unitree-Go2-Flat
-  command: {vx_mps: 0.30, vy_mps: 0.0, yaw_rate_rps: 0.0}
+  ppo_command:
+    distribution: constant
+    vx_mps: 0.40
+    vy_mps: 0.0
+    yaw_rate_rps: 0.0
+    realized_command_recorded_per_frame: true
+  target_sac_objective1_command:
+    vx_mps: 0.30
+    vy_mps: 0.0
+    yaw_rate_rps: 0.0
   policy_frequency_hz: 50
   low_level_frequency_hz: 500
   external_force:
@@ -79,6 +88,7 @@ fall_collection:
     - environment_identity
     - episode_identity
     - policy_step_identity
+    - realized_velocity_command
     - randomization_values
     - rng_identity
 

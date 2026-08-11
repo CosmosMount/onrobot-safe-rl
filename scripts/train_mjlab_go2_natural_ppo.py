@@ -65,7 +65,7 @@ def main() -> None:
     cfg.events.pop("push_robot", None)
     cfg.curriculum = {}
     twist = cfg.commands["twist"]
-    twist.ranges.lin_vel_x = (0.30, 0.30)
+    twist.ranges.lin_vel_x = (0.40, 0.40)
     twist.ranges.lin_vel_y = (0.0, 0.0)
     twist.ranges.ang_vel_z = (0.0, 0.0)
     agent_cfg.seed = args.seed
@@ -126,7 +126,10 @@ def main() -> None:
         "fixed_exposure": args.exposure,
         "elapsed_seconds": elapsed,
         "external_push_event": False,
-        "fixed_command": {"vx": 0.30, "vy": 0.0, "yaw_rate": 0.0},
+        "command_distribution": {
+            "type": "constant", "vx": 0.40,
+            "vy": 0.0, "yaw_rate": 0.0,
+        },
         "checkpoint_selection_uses_outcomes": False,
         "checkpoints": entries,
         "generator_commit": _git_head(repository),

@@ -99,7 +99,7 @@ def main() -> None:
     cfg.events.pop("push_robot", None)
     cfg.curriculum = {}
     twist = cfg.commands["twist"]
-    twist.ranges.lin_vel_x = (0.30, 0.30)
+    twist.ranges.lin_vel_x = (0.40, 0.40)
     twist.ranges.lin_vel_y = (0.0, 0.0)
     twist.ranges.ang_vel_z = (0.0, 0.0)
 
@@ -151,7 +151,10 @@ def main() -> None:
         "external_force_nonzero": external_force_nonzero,
         "peak_total_gpu_memory_mib": max(gpu.samples_mib, default=0),
         "gpu_memory_samples": len(gpu.samples_mib),
-        "fixed_command": {"vx": 0.30, "vy": 0.0, "yaw_rate": 0.0},
+        "command_distribution": {
+            "type": "constant", "vx": 0.40,
+            "vy": 0.0, "yaw_rate": 0.0,
+        },
         "push_event_present": "push_robot" in cfg.events,
         "versions": _versions(),
     }

@@ -24,9 +24,11 @@ completed.  Its ten source attempts are preserved under
 `stage-b/aborted-fixed-perturbation-db761ac` and are permanently excluded from
 future data.  The replacement protocol is
 `config/qsafe_natural_ppo_falls_v1.yaml`: PPO-from-zero runs on flat terrain
-with ordinary domain randomization but no external push, impulse, or artificial
-velocity injection.  Every independent first fall is retained together with
-its preceding 64 policy steps; PPO outcomes remain proposal metadata only.
+with ordinary domain randomization and a constant forward command of
+`+0.4 m/s`, but no external push, impulse, or artificial velocity injection.
+Every realized command is recorded.  Every independent first fall
+is retained together with its preceding 64 policy steps; PPO outcomes remain
+proposal metadata only.  Objective-1 target SAC remains fixed at `+0.30 m/s`.
 
 This follows complementary lessons from [SQRL](https://arxiv.org/abs/2010.14603),
 [Recovery RL](https://arxiv.org/abs/2010.15920),
