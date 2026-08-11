@@ -1,7 +1,8 @@
 # Natural-PPO direct Q_safe pilot result
 
 **Date:** 2026-08-11 (Asia/Shanghai)  
-**Disposition:** development gate passed; not Objective-1 evidence
+**Disposition:** PPO-internal gate passed, SAC-transfer gate failed; excluded
+from Objective-1 evidence
 
 ## Frozen pilot task
 
@@ -61,7 +62,28 @@ not used for model or threshold selection.
 
 This passes the development question “can natural PPO fall/normal states
 directly train a learnable risk signal?” on an episode-disjoint held-out PPO
-set. It does **not** prove that the model reduces SAC falls. The protected
+set.
+
+## Target-SAC distribution check
+
+The state-risk ensemble was then evaluated without refitting on the ordered
+natural seed-42 SAC replay ending at 100k training steps.  Five-frame histories
+and H96 fall labels were reconstructed only within episode boundaries.  On
+59,172 uncensored eligible states, including 2,527 positive pre-fall states,
+state AUROC was `0.4154`, ECE was `0.1523`, mean predicted risk was `0.1906`
+for positives and `0.1952` for negatives. Twenty-four replay continuity gaps
+were explicitly censored. Thus the apparently strong PPO-held-out result
+does not transfer to this SAC distribution.
+
+The cause is concrete rather than speculative: this pilot inherited upstream
+MjLab posture, action, PD, timing and integration defaults that differ from the
+target SAC runtime.  The pilot archive and model remain development diagnostics
+but cannot enter the formal fit, calibration, SAC Model-Test, or online claim.
+Production reruns use the target-alignment contract in
+`safety_data/mjlab_target_alignment.py` before capacity selection or PPO
+training.
+
+This pilot does **not** prove that the model reduces SAC falls. The protected
 SAC-only Model-Test, paired closed-loop comparison, and 24-seed three-arm
 SAC-from-zero experiment have not been consumed; therefore
 `objective1_pass=false` and Objective 2 remains forbidden.

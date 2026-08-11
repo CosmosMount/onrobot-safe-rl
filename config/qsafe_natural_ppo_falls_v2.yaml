@@ -59,6 +59,25 @@ backend:
   selected_capacity_stability_seconds: 1800
   max_peak_vram_mib: 20480
   min_upgrade_throughput_gain_fraction: 0.15
+  target_alignment_required_before_capacity_selection: true
+  target_alignment:
+    policy_frequency_hz: 50
+    physics_timestep_s: 0.002
+    physics_substeps_per_policy_step: 10
+    episode_policy_steps: 500
+    initial_base_height_m: 0.445
+    initial_joint_position: [0.05, 0.70, -1.40]
+    normalized_action_scale: [0.20, 0.40, 0.40]
+    kp: 60.0
+    kd: 5.0
+    passive_joint_damping: 0.1
+    joint_frictionloss: 0.2
+    integrator: euler
+    cone: elliptic
+    solver: newton
+    iterations: 100
+    impratio: 100.0
+    exact_target_fall_terminal: true
 
 ppo:
   implementation: rsl_rl_clipped_ppo
@@ -67,6 +86,7 @@ ppo:
   checkpoint_steps: [0, 1000000, 2000000, 5000000, 10000000, 20000000, 30000000]
   checkpoint_or_seed_filter_by_return_or_falls: forbidden
   optional_stopping_or_top_up: forbidden
+  upstream_unaligned_pilot_or_capacity_as_production_evidence: forbidden
 
 fall_collection:
   first_terminal_fall_per_episode_only: true

@@ -37,6 +37,18 @@ least 96 future steps are negative examples.  Splits are made by whole PPO
 episode, never by individual frame.  Objective-1 target SAC remains fixed at
 `+0.30 m/s`.
 
+The initial 1M development pilot used the upstream MjLab Go2 posture and
+controller (`0.9/-1.8` thigh/calf posture, `0.25` uniform action scale,
+`20/1` or `40/2` PD, `5 ms` physics steps).  Those differ materially from the
+target SAC runtime (`0.7/-1.4`, per-joint `0.2/0.4/0.4`, `60/5` PD, `2 ms`
+physics steps).  Although its PPO-held-out state AUROC was `0.954`, a
+development-only evaluation on the ordered seed-42 natural SAC replay gave
+AUROC `0.415`; therefore it does not establish cross-policy transfer and is
+permanently excluded from Objective-1 claims.  Production PPO and capacity
+selection now require the hash-bound target-alignment contract implemented in
+`safety_data/mjlab_target_alignment.py`.  Upstream-unaligned capacity results
+remain engineering diagnostics only.
+
 This follows complementary lessons from [SQRL](https://arxiv.org/abs/2010.14603),
 [Recovery RL](https://arxiv.org/abs/2010.15920),
 [SAILR](https://proceedings.mlr.press/v139/wagener21a.html),
@@ -84,6 +96,12 @@ collection may begin before those failures and the full-suite checks are green.
 ### B0 — Result-blind implementation and freeze
 
 Complete and test the existing Stage-B implementation.
+
+- Before any 30M PPO run, align the MjLab initial posture, action-to-q-target
+  mapping, PD/effort limits, 50/500 Hz timing, MuJoCo options, episode length,
+  and exact height/roll/pitch terminal predicate to the target SAC task.  Run
+  the capacity ladder only after this alignment; upstream-default capacity
+  measurements cannot select the production environment count.
 
 - Make the split compiler consume only a dedicated identity view. It may read
   identity arrays and raw-byte/content hashes, but may not index `fall`,

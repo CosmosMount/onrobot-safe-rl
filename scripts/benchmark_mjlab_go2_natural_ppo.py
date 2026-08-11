@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import threading
 import time
 from typing import Any
@@ -22,6 +23,16 @@ from typing import Any
 import numpy as np
 import torch
 from torch import nn
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
+from safety_data.mjlab_target_alignment import (
+    configure_target_aligned_go2,
+    target_alignment_manifest,
+    validate_target_aligned_go2,
+)
 
 
 class GpuSampler:
@@ -130,16 +141,10 @@ def main() -> None:
     from mjlab.tasks.registry import load_env_cfg
 
     torch.manual_seed(args.seed)
-    cfg = load_env_cfg("Unitree-Go2-Flat")
+    cfg = configure_target_aligned_go2(load_env_cfg("Unitree-Go2-Flat"))
     cfg.seed = args.seed
     cfg.scene.num_envs = args.envs
-    cfg.events.pop("push_robot", None)
-    cfg.curriculum = {}
-    twist = cfg.commands["twist"]
-    twist.rel_standing_envs = 0.0
-    twist.ranges.lin_vel_x = (0.30, 0.30)
-    twist.ranges.lin_vel_y = (0.0, 0.0)
-    twist.ranges.ang_vel_z = (0.0, 0.0)
+    validate_target_aligned_go2(cfg)
 
     started_initialization = time.perf_counter()
     env = ManagerBasedRlEnv(cfg=cfg, device="cuda:0")
@@ -210,6 +215,7 @@ def main() -> None:
             "vy": 0.0, "yaw_rate": 0.0,
         },
         "push_event_present": push_event_present,
+        "target_alignment": target_alignment_manifest(),
         "versions": _versions(),
     }
     result["pass"] = capacity_run_passes(

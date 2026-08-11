@@ -8,11 +8,22 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import time
 
 import numpy as np
 import torch
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
+from safety_data.mjlab_target_alignment import (
+    configure_target_aligned_go2,
+    target_alignment_manifest,
+    validate_target_aligned_go2,
+)
 
 
 def _sha256(path: Path) -> str:
@@ -55,16 +66,10 @@ def main() -> None:
     from mjlab.envs import ManagerBasedRlEnv
     from mjlab.tasks.registry import load_env_cfg
 
-    cfg = load_env_cfg("Unitree-Go2-Flat")
+    cfg = configure_target_aligned_go2(load_env_cfg("Unitree-Go2-Flat"))
     cfg.seed = args.seed
     cfg.scene.num_envs = args.states
-    cfg.events.pop("push_robot", None)
-    cfg.curriculum = {}
-    twist = cfg.commands["twist"]
-    twist.rel_standing_envs = 0.0
-    twist.ranges.lin_vel_x = (0.30, 0.30)
-    twist.ranges.lin_vel_y = (0.0, 0.0)
-    twist.ranges.ang_vel_z = (0.0, 0.0)
+    validate_target_aligned_go2(cfg)
     env = ManagerBasedRlEnv(cfg=cfg, device="cuda:0")
     env.reset()
     if bool(torch.any(env.sim.data.xfrc_applied != 0.0).item()):
@@ -190,6 +195,7 @@ def main() -> None:
                                   and np.all(np.isfinite(qvel_error))),
             "external_force_nonzero": False,
             "command_vx_mps": 0.3,
+            "target_alignment": target_alignment_manifest(),
             "thresholds": {
                 "max_qpos_error": args.max_qpos_error,
                 "p99_qpos_error": args.p99_qpos_error,

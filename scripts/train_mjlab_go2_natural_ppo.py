@@ -25,6 +25,11 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from safety_data.mjlab_natural_falls import MjlabNaturalFallCapture
+from safety_data.mjlab_target_alignment import (
+    configure_target_aligned_go2,
+    target_alignment_manifest,
+    validate_target_aligned_go2,
+)
 
 
 CHECKPOINT_EXPOSURES = (0, 1_000_000, 2_000_000, 5_000_000,
@@ -79,17 +84,11 @@ def main() -> None:
     from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
     from mjlab.utils.os import dump_yaml
 
-    cfg = load_env_cfg("Unitree-Go2-Flat")
+    cfg = configure_target_aligned_go2(load_env_cfg("Unitree-Go2-Flat"))
     agent_cfg = load_rl_cfg("Unitree-Go2-Flat")
     cfg.seed = args.seed
     cfg.scene.num_envs = args.envs
-    cfg.events.pop("push_robot", None)
-    cfg.curriculum = {}
-    twist = cfg.commands["twist"]
-    twist.rel_standing_envs = 0.0
-    twist.ranges.lin_vel_x = (0.30, 0.30)
-    twist.ranges.lin_vel_y = (0.0, 0.0)
-    twist.ranges.ang_vel_z = (0.0, 0.0)
+    validate_target_aligned_go2(cfg)
     agent_cfg.seed = args.seed
     agent_cfg.num_steps_per_env = args.rollout_steps
     agent_cfg.max_iterations = args.exposure // steps_per_iteration
@@ -181,6 +180,7 @@ def main() -> None:
             "type": "constant", "vx": 0.30,
             "vy": 0.0, "yaw_rate": 0.0,
         },
+        "target_alignment": target_alignment_manifest(),
         "checkpoint_selection_uses_outcomes": False,
         "checkpoints": entries,
         "generator_commit": _git_head(repository),
