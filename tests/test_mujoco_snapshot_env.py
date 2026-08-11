@@ -9,6 +9,8 @@ import numpy as np
 
 from runtime.inference.actions import action_to_qpos
 from safety_data.native import ReplicaSeedBundle, evaluate_same_state_group
+from safety_data.fixed_recovery_motion import FixedRecoveryConfig
+from safety_data.fixed_recovery_preflight import evaluate_standing_fixed_recovery
 from train.config import load_app_config
 from train.mujoco_snapshot_env import MujocoSnapshotEnv
 
@@ -112,6 +114,42 @@ class MujocoSnapshotEnvTest(unittest.TestCase):
             result.application.action_executed, action, rtol=0.0, atol=2e-7)
         np.testing.assert_array_equal(result.application.action_q_target, expected)
         np.testing.assert_array_equal(env.observation()[-12:], expected)
+
+    def test_recovery_target_bypasses_policy_range_for_one_500hz_tick(self):
+        env = self.env()
+        recovery_target = np.asarray([0.0, 1.4, -2.7] * 4, dtype=np.float32)
+        policy_upper = np.minimum(
+            self.robot.joint_max,
+            self.robot.init_qpos + self.robot.action_offset,
+        )
+        self.assertTrue(np.any(recovery_target > policy_upper))
+        before = float(env.data.time)
+        result = env.step_recovery_target(recovery_target, kp=100.0, kd=8.0)
+        self.assertAlmostEqual(float(env.data.time) - before, 0.002, places=12)
+        np.testing.assert_array_equal(
+            result.application.action_q_target, recovery_target)
+        np.testing.assert_array_equal(env.previous_action_q_target, recovery_target)
+        np.testing.assert_array_equal(env.observation()[-12:], recovery_target)
+
+    def test_recovery_target_rejects_values_outside_controller_limits(self):
+        env = self.env()
+        invalid = np.asarray(self.robot.joint_max, dtype=np.float32).copy()
+        invalid[0] += 0.01
+        with self.assertRaisesRegex(ValueError, "controller joint limits"):
+            env.step_recovery_target(invalid)
+
+    def test_original_fixed_recovery_counts_its_standing_fall(self):
+        env = self.env()
+        recovery = FixedRecoveryConfig.from_controller_yaml(
+            "runtime/control/go2/go2.yaml")
+        result = evaluate_standing_fixed_recovery(env, recovery)
+        self.assertTrue(result.sequence_completed)
+        self.assertFalse(result.prevention_negative_control_pass)
+        self.assertEqual(result.first_fall_stage, "fold")
+        self.assertIsNotNone(result.first_fall_tick)
+        self.assertLess(result.first_fall_tick, 476)
+        self.assertLess(result.first_fall_seconds, 0.952)
+        self.assertLess(result.minimum_height_m, 0.18)
 
     def test_compound_snapshot_restores_filter_and_history_bit_exactly(self):
         env = self.env(filtered=True)

@@ -25,6 +25,7 @@ from runtime.inference.actions import (
     ActionApplier,
     ActionFilterButter,
     ActionFilterState,
+    qpos_to_action,
 )
 from runtime.inference.observations import (
     build_observation,
@@ -486,23 +487,79 @@ class MujocoSnapshotEnv:
         projection = self.action_applier.project(
             action, self.data.qpos[self.qpos_addresses])
         target = projection.action_q_target.astype(np.float64)
-        for _ in range(self.substeps):
+        return self._step_absolute_target(
+            target,
+            kp=self.kp,
+            kd=self.kd,
+            low_level_steps=self.substeps,
+            application=ActionApplication(
+                projection.action_requested,
+                projection.action_executed,
+                projection.action_q_target,
+            ),
+        )
+
+    def _step_absolute_target(
+        self,
+        target: np.ndarray,
+        *,
+        kp: np.ndarray,
+        kd: np.ndarray,
+        low_level_steps: int,
+        application: ActionApplication,
+    ) -> RolloutStepResult:
+        if isinstance(low_level_steps, (bool, np.bool_)) or not isinstance(
+                low_level_steps, (int, np.integer)) or int(low_level_steps) <= 0:
+            raise ValueError("low_level_steps must be a positive integer")
+        for _ in range(int(low_level_steps)):
             q = self.data.qpos[self.qpos_addresses]
             dq = self.data.qvel[self.qvel_addresses]
-            torque = self.kp * (target - q) - self.kd * dq
+            torque = kp * (target - q) - kd * dq
             self.data.ctrl[self.actuator_ids] = np.clip(
                 torque, self.ctrl_low, self.ctrl_high)
             self.mujoco.mj_step(self.model, self.data)
         self.mujoco.mj_forward(self.model, self.data)
-        application = ActionApplication(
-            projection.action_requested,
-            projection.action_executed,
-            projection.action_q_target,
-        )
         self._previous_action_requested = application.action_requested.copy()
         self._previous_action_executed = application.action_executed.copy()
         self._previous_action_q_target = application.action_q_target.copy()
         return RolloutStepResult(application, self.measurement())
+
+    def step_recovery_target(
+        self,
+        q_target: np.ndarray,
+        *,
+        kp: float | np.ndarray = 100.0,
+        kd: float | np.ndarray = 8.0,
+    ) -> RolloutStepResult:
+        """Apply one 500-Hz absolute target from the fixed recovery motion.
+
+        Unlike :meth:`step`, this method intentionally bypasses the task
+        policy's narrow normalized action range.  The C++ recovery controller
+        owns the low-level command and uses the robot joint limits plus its own
+        gains.  One call advances exactly one MuJoCo/500-Hz control tick.
+        """
+        target = np.asarray(q_target, dtype=np.float32).reshape(-1)
+        if target.shape != (self.cfg.num_joints,) or not np.all(np.isfinite(target)):
+            raise ValueError("recovery q_target must be a finite joint vector")
+        lower = np.asarray(self.cfg.joint_min, dtype=np.float32)
+        upper = np.asarray(self.cfg.joint_max, dtype=np.float32)
+        if np.any(target < lower) or np.any(target > upper):
+            raise ValueError("recovery q_target is outside controller joint limits")
+        recovery_kp = _joint_vector(kp, self.cfg.num_joints, "recovery kp")
+        recovery_kd = _joint_vector(kd, self.cfg.num_joints, "recovery kd")
+        normalized = qpos_to_action(
+            target,
+            init_qpos=np.asarray(self.cfg.init_qpos, dtype=np.float32),
+            action_offset=np.asarray(self.cfg.action_offset, dtype=np.float32),
+        )
+        application = ActionApplication(normalized, normalized, target)
+        return self._step_absolute_target(
+            target.astype(np.float64),
+            kp=recovery_kp,
+            kd=recovery_kd,
+            low_level_steps=1,
+            application=application,
+        )
 
     def simulator_fingerprint(self) -> dict[str, Any]:
         """Return claim-bearing simulator/controller fields for a manifest."""
