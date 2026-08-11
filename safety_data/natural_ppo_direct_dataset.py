@@ -75,9 +75,9 @@ def compile_direct_qsafe_dataset(
         raise ValueError("direct compiler requires validated natural-fall schema v2")
     supervision = manifest.get("direct_qsafe_supervision", {})
     if supervision.get("state_risk") is not True or supervision.get(
-            "executed_action_risk_under_ppo_continuation") is not True or (
+            "executed_action_risk_under_ppo_continuation") != "diagnostic_only" or (
             supervision.get("counterfactual_recovery_action_risk") is not False):
-        raise ValueError("archive does not authorize direct PPO supervision")
+        raise ValueError("archive does not authorize direct state-risk supervision")
 
     report_path = pairs_path.with_suffix(".report.json")
     pair_report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -279,7 +279,8 @@ def compile_direct_qsafe_dataset(
         "command_vx_mps": 0.3,
         "risk_horizon_policy_steps": NORMAL_TERMINAL_DISTANCE,
         "direct_state_risk_supervision": True,
-        "direct_executed_action_risk_supervision": True,
+        "direct_executed_action_risk_supervision": False,
+        "executed_action_risk_role": "diagnostic_only",
         "counterfactual_recovery_action_labels": False,
     }
     content = (json.dumps(report, sort_keys=True, indent=2) + "\n").encode("utf-8")

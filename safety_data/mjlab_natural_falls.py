@@ -25,7 +25,10 @@ from safety_data.natural_ppo_falls import (
 
 MJLAB_TO_TARGET_JOINT = (3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8)
 CAPTURE_RING_STEPS = 97
-NORMAL_HASH_MODULUS = 32
+# A 1/32 pilot did not supply a normal for every pre-fall state after the
+# preregistered age/randomization/whole-episode-role stratification.  Select
+# four times as many outcome-blind candidates before the formal 30M run.
+NORMAL_HASH_MODULUS = 8
 RISK_HORIZON_POLICY_STEPS = 96
 
 
@@ -181,7 +184,9 @@ class MjlabNormalShardWriter(MjlabFallShardWriter):
             "schema_version": "qsafe.mjlab_natural_normals.v2",
             "event_count": sum(item["event_count"] for item in self.shards),
             "minimum_future_nonterminal_steps": NORMAL_TERMINAL_DISTANCE,
-            "selection": "deterministic_hash_modulo_32_before_branch_outcomes",
+            "selection": (
+                f"deterministic_hash_modulo_{NORMAL_HASH_MODULUS}"
+                "_before_branch_outcomes"),
             "shards": self.shards,
             "provenance": dict(provenance),
         }

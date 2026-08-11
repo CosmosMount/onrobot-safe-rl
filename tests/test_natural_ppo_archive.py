@@ -106,6 +106,21 @@ class NaturalPpoArchiveTest(unittest.TestCase):
                 trajectory_q_target=np.zeros((1, 65, 12), dtype=np.float32),
                 trajectory_steps_to_fall=steps_to_fall,
                 trajectory_fall_within_96_steps=mask,
+                trajectory_time=np.zeros((1, 65), dtype=np.float64),
+                trajectory_qpos=np.zeros((1, 65, 19), dtype=np.float64),
+                trajectory_qvel=np.zeros((1, 65, 18), dtype=np.float64),
+                trajectory_act=np.empty((1, 65, 0), dtype=np.float64),
+                trajectory_qacc_warmstart=np.zeros((1, 65, 18), dtype=np.float64),
+                trajectory_ctrl=np.zeros((1, 65, 12), dtype=np.float64),
+                terminal_time=np.zeros(1, dtype=np.float64),
+                terminal_qpos=np.asarray([[0.0, 0.0, 0.17, 1.0, 0.0, 0.0, 0.0]
+                                          + [0.0] * 12], dtype=np.float64),
+                terminal_qvel=np.zeros((1, 18), dtype=np.float64),
+                terminal_act=np.empty((1, 0), dtype=np.float64),
+                terminal_qacc_warmstart=np.zeros((1, 18), dtype=np.float64),
+                terminal_ctrl=np.zeros((1, 12), dtype=np.float64),
+                rng_identity=np.asarray([b"r" * 64], dtype="S64"),
+                ppo_iteration=np.zeros(1, dtype=np.int64),
                 **randomization,
             )
             np.savez_compressed(
@@ -129,6 +144,8 @@ class NaturalPpoArchiveTest(unittest.TestCase):
                     randomization["randomized_body_ipos"], 2, axis=0),
                 randomized_encoder_bias=np.repeat(
                     randomization["randomized_encoder_bias"], 2, axis=0),
+                rng_identity=np.asarray([b"a" * 64, b"b" * 64], dtype="S64"),
+                ppo_iteration=np.zeros(2, dtype=np.int64),
             )
 
             def digest(path: Path) -> str:
@@ -151,7 +168,7 @@ class NaturalPpoArchiveTest(unittest.TestCase):
                 "external_force": "verified_zero",
                 "direct_qsafe_supervision": {
                     "state_risk": True,
-                    "executed_action_risk_under_ppo_continuation": True,
+                    "executed_action_risk_under_ppo_continuation": "diagnostic_only",
                     "counterfactual_recovery_action_risk": False,
                     "horizon_policy_steps": 96,
                 },

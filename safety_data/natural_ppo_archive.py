@@ -165,7 +165,7 @@ def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str
     supervision = falls.get("direct_qsafe_supervision", {})
     if supervision != {
             "state_risk": True,
-            "executed_action_risk_under_ppo_continuation": True,
+            "executed_action_risk_under_ppo_continuation": "diagnostic_only",
             "counterfactual_recovery_action_risk": False,
             "horizon_policy_steps": 96}:
         raise ValueError("PPO direct-supervision contract drifted")
@@ -185,9 +185,21 @@ def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str
         if _sha256(path) != shard["sha256"]:
             raise ValueError(f"fall shard hash mismatch: {path}")
         with np.load(path, allow_pickle=False) as arrays:
-            forbidden = {"counterfactual_candidate_outcome"}
+            forbidden = {
+                "counterfactual_candidate_outcome", "recovery_action",
+                "recovery_sequence", "recovery_policy_action",
+            }
             if forbidden.intersection(arrays.files):
                 raise ValueError("PPO shard contains counterfactual action labels")
+            required = {
+                "trajectory_time", "trajectory_qpos", "trajectory_qvel",
+                "trajectory_act", "trajectory_qacc_warmstart", "trajectory_ctrl",
+                "terminal_time", "terminal_qpos", "terminal_qvel", "terminal_act",
+                "terminal_qacc_warmstart", "terminal_ctrl", "rng_identity",
+                "ppo_iteration",
+            }
+            if not required.issubset(arrays.files):
+                raise ValueError("fall shard lacks complete integration/RNG state")
             count = len(arrays["identity"])
             if count != shard["event_count"]:
                 raise ValueError("fall shard count mismatch")
@@ -214,6 +226,26 @@ def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str
                 command = arrays["trajectory_command"][row][mask]
                 if not np.allclose(command, [0.3, 0.0, 0.0], atol=1e-6):
                     raise ValueError("PPO command drifted from constant +0.3 m/s")
+                for field in (
+                    "trajectory_time", "trajectory_qpos", "trajectory_qvel",
+                    "trajectory_act", "trajectory_qacc_warmstart", "trajectory_ctrl",
+                    "terminal_time", "terminal_qpos", "terminal_qvel", "terminal_act",
+                    "terminal_qacc_warmstart", "terminal_ctrl",
+                ):
+                    if not np.all(np.isfinite(arrays[field][row])):
+                        raise ValueError(f"PPO integration field {field} is non-finite")
+                terminal_qpos = np.asarray(arrays["terminal_qpos"][row])
+                quat = terminal_qpos[3:7]
+                quat = quat / max(float(np.linalg.norm(quat)), 1e-12)
+                w, x, y, z = quat
+                roll = np.arctan2(
+                    2.0 * (w * x + y * z),
+                    1.0 - 2.0 * (x * x + y * y))
+                pitch = np.arcsin(np.clip(
+                    2.0 * (w * y - z * x), -1.0, 1.0))
+                if not (terminal_qpos[2] < 0.18 or max(
+                        abs(float(roll)), abs(float(pitch))) >= 1.047198):
+                    raise ValueError("recorded terminal event is not a target fall")
                 availability = arrays["prefall_availability"][row]
                 expected = np.asarray(
                     [length >= offset for offset in PREFALL_OFFSETS], dtype=bool)
@@ -264,6 +296,8 @@ def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str
                 raise ValueError("normal outcome horizon drifted")
             if not np.allclose(arrays["command"], [0.3, 0.0, 0.0], atol=1e-6):
                 raise ValueError("normal command drifted from constant +0.3 m/s")
+            if "rng_identity" not in arrays.files or "ppo_iteration" not in arrays.files:
+                raise ValueError("normal shard lacks RNG/training-age identity")
             for row in range(count):
                 identity = bytes(arrays["identity"][row]).decode("ascii")
                 if identity in seen:
@@ -306,7 +340,8 @@ def validate_and_match_archive(root: str | Path, output: str | Path) -> dict[str
         "pair_file_sha256": _sha256(output),
         "command_vx_mps": 0.3,
         "external_force_verified_zero": True,
-        "ppo_direct_state_and_executed_action_supervision": True,
+        "ppo_direct_state_supervision": True,
+        "ppo_executed_action_use": "diagnostic_only",
         "ppo_counterfactual_recovery_labels": False,
     }
     report_path = output.with_suffix(".report.json")
