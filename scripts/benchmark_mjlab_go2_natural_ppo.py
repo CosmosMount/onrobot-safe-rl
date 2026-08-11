@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import threading
@@ -29,15 +30,19 @@ class GpuSampler:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.samples_mib: list[int] = []
+        self.samples_utilization: list[int] = []
 
     def _sample(self) -> None:
         while not self._stop.is_set():
             value = subprocess.run(
                 ["nvidia-smi", f"--id={self.gpu_index}",
-                 "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                "--query-gpu=memory.used,utilization.gpu",
+                 "--format=csv,noheader,nounits"],
                 check=True, capture_output=True, text=True,
             ).stdout.strip()
-            self.samples_mib.append(int(value.splitlines()[0]))
+            memory, utilization = value.splitlines()[0].split(",")
+            self.samples_mib.append(int(memory.strip()))
+            self.samples_utilization.append(int(utilization.strip()))
             self._stop.wait(0.5)
 
     def __enter__(self) -> "GpuSampler":
@@ -76,15 +81,47 @@ def _versions() -> dict[str, str]:
     }
 
 
+def _git_head() -> str:
+    root = Path(__file__).resolve().parents[1]
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True,
+        capture_output=True, text=True).stdout.strip()
+
+
+def _edge_median(values: list[int], *, first: bool) -> float:
+    if not values:
+        return 0.0
+    count = max(1, len(values) // 5)
+    selected = values[:count] if first else values[-count:]
+    return float(np.median(selected))
+
+
+def capacity_run_passes(
+    *, elapsed_seconds: float, minimum_seconds: float, peak_vram_mib: int,
+    memory_growth_mib: float, nonfinite: bool, external_force_nonzero: bool,
+    push_event_present: bool,
+) -> bool:
+    return bool(
+        elapsed_seconds >= minimum_seconds
+        and peak_vram_mib <= 20480
+        and memory_growth_mib <= 128.0
+        and not nonfinite
+        and not external_force_nonzero
+        and not push_event_present
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--envs", type=int, required=True)
     parser.add_argument("--warmup-steps", type=int, default=25)
     parser.add_argument("--steps", type=int, default=250)
+    parser.add_argument("--minimum-measured-seconds", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=43)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    if args.envs <= 0 or args.warmup_steps < 0 or args.steps <= 0:
+    if args.envs <= 0 or args.warmup_steps < 0 or args.steps <= 0 or (
+            args.minimum_measured_seconds < 0.0):
         raise ValueError("envs and steps must be positive")
 
     import mjlab.tasks  # noqa: F401
@@ -136,33 +173,74 @@ def main() -> None:
         elapsed = time.perf_counter() - started
 
     env.close()
+    memory_growth_mib = (
+        _edge_median(gpu.samples_mib, first=False)
+        - _edge_median(gpu.samples_mib, first=True)
+    )
+    peak_vram_mib = max(gpu.samples_mib, default=0)
+    push_event_present = "push_robot" in cfg.events
     result = {
         "schema_version": "qsafe.mjlab_go2_capacity.v1",
         "backend": "unitree_mjlab_mujoco_warp",
         "algorithm_path": "official_size_ppo_actor_inference_no_update",
+        "generator_commit": _git_head(),
         "envs": args.envs,
         "policy_steps": args.steps,
         "policy_env_steps": args.envs * args.steps,
         "elapsed_seconds": elapsed,
+        "minimum_measured_seconds": args.minimum_measured_seconds,
         "policy_env_steps_per_second": args.envs * args.steps / elapsed,
         "initialization_seconds": initialization_seconds,
         "terminated_count": terminated_count,
+        "resets_per_second": (terminated_count + truncated_count) / elapsed,
         "truncated_count": truncated_count,
         "nonfinite": nonfinite,
         "external_force_nonzero": external_force_nonzero,
-        "peak_total_gpu_memory_mib": max(gpu.samples_mib, default=0),
+        "peak_total_gpu_memory_mib": peak_vram_mib,
+        "mean_total_gpu_memory_mib": float(
+            np.mean(gpu.samples_mib) if gpu.samples_mib else 0.0),
+        "memory_growth_mib": memory_growth_mib,
+        "mean_gpu_utilization_percent": float(
+            np.mean(gpu.samples_utilization)
+            if gpu.samples_utilization else 0.0),
+        "peak_gpu_utilization_percent": max(gpu.samples_utilization, default=0),
         "gpu_memory_samples": len(gpu.samples_mib),
         "command_distribution": {
             "type": "constant", "vx": 0.30,
             "vy": 0.0, "yaw_rate": 0.0,
         },
-        "push_event_present": "push_robot" in cfg.events,
+        "push_event_present": push_event_present,
         "versions": _versions(),
     }
+    result["pass"] = capacity_run_passes(
+        elapsed_seconds=elapsed,
+        minimum_seconds=args.minimum_measured_seconds,
+        peak_vram_mib=peak_vram_mib,
+        memory_growth_mib=memory_growth_mib,
+        nonfinite=nonfinite,
+        external_force_nonzero=external_force_nonzero,
+        push_event_present=push_event_present,
+    )
     rendered = json.dumps(result, sort_keys=True, indent=2)
     print(rendered)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(rendered + "\n", encoding="utf-8")
+    temporary = args.output.with_name(f".{args.output.name}.tmp-{os.getpid()}")
+    with temporary.open("xb") as stream:
+        stream.write((rendered + "\n").encode("utf-8"))
+        stream.flush()
+        os.fsync(stream.fileno())
+    try:
+        os.link(temporary, args.output)
+    except FileExistsError as exc:
+        raise FileExistsError("capacity output path was already consumed") from exc
+    temporary.unlink()
+    directory = os.open(args.output.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    if not result["pass"]:
+        raise RuntimeError("parallel PPO capacity rung failed")
 
 
 if __name__ == "__main__":
