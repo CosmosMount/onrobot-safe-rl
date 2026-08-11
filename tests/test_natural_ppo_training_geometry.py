@@ -21,6 +21,7 @@ class NaturalPpoTrainingGeometryTest(unittest.TestCase):
         self.assertEqual(command["vx_mps"], 0.4)
         self.assertEqual(command["vy_mps"], 0.0)
         self.assertEqual(command["yaw_rate_rps"], 0.0)
+        self.assertEqual(command["standing_environment_fraction"], 0.0)
         force = protocol["environment"]["external_force"]
         self.assertEqual(force["push_event"], "disabled")
         self.assertEqual(force["impulse"], "forbidden")

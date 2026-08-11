@@ -36,6 +36,7 @@ def main() -> None:
     cfg.viewer.width = args.width
     cfg.viewer.height = args.height
     twist = cfg.commands["twist"]
+    twist.rel_standing_envs = 0.0
     twist.ranges.lin_vel_x = (0.40, 0.40)
     twist.ranges.lin_vel_y = (0.0, 0.0)
     twist.ranges.ang_vel_z = (0.0, 0.0)

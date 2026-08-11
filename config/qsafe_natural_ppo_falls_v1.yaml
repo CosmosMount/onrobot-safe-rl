@@ -27,6 +27,7 @@ environment:
     vx_mps: 0.40
     vy_mps: 0.0
     yaw_rate_rps: 0.0
+    standing_environment_fraction: 0.0
     realized_command_recorded_per_frame: true
   target_sac_objective1_command:
     vx_mps: 0.30

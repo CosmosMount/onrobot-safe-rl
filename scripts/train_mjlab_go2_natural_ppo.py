@@ -15,9 +15,16 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import sys
 import time
 
 import torch
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
+from safety_data.mjlab_natural_falls import MjlabNaturalFallCapture
 
 
 CHECKPOINT_EXPOSURES = (0, 1_000_000, 2_000_000, 5_000_000,
@@ -65,6 +72,7 @@ def main() -> None:
     cfg.events.pop("push_robot", None)
     cfg.curriculum = {}
     twist = cfg.commands["twist"]
+    twist.rel_standing_envs = 0.0
     twist.ranges.lin_vel_x = (0.40, 0.40)
     twist.ranges.lin_vel_y = (0.0, 0.0)
     twist.ranges.ang_vel_z = (0.0, 0.0)
@@ -80,10 +88,24 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=False)
     dump_yaml(args.output / "env.yaml", asdict(cfg))
     dump_yaml(args.output / "agent.yaml", asdict(agent_cfg))
-    environment = ManagerBasedRlEnv(cfg=cfg, device="cuda:0")
+    capture = MjlabNaturalFallCapture(
+        args.envs, args.output / "natural-falls", seed=args.seed)
+
+    class CapturingEnvironment(ManagerBasedRlEnv):
+        def step(self, action: torch.Tensor):
+            capture.before_step(self, action)
+            return super().step(action)
+
+        def _reset_idx(self, env_ids: torch.Tensor) -> None:
+            capture.before_reset(self, env_ids)
+            super()._reset_idx(env_ids)
+            capture.after_reset(env_ids)
+
+    environment = CapturingEnvironment(cfg=cfg, device="cuda:0")
     if "push_robot" in environment.cfg.events:
         raise RuntimeError("natural PPO runner unexpectedly contains push_robot")
     wrapped = RslRlVecEnvWrapper(environment, clip_actions=agent_cfg.clip_actions)
+    capture.arm(environment)
     runner = MjlabOnPolicyRunner(
         wrapped, asdict(agent_cfg), str(args.output), device="cuda:0")
     initial = args.output / "model_initial.pt"
@@ -92,6 +114,13 @@ def main() -> None:
     runner.learn(num_learning_iterations=agent_cfg.max_iterations,
                  init_at_random_ep_len=True)
     elapsed = time.perf_counter() - started
+    fall_manifest = capture.close({
+        "seed": args.seed,
+        "environments": args.envs,
+        "fixed_exposure": args.exposure,
+        "command_vx_mps": 0.40,
+        "push_event": False,
+    })
 
     entries = []
     for exposure in CHECKPOINT_EXPOSURES:
@@ -113,7 +142,7 @@ def main() -> None:
             "sha256": _sha256(path),
         })
 
-    repository = Path(__file__).resolve().parents[1]
+    repository = REPOSITORY_ROOT
     upstream = Path.cwd()
     manifest = {
         "schema_version": "qsafe.natural_ppo_training.v1",
@@ -126,6 +155,11 @@ def main() -> None:
         "fixed_exposure": args.exposure,
         "elapsed_seconds": elapsed,
         "external_push_event": False,
+        "natural_fall_archive": {
+            "manifest": str(fall_manifest.relative_to(args.output)),
+            "manifest_sha256": _sha256(fall_manifest),
+            "recorded_falls": capture.fall_count,
+        },
         "command_distribution": {
             "type": "constant", "vx": 0.40,
             "vy": 0.0, "yaw_rate": 0.0,
