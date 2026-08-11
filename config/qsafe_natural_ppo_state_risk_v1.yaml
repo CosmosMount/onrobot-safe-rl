@@ -1,0 +1,74 @@
+protocol_schema_version: 1
+protocol_name: objective1_natural_ppo_state_risk_v1
+created_at: "2026-08-12T00:00:00+08:00"
+
+target:
+  robot: unitree_go2
+  command_vx_mps: 0.30
+  command_vy_mps: 0.0
+  command_yaw_rate_rad_s: 0.0
+  policy_frequency_hz: 50
+  low_level_frequency_hz: 500
+  observation: corrected_deployable_5x46
+  risk_horizon_policy_steps: 96
+  fall_predicate:
+    minimum_base_link_origin_height_m: 0.18
+    maximum_abs_roll_or_pitch_rad: 1.047198
+  model_mjcf: /home/xyz/code/unitree_mujoco/unitree_robots/go2/scene_empty.xml
+  policy_config: config/go2_50hz_sqrl_paper_sac_pretrain.yaml
+
+ppo_model:
+  production_head: state_risk_only
+  executed_ppo_action_use: diagnostics_only
+  counterfactual_action_labels_from_ppo: forbidden
+  probability_calibration_from_ppo: forbidden
+  dataset_sha256: 732beaafd6b9ea55011953d062ebd7de8719cea2f1a68a44187ebdbc98c6a9ce
+  model_sha256: 809f755ff2a21b79e465edf719f630e07e6639fa01d259254fa8a553742380d8
+
+sac_natural_state_roles:
+  exposure_policy_steps_per_source: 10000
+  checkpoint_steps: [25000, 50000, 100000]
+  actor_inclusion_rule: fixed_seed_roster_without_return_or_fall_filtering
+  probability_calibration:
+    actor_seeds: [47]
+    source_seed_by_checkpoint: {25000: 9401, 50000: 9402, 100000: 9403}
+  uncertainty_calibration:
+    actor_seeds: [48]
+    source_seed_by_checkpoint: {25000: 9411, 50000: 9412, 100000: 9413}
+  selector_and_recovery_calibration:
+    actor_seeds: [49]
+    source_seed_by_checkpoint: {25000: 9421, 50000: 9422, 100000: 9423}
+  protected_model_test:
+    actor_seeds: [43, 44, 45, 46]
+    source_seed_formula: 9500 + 10 * (actor_seed - 43) + checkpoint_index
+    checkpoint_index: {25000: 1, 50000: 2, 100000: 3}
+
+fixed_nonpolicy_recovery_candidates:
+  library_fingerprint_sha256: fcfb1fa541acf316f87dacf82b1fdeb9188d7a4b9df7f69544b567fb2c5d1045
+  allowed_k9_indices: [4, 5, 6, 7, 8]
+  names:
+    - joint_brake_L10
+    - halfway_neutral_L10
+    - halfway_neutral_L25
+    - ramp_neutral_L25
+    - ramp_crouch_L25
+  mature_actor_options_allowed: false
+  original_getup_motion_allowed_as_prevention: false
+  original_getup_exclusion_reason: standing_preflight_crosses_registered_fall_predicate
+  selection_rule: lowest_empirical_fall_risk_then_shortest_duration_then_k9_index
+  minimum_calibration_reduction_pp: 3.0
+
+calibration_and_test:
+  probability_method: per_member_temperature_scaling_on_probability_calibration_only
+  uncertainty_method: finite_sample_one_sided_residual_quantile
+  intervention_rate_max: 0.35
+  selector_threshold_grid_source: uncertainty_and_selector_calibration_only
+  model_test_minimum_independent_snapshots: 1200
+  model_test_access: one_shot_after_frozen_model_temperature_uncertainty_threshold_and_recovery
+  ppo_state_in_model_test: forbidden
+  model_test_actor_or_source_overlap_with_calibration: forbidden
+
+objective_gates:
+  objective1_pass_initial: false
+  phase2_authorized_initial: false
+  objective2_before_objective1: forbidden
