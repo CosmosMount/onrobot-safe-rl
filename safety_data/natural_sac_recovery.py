@@ -211,6 +211,7 @@ def evaluate_selector_recovery_source(
     *, source_data: str | Path, source_manifest: str | Path,
     branch_plan: str | Path, mature_checkpoint: str | Path,
     output: str | Path,
+    candidate_set: str = "fixed_nonpolicy",
 ) -> dict[str, Any]:
     """Evaluate nominal plus five fixed nonpolicy responses with H96 CRN."""
     source_data = Path(source_data).resolve()
@@ -247,10 +248,17 @@ def evaluate_selector_recovery_source(
     env = MujocoSnapshotEnv(
         manifest["model_path"], robot, policy_frequency=train.control_frequency,
         max_joint_delta=train.max_joint_delta, use_action_filter=False)
-    fixed = FixedNonpolicyRecoveryView(
-        build_recovery_behavior_library(mature, env.action_applier))
-    falls = np.empty((len(plan["identity"]), 6), dtype=bool)
-    first_failure = np.empty((len(plan["identity"]), 6), dtype=np.int16)
+    full_library = build_recovery_behavior_library(mature, env.action_applier)
+    if candidate_set == "fixed_nonpolicy":
+        recovery: Any = FixedNonpolicyRecoveryView(full_library)
+        original_indices = [0] + list(ALLOWED_ORIGINAL_INDICES)
+    elif candidate_set == "full_k9_development":
+        recovery = full_library
+        original_indices = list(range(9))
+    else:
+        raise ValueError("candidate_set must be fixed_nonpolicy or full_k9_development")
+    falls = np.empty((len(plan["identity"]), len(original_indices)), dtype=bool)
+    first_failure = np.empty((len(plan["identity"]), len(original_indices)), dtype=np.int16)
     with np.load(source_data, allow_pickle=False) as arrays, actor.inference_session() as sample:
         continuation = _SessionContinuation(sample)
         for output_row, source_row in enumerate(plan["row_index"]):
@@ -261,7 +269,11 @@ def evaluate_selector_recovery_source(
             env.restore(snapshot)
             history = env.observation_history()
             nominal = np.asarray(arrays["action_requested"][source_row], dtype=np.float32)
-            candidates = fixed.preview(history, nominal)
+            candidates = (
+                recovery.preview(history, nominal)
+                if isinstance(recovery, FixedNonpolicyRecoveryView)
+                else recovery.preview_candidates(history, nominal)
+            )
             seed = int.from_bytes(hashlib.sha256(
                 b"qsafe.fixed_recovery.crn.v1\0" + bytes(plan["identity"][output_row])
             ).digest()[:8], "little")
@@ -272,7 +284,7 @@ def evaluate_selector_recovery_source(
             )
             evaluated = evaluate_same_state_group(
                 env, snapshot, candidates, seeds, horizon_steps=96,
-                continuation_policy=continuation, recovery_program=fixed)
+                continuation_policy=continuation, recovery_program=recovery)
             falls[output_row] = evaluated.fall[:, 0]
             first_failure[output_row] = evaluated.first_failure_step[:, 0]
     arrays_out = dict(plan)
@@ -296,8 +308,17 @@ def evaluate_selector_recovery_source(
         "horizon_policy_steps": 96,
         "replicas": 1,
         "external_force": "verified_zero",
-        "fixed_recovery": fixed.manifest(),
-        "candidate_original_k9_indices": [0] + list(ALLOWED_ORIGINAL_INDICES),
+        "candidate_set": candidate_set,
+        "fixed_recovery": (
+            recovery.manifest() if isinstance(recovery, FixedNonpolicyRecoveryView)
+            else {
+                "full_library_fingerprint_sha256": recovery.fingerprint(),
+                "original_k9_indices": list(range(9)),
+                "behavior_steps": recovery.behavior_steps.tolist(),
+                "mature_policy_options_executable": True,
+            }
+        ),
+        "candidate_original_k9_indices": original_indices,
         "phase2_authorized": False,
     }
     content = (json.dumps(report, sort_keys=True, indent=2) + "\n").encode()

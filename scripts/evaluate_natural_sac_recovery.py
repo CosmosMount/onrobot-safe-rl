@@ -13,8 +13,11 @@ parser.add_argument("--source-manifest", required=True)
 parser.add_argument("--branch-plan", required=True)
 parser.add_argument("--mature-checkpoint", required=True)
 parser.add_argument("--output", required=True)
+parser.add_argument(
+    "--candidate-set", choices=("fixed_nonpolicy", "full_k9_development"),
+    default="fixed_nonpolicy")
 args = parser.parse_args()
 print(json.dumps(evaluate_selector_recovery_source(
     source_data=args.source_data, source_manifest=args.source_manifest,
     branch_plan=args.branch_plan, mature_checkpoint=args.mature_checkpoint,
-    output=args.output), sort_keys=True, indent=2))
+    output=args.output, candidate_set=args.candidate_set), sort_keys=True, indent=2))
