@@ -30,6 +30,7 @@ from train.mujoco_snapshot_env import ApplicationState, BranchSnapshot, MujocoSn
 
 
 ALLOWED_ORIGINAL_INDICES = (4, 5, 6, 7, 8)
+MATURE_SHORT_DURATIONS = (1, 2, 3, 5, 10)
 RISK_BAND_LOWER_QUANTILES = (0.65, 0.80, 0.90, 0.95)
 RISK_BAND_UPPER_QUANTILES = (0.80, 0.90, 0.95, 1.00)
 RISK_BAND_NAMES = ("top_20_to_35", "top_10_to_20", "top_5_to_10", "top_0_to_5")
@@ -94,6 +95,46 @@ class FixedNonpolicyRecoveryView:
             "original_k9_indices": list(ALLOWED_ORIGINAL_INDICES),
             "behavior_steps": self._behavior_steps.tolist(),
             "mature_policy_options_executable": False,
+        }
+
+
+class MatureShortRecoveryView:
+    """Development response family motivated by the earlier 2/3-frame oracle."""
+
+    def __init__(self, full_library: RecoveryBehaviorLibrary) -> None:
+        if not isinstance(full_library, RecoveryBehaviorLibrary):
+            raise TypeError("full_library must be the attested recovery library")
+        self._library = full_library
+
+    @property
+    def behavior_steps(self) -> np.ndarray:
+        return np.asarray([0] + list(MATURE_SHORT_DURATIONS), dtype=np.int64)
+
+    def capture_branch_state(self) -> None:
+        return None
+
+    def restore_branch_state(self, state: None) -> None:
+        if state is not None:
+            raise ValueError("mature short recovery state must be None")
+
+    def __call__(self, candidate_index: int, observation_history: np.ndarray,
+                 step: int, nominal_action: np.ndarray) -> np.ndarray:
+        if not 1 <= int(candidate_index) <= len(MATURE_SHORT_DURATIONS):
+            raise ValueError("mature short candidate index must lie in [1,5]")
+        # Full K9 index one is the frozen mature actor.  Its registered L10
+        # duration is not consulted because this wrapper owns shorter locks.
+        return self._library(1, observation_history, min(int(step), 9), nominal_action)
+
+    def preview(self, observation_history: np.ndarray,
+                nominal_action: np.ndarray) -> np.ndarray:
+        mature = self(1, observation_history, 0, nominal_action)
+        return np.stack([nominal_action] + [mature] * 5).astype(np.float32)
+
+    def manifest(self) -> dict[str, Any]:
+        return {
+            "full_library_fingerprint_sha256": self._library.fingerprint(),
+            "base_original_k9_index": 1,
+            "mature_policy_durations": list(MATURE_SHORT_DURATIONS),
         }
 
 
@@ -255,8 +296,11 @@ def evaluate_selector_recovery_source(
     elif candidate_set == "full_k9_development":
         recovery = full_library
         original_indices = list(range(9))
+    elif candidate_set == "mature_short_development":
+        recovery = MatureShortRecoveryView(full_library)
+        original_indices = [0, 101, 102, 103, 105, 110]
     else:
-        raise ValueError("candidate_set must be fixed_nonpolicy or full_k9_development")
+        raise ValueError("unknown recovery candidate_set")
     falls = np.empty((len(plan["identity"]), len(original_indices)), dtype=bool)
     first_failure = np.empty((len(plan["identity"]), len(original_indices)), dtype=np.int16)
     with np.load(source_data, allow_pickle=False) as arrays, actor.inference_session() as sample:
@@ -271,7 +315,8 @@ def evaluate_selector_recovery_source(
             nominal = np.asarray(arrays["action_requested"][source_row], dtype=np.float32)
             candidates = (
                 recovery.preview(history, nominal)
-                if isinstance(recovery, FixedNonpolicyRecoveryView)
+                if isinstance(recovery, (FixedNonpolicyRecoveryView,
+                                         MatureShortRecoveryView))
                 else recovery.preview_candidates(history, nominal)
             )
             seed = int.from_bytes(hashlib.sha256(
@@ -310,7 +355,8 @@ def evaluate_selector_recovery_source(
         "external_force": "verified_zero",
         "candidate_set": candidate_set,
         "fixed_recovery": (
-            recovery.manifest() if isinstance(recovery, FixedNonpolicyRecoveryView)
+            recovery.manifest() if isinstance(
+                recovery, (FixedNonpolicyRecoveryView, MatureShortRecoveryView))
             else {
                 "full_library_fingerprint_sha256": recovery.fingerprint(),
                 "original_k9_indices": list(range(9)),

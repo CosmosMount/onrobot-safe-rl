@@ -14,7 +14,8 @@ parser.add_argument("--branch-plan", required=True)
 parser.add_argument("--mature-checkpoint", required=True)
 parser.add_argument("--output", required=True)
 parser.add_argument(
-    "--candidate-set", choices=("fixed_nonpolicy", "full_k9_development"),
+    "--candidate-set", choices=(
+        "fixed_nonpolicy", "full_k9_development", "mature_short_development"),
     default="fixed_nonpolicy")
 args = parser.parse_args()
 print(json.dumps(evaluate_selector_recovery_source(
