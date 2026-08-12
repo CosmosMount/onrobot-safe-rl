@@ -46,7 +46,7 @@ PPO 单轨迹只能说明实际执行动作对应的结果。它不能为未执�
 
 在训练 action critic 前必须通过 oracle gate：
 
-1. 从自然 SAC/PPO 轨迹中选择距第一次 terminal fall 还有 8–64 个 policy
+1. 从自然 SAC/PPO 轨迹中选择距第一次 terminal fall 还有 48–96 个 policy
    step 的 early pre-fall 状态；state-only risk 只用于 proposal/分层。自然
    轨迹标签只能决定状态 admission，不能给任何未执行动作打标签。admission
    全程不知道 candidate branching outcome。

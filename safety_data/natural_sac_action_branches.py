@@ -36,8 +36,8 @@ from safety_data.natural_sac_recovery import _snapshot_from_row
 
 
 RISK_BAND_EDGES = (0.0, 0.25, 0.50, 0.75, 1.0)
-EARLY_PRE_FALL_MIN_STEPS = 8
-EARLY_PRE_FALL_MAX_STEPS = 64
+EARLY_PRE_FALL_MIN_STEPS = 48
+EARLY_PRE_FALL_MAX_STEPS = 96
 
 
 def _u64(domain: bytes, identity: bytes, *parts: int) -> int:
@@ -54,7 +54,7 @@ class NaturalActionBranchPlan:
     state_risk: np.ndarray
     state_uncertainty: np.ndarray
     natural_steps_to_fall: np.ndarray
-    risk_band: np.ndarray
+    admission_band: np.ndarray
     acceptance_probability: np.ndarray
 
     def __post_init__(self) -> None:
@@ -67,7 +67,7 @@ class NaturalActionBranchPlan:
                 self.state_uncertainty, dtype=np.float32),
             "natural_steps_to_fall": np.asarray(
                 self.natural_steps_to_fall, dtype=np.int16),
-            "risk_band": np.asarray(self.risk_band, dtype=np.int8),
+            "admission_band": np.asarray(self.admission_band, dtype=np.int8),
             "acceptance_probability": np.asarray(
                 self.acceptance_probability, dtype=np.float64),
         }
@@ -86,8 +86,9 @@ class NaturalActionBranchPlan:
         if np.any(values["natural_steps_to_fall"] < EARLY_PRE_FALL_MIN_STEPS) or (
                 np.any(values["natural_steps_to_fall"] > EARLY_PRE_FALL_MAX_STEPS)):
             raise ValueError("natural steps to fall must lie in the early pre-fall window")
-        if np.any(values["risk_band"] < 0) or np.any(values["risk_band"] > 3):
-            raise ValueError("risk band must lie in [0,3]")
+        if np.any(values["admission_band"] < 0) or np.any(
+                values["admission_band"] > 3):
+            raise ValueError("admission band must lie in [0,3]")
         if not np.all(np.isfinite(values["acceptance_probability"])) or np.any(
                 values["acceptance_probability"] <= 0.0) or np.any(
                     values["acceptance_probability"] > 1.0):
@@ -138,10 +139,12 @@ def build_early_prefall_plan(
         raise ValueError(
             "source does not contain enough pre-outcome early near-fall states; "
             f"eligible={len(eligible_rows)}, required={int(groups)}")
-    quantiles = np.quantile(risk[eligible_rows], RISK_BAND_EDGES)
+    # Stratify by natural time-to-fall, not by model score. This prevents the
+    # proposal model from concentrating the cohort on already-doomed states.
+    quantiles = np.quantile(steps[eligible_rows], RISK_BAND_EDGES)
     band = np.full(len(risk), -1, dtype=np.int8)
     band[eligible_rows] = np.searchsorted(
-        quantiles[1:-1], risk[eligible_rows], side="right").astype(np.int8)
+        quantiles[1:-1], steps[eligible_rows], side="right").astype(np.int8)
     quota = np.full(4, int(groups) // 4, dtype=np.int64)
     quota[:int(groups) % 4] += 1
     available = np.bincount(band[eligible_rows], minlength=4)
@@ -190,7 +193,7 @@ def build_early_prefall_plan(
         state_risk=risk[rows].astype(np.float32),
         state_uncertainty=uncertainty[rows].astype(np.float32),
         natural_steps_to_fall=steps[rows].astype(np.int16),
-        risk_band=bands,
+        admission_band=bands,
         acceptance_probability=probabilities,
     )
 
@@ -276,7 +279,8 @@ def collect_natural_action_groups(
             "impulse": "forbidden",
             "settle_after_restore": False,
             "same_state_common_random_numbers": True,
-            "risk_band_edges": list(RISK_BAND_EDGES),
+            "admission_stratification": "natural_steps_to_fall_quartiles",
+            "admission_quantile_edges": list(RISK_BAND_EDGES),
             "replicas": int(replicas),
         },
     )
@@ -361,7 +365,9 @@ def collect_natural_action_groups(
                 command_vx=0.30,
                 acceptance_probability=float(
                     plan.acceptance_probability[plan_index]),
-                sampling_stratum=f"calibrated_risk_band_{int(plan.risk_band[plan_index])}",
+                sampling_stratum=(
+                    f"natural_prefall_time_band_"
+                    f"{int(plan.admission_band[plan_index])}"),
             ),
             observation_history=np.asarray(history, dtype=np.float32),
             candidate_kind=candidates.kind,

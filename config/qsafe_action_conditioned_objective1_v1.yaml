@@ -1,6 +1,6 @@
 protocol_schema_version: 1
 protocol_name: objective1_action_conditioned_qsafe_v1
-protocol_revision: 2
+protocol_revision: 3
 status: active
 supersedes:
   - objective1_state_only_fixed_recovery
@@ -47,8 +47,8 @@ candidate_oracle_gate:
   source_state: early_near_fall_before_terminal_failure
   admission:
     natural_trajectory_fall_label_required: true
-    minimum_steps_before_fall_inclusive: 8
-    maximum_steps_before_fall_inclusive: 64
+    minimum_steps_before_fall_inclusive: 48
+    maximum_steps_before_fall_inclusive: 96
     natural_label_role: state_admission_only
     unexecuted_candidate_label_from_natural_trajectory: forbidden
     candidate_outcome_used_for_admission: false
