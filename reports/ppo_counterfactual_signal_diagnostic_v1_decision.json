@@ -1,0 +1,72 @@
+{
+  "schema_version": "qsafe.counterfactual_signal_diagnostic.v1",
+  "date": "2026-08-12",
+  "development_states": 400,
+  "candidates_per_state": 16,
+  "existing_replicas": 4,
+  "added_replicas": 12,
+  "added_branches": 76800,
+  "total_r16_branches_analyzed": 102400,
+  "horizons": [16, 32, 64, 96],
+  "r4": {
+    "within_state_risk_range_mean": 0.205625,
+    "strong_pair_state_coverage": 0.18,
+    "pair_ordering_agreement": 0.44857998620313905,
+    "independent_oracle_reduction": 0.00375
+  },
+  "r8": {
+    "within_state_risk_range_mean": 0.1725,
+    "strong_pair_state_coverage": 0.06,
+    "pair_ordering_agreement": 0.44537135472809863,
+    "independent_oracle_reduction": 0.006875
+  },
+  "r16": {
+    "within_state_risk_range_mean": 0.1390625,
+    "strong_pair_state_coverage": 0.03,
+    "pair_ordering_agreement": 0.46222040667602166,
+    "independent_oracle_reduction": 0.005625,
+    "independent_oracle_reduction_one_sided_95_lcb": 0.0003125
+  },
+  "r16_minus_r4": {
+    "strong_pair_state_coverage": -0.15,
+    "strong_pair_state_coverage_two_sided_95_ci": [-0.185, -0.115],
+    "pair_ordering_agreement": 0.15453577130176918,
+    "pair_ordering_agreement_two_sided_95_ci": [0.06335341100140544, 0.24530865944650107]
+  },
+  "h96_r16_by_stratum": {
+    "boundary": {
+      "within_state_risk_range_mean": 0.1646875,
+      "strong_pair_state_coverage": 0.055,
+      "independent_oracle_reduction": 0.014375
+    },
+    "medium": {
+      "within_state_risk_range_mean": 0.116875,
+      "strong_pair_state_coverage": 0.0,
+      "independent_oracle_reduction": 0.00375
+    },
+    "normal": {
+      "within_state_risk_range_mean": 0.11,
+      "strong_pair_state_coverage": 0.01,
+      "independent_oracle_reduction": -0.01
+    }
+  },
+  "action_distribution": {
+    "seed137_mean_candidate_distance": 1.0554324108064175,
+    "seed138_mean_candidate_distance": 1.0355366017321745,
+    "observed_seed_risk_range_gap": 0.045,
+    "action_distribution_predicted_gap": 0.006247,
+    "fraction_of_observed_gap_explained": 0.1388,
+    "grouped_cv_r2": -0.2123,
+    "structured_joint_direction_count": 0
+  },
+  "flags": {
+    "r4_label_noise_likely": false,
+    "h96_credit_dilution_likely": false,
+    "candidate_direction_coverage_likely": false
+  },
+  "protected_outcomes_read_or_generated": false,
+  "protected_roster_identity_only": true,
+  "safety_critic_trained": false,
+  "sac_transfer_run": false,
+  "conclusion": "R4 inflated apparent strong-pair coverage; R16 did not reveal stable same-state action ordering. Shorter horizons weakened rather than strengthened the action signal, and measured PPO action-distance or joint-direction coverage did not explain the collector gap."
+}
