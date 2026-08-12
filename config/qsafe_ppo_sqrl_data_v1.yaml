@@ -1,0 +1,142 @@
+protocol_schema_version: 1
+protocol_name: ppo_parallel_sqrl_safety_data_v1
+status: active
+supersedes: objective1_action_conditioned_qsafe_v1
+
+research_order:
+  phases:
+    - ppo_data_source_advantage
+    - independent_ppo_action_ranking
+    - frozen_ppo_to_sac_branching_transfer
+    - fresh_sac_online_fall_reduction
+    - formal_objective1
+  objective2_before_objective1_pass: forbidden
+
+task:
+  command_mps: [0.30, 0.0, 0.0]
+  policy_frequency_hz: 50
+  pd_frequency_hz: 500
+  parallel_environments: 2000
+  external_push: forbidden
+  external_impulse: forbidden
+  artificial_velocity_injection: forbidden
+  recovery_or_get_up_before_reset: forbidden
+  first_fall: terminal_and_same_vector_step_reset
+
+critic:
+  estimand: discounted_failure_cost_under_frozen_ppo_reference
+  gamma_safe: 0.70
+  cost_index: c_t_plus_1
+  reference_policy:
+    ppo_seed: 137
+    aggregate_training_transitions: 5000000
+    checkpoint: model_19.pt
+    stochastic_next_action: required
+  critic_action:
+    field: critic_action
+    semantic: absolute_12d_joint_target_applied_to_pd_for_current_20ms_interval
+    equals_absolute_q_target: true
+    requested_action_is_training_input: false
+
+ppo_master_dataset:
+  seeds: [137, 138]
+  stages:
+    early: {aggregate_training_transitions: 1000000, checkpoint: model_3.pt}
+    boundary: {aggregate_training_transitions: 5000000, checkpoint: model_19.pt}
+    mature: {aggregate_training_transitions: 30000000, checkpoint: model_119.pt}
+  checkpoint_selection_uses_qsafe_or_branch_outcomes: false
+  action_sampling: stochastic
+  transitions_per_seed_stage: 1000000
+  vector_steps_per_seed_stage: 500
+  shard_vector_steps: 25
+  fields:
+    - observation_history_t
+    - critic_action
+    - next_observation_history
+    - c_t_plus_1
+    - terminated
+    - truncated
+    - action_requested
+    - action_pre_projection
+    - absolute_q_target
+    - action_log_probability
+    - policy_entropy
+    - action_std
+    - action_saturation
+    - action_change_rate
+    - ppo_seed
+    - collector_stage
+    - collector_checkpoint
+    - env_id
+    - episode_id
+    - vector_step
+    - randomization_identity
+    - rng_identity
+  nested_aggregate_transition_counts: [1000000, 3000000, 5000000]
+  nested_selection_unit: whole_episode_hash
+  strata: [ppo_seed, collector_stage, fall_outcome, randomization_identity]
+
+training_comparison:
+  sources: [existing_sqrl_sac, ppo_1m, ppo_3m, ppo_5m]
+  matched_fields:
+    - observation
+    - critic_action
+    - network
+    - optimizer
+    - gamma_safe
+    - target_update
+    - batch_size
+    - updates_per_transition
+    - normalization
+    - stopping_rule
+  controls: [state_only, shuffled_training, test_time_action_permutation]
+  compute_matched_diagnostic: true
+
+h96_diagnostic:
+  training_source: frozen_reference_policy_continuous_rollout_only
+  horizon_policy_steps: 96
+  label_cost_indices_inclusive: [1, 96]
+  cost_at_97_is_positive: false
+  incomplete_horizon_without_fall: censored
+  timeout_is_negative: false
+
+ppo_branching_gate:
+  protected_state_groups: 200
+  state_source: unseen_boundary_snapshot_pool
+  candidates: 16
+  nominal_candidates: 1
+  stochastic_candidates: 15
+  replicas: 8
+  discovery_replicas: [1, 2, 3, 4]
+  evaluation_replicas: [5, 6, 7, 8]
+  horizon_policy_steps: 96
+  continuation_policy: frozen_ppo_reference
+  confidence_cluster: state_group
+  pass_requires:
+    action_over_state_only: true
+    action_over_shuffled_training: true
+    test_time_permutation_degrades: true
+    ppo_over_existing_sqrl_sac: true
+    selector_fall_reduction_lcb: greater_than_zero
+
+selectors:
+  sqrl_rejection:
+    finite_candidate_rule: first_safe_in_original_sample_order
+    no_safe_candidate: lowest_predicted_risk
+  minimal_intervention:
+    nominal_safe: nominal
+    nominal_unsafe_with_supported_safe_candidate: nearest_safe_to_nominal
+    no_supported_safe_candidate: abstain_to_nominal
+  state_only_branch_action: nominal
+
+first_round:
+  allow_new_sac_50k_training: false
+  ends_after: independent_ppo_branching_gate_decision
+  on_gate_failure: stop_before_sac_transfer
+  required_commits: 5
+
+success_flags:
+  - ppo_data_advantage_supported
+  - action_signal_learnable
+  - ppo_to_sac_transfer_supported
+  - formal_objective1_authorized

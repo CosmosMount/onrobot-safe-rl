@@ -1,7 +1,7 @@
 protocol_schema_version: 1
 protocol_name: objective1_action_conditioned_qsafe_v1
 protocol_revision: 5
-status: active
+status: superseded_by_ppo_parallel_sqrl_safety_data_v1
 supersedes:
   - objective1_state_only_fixed_recovery
   - objective1_state_only_mature_policy_takeover
