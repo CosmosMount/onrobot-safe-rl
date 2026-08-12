@@ -94,11 +94,20 @@ def replica_scaling_analysis(first_fall_step: np.ndarray) -> dict[str, object]:
         raise ValueError("replica scaling requires [states,16 candidates,16 replicas]")
     reports: dict[str, object] = {}
     arrays = {}
+    indices = _bootstrap_indices(len(labels), 91001)
     for replicas in (4, 8, 16):
         report, values = _prefix_metrics(labels, replicas)
+        report["state_bootstrap"] = {
+            "within_state_risk_range_mean": _summary(values["spread"], indices),
+            "strong_pair_state_coverage": _summary(
+                values["strong_state"], indices),
+            "pair_ordering_agreement": _summary(
+                values["ordering_agreement"], indices),
+            "independent_oracle_reduction": _summary(
+                values["oracle_reduction"], indices),
+        }
         reports[f"R{replicas}"] = report
         arrays[replicas] = values
-    indices = _bootstrap_indices(len(labels), 91001)
     strong_delta = _paired_difference(
         arrays[16]["strong_state"], arrays[4]["strong_state"], indices)
     agreement_delta = _paired_difference(
