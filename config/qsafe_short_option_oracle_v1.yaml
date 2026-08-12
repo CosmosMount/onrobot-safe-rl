@@ -1,0 +1,114 @@
+protocol_schema_version: 1
+protocol_name: ppo_short_closed_loop_residual_option_oracle_v1
+status: frozen_before_state_collection
+
+scope:
+  train_safety_critic: forbidden
+  read_or_generate_protected_outcomes: forbidden
+  sac_transfer: forbidden
+  purpose: test_whether_20ms_actions_lack_safety_causal_headroom
+
+task:
+  command_vx_mps: 0.30
+  policy_frequency_hz: 50
+  pd_frequency_hz: 500
+  push_impulse_recovery_getup: forbidden
+  first_fall_terminal_reset: true
+  horizon_policy_steps: 96
+
+collectors:
+  - collector_seed: 137
+    rollout_seed: 4137
+    checkpoint: saved/qsafe_development/natural_ppo/production-30m-seed137-v1/model_19.pt
+  - collector_seed: 138
+    rollout_seed: 4138
+    checkpoint: saved/qsafe_ppo_sqrl_v1/ppo-seed138-30m/model_19.pt
+  environments: 2000
+  aggregate_environment_transitions_per_collector: 32000000
+  stochastic_policy: true
+
+roster:
+  states: 600
+  risk_stratum: boundary
+  states_per_collector: 300
+  boundary_offset_inclusive: [32, 64]
+  selection: identity_hash_only
+  max_states_per_episode: 1
+  previous_diagnostic_or_protected_episode: forbidden
+  protected_states: 0
+
+candidate_generator:
+  nominal_plus_proposals: 65
+  stochastic_proposals: 64
+  residual_directions: 5
+  action_semantic: physical_absolute_joint_target
+  projection: clip_physical_target_to_mujoco_joint_limits
+  diversity_distance: normalized_physical_rms
+  action_scale: [0.2, 0.4, 0.4, 0.2, 0.4, 0.4, 0.2, 0.4, 0.4, 0.2, 0.4, 0.4]
+  selection: deterministic_greedy_farthest_point
+  first_direction: farthest_from_nominal
+  subsequent_direction: maximize_minimum_distance_to_nominal_and_selected
+  tie_break: lower_proposal_index
+  outcome_access: forbidden
+
+options:
+  durations: [1, 4, 8]
+  candidates_per_state: 16
+  ordering: nominal_then_duration_major_direction_minor
+  residual_definition: selected_initial_physical_target_minus_initial_nominal_physical_target
+  feedback_formula: "Proj[physical_PPO_nominal(s_t+k) + beta_k * residual]"
+  beta_schedule:
+    L1: [1.0]
+    L4: [1.0, 0.75, 0.50, 0.25]
+    L8: [1.0, 0.875, 0.75, 0.625, 0.50, 0.375, 0.25, 0.125]
+  after_option: frozen_stochastic_PPO_continuation
+  recovery_getup: forbidden
+
+branching:
+  replicas: 8
+  paired_crn_across_all_candidates: true
+  independent_replicas: true
+  discovery_replicas: [1, 2, 3, 4]
+  evaluation_replicas: [5, 6, 7, 8]
+  candidates_x_replicas_x_states: 76800
+  maximum_policy_control_steps: 7372800
+
+analysis:
+  oracle_family: nominal_plus_five_directions_at_one_fixed_duration
+  oracle_discovery: minimum_R1_R4_fall_risk_lower_candidate_index_tie_break
+  oracle_evaluation: R5_R8_only
+  split_half_ordering:
+    halves: [[1, 2, 3, 4], [5, 6, 7, 8]]
+    pair_tie_score: 0.5
+    reproducible_state: at_least_one_nontie_pair_and_state_pair_agreement_gt_0_5
+  bootstrap:
+    unit: state
+    replicates: 10000
+    seed: 20260813
+    one_sided_lcb: 0.95
+    two_sided_interval: 0.95
+
+success_gate:
+  passing_long_family_requires:
+    - duration_in_L4_or_L8
+    - independent_oracle_reduction_ge_0_03
+    - independent_oracle_reduction_one_sided_95_lcb_gt_0
+    - split_half_ordering_two_sided_95_ci_low_gt_0_5
+    - rescue_states_gt_harm_states
+  clearly_better_than_L1:
+    - paired_long_minus_L1_oracle_reduction_one_sided_95_lcb_gt_0
+  flags:
+    short_option_candidate_space_supported: passing_long_family_exists
+    one_step_action_timescale_insufficient: passing_long_family_exists_and_clearly_better_than_L1
+  no_long_family_reaches_three_pp:
+    persistent_residual_option_route: stop
+    critic_training: forbidden
+
+forbidden_adaptation:
+  - duration
+  - residual_magnitude
+  - direction_selection
+  - beta_schedule
+  - threshold
+  - same_cohort_retest
+
