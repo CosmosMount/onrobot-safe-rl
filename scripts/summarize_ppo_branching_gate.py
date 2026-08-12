@@ -61,6 +61,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--branches", type=Path, required=True)
     parser.add_argument("--thresholds", type=Path, required=True)
+    parser.add_argument("--compute-matched-report", type=Path, action="append", default=[])
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists():
@@ -141,6 +142,11 @@ def main() -> None:
         and offline_metrics["ppo_5m_action_auprc"]
         > offline_metrics["ppo_5m_state_only_auprc"])
     report["offline_diagnostics"] = offline_metrics
+    compute_matched = {}
+    for path in args.compute_matched_report:
+        value = json.loads(path.read_text())
+        compute_matched[path.stem] = value["metrics"]
+    report["compute_matched_diagnostic"] = compute_matched
     report["decision"] = {
         "ppo_data_advantage_supported": ppo_advantage,
         "action_signal_learnable": action_learnable,

@@ -84,33 +84,16 @@ class NaturalSacActionBranchPlanTest(unittest.TestCase):
                 state_uncertainty=np.zeros(40), natural_fall_label=label,
                 natural_steps_to_outcome=steps, groups=30)
 
-    def test_protected_contract_accepts_only_frozen_roster_and_counts(self):
+    def test_superseded_protected_contract_fails_closed(self):
         manifest = {
             "actor_seed": 57, "source_seed": 9701,
             "actor_training_step": 10000,
             "fixed_exposure_policy_steps": 20000,
         }
-        validate_protected_source_contract(
-            manifest, groups=30, replicas=32,
-            state_risk_model_supplied=False)
-        for mutation, error in (
-            ({"source_seed": 9999}, "roster"),
-            ({"actor_training_step": 9999}, "checkpoint age"),
-            ({"fixed_exposure_policy_steps": 20001}, "exposure"),
-        ):
-            changed = manifest | mutation
-            with self.assertRaisesRegex(ValueError, error):
-                validate_protected_source_contract(
-                    changed, groups=30, replicas=32,
-                    state_risk_model_supplied=False)
-        with self.assertRaisesRegex(ValueError, "group or replica"):
-            validate_protected_source_contract(
-                manifest, groups=29, replicas=32,
-                state_risk_model_supplied=False)
-        with self.assertRaisesRegex(ValueError, "risk model"):
+        with self.assertRaisesRegex(ValueError, "protocol identity"):
             validate_protected_source_contract(
                 manifest, groups=30, replicas=32,
-                state_risk_model_supplied=True)
+                state_risk_model_supplied=False)
 
 
 if __name__ == "__main__":
