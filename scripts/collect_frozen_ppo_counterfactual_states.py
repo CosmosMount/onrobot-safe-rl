@@ -25,11 +25,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--ppo-seed", type=int, choices=(137, 138), required=True)
+    parser.add_argument("--rollout-seed", type=int)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--envs", type=int, default=2000)
     parser.add_argument("--aggregate-transitions", type=int, required=True)
     parser.add_argument("--normal-events", type=int, default=400)
     args = parser.parse_args()
+    rollout_seed = args.ppo_seed if args.rollout_seed is None else args.rollout_seed
     if args.aggregate_transitions % args.envs:
         raise ValueError("aggregate transitions must be divisible by environments")
     if args.output.exists() or not args.checkpoint.is_file():
@@ -44,14 +46,14 @@ def main() -> None:
 
     cfg = configure_target_aligned_go2(load_env_cfg("Unitree-Go2-Flat"))
     agent_cfg = load_rl_cfg("Unitree-Go2-Flat")
-    cfg.seed = args.ppo_seed
+    cfg.seed = rollout_seed
     cfg.scene.num_envs = args.envs
     validate_target_aligned_go2(cfg)
-    agent_cfg.seed = args.ppo_seed
+    agent_cfg.seed = rollout_seed
     agent_cfg.upload_model = False
     args.output.mkdir(parents=True, exist_ok=False)
     capture = MjlabNaturalFallCapture(
-        args.envs, args.output / "natural-falls", seed=args.ppo_seed,
+        args.envs, args.output / "natural-falls", seed=rollout_seed,
         export_ring_steps=97, max_normal_events=args.normal_events,
         preview_policy_steps=1,
     )
@@ -84,6 +86,8 @@ def main() -> None:
             observation, _, _, _ = wrapped.step(action)
     manifest = capture.close({
         "seed": args.ppo_seed,
+        "collector_seed": args.ppo_seed,
+        "rollout_seed": rollout_seed,
         "environments": args.envs,
         "fixed_frozen_policy_exposure": args.aggregate_transitions,
         "checkpoint": str(args.checkpoint.resolve()),
