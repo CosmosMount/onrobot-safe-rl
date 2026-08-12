@@ -18,6 +18,7 @@ import torch
 from safety_data.natural_sac_action_branches import (
     build_early_prefall_plan,
     collect_natural_action_groups,
+    validate_protected_source_contract,
     validate_natural_source_manifest,
 )
 from safety_data.action_qsafe_protocol import (
@@ -87,29 +88,14 @@ def main() -> int:
     if output.exists() or report_path.exists():
         raise FileExistsError("natural action output was already published")
     commit = _clean_commit()
-    protocol = load_action_qsafe_protocol(PROTOCOL_PATH)
+    load_action_qsafe_protocol(PROTOCOL_PATH)
     protocol_sha256 = action_qsafe_protocol_sha256(PROTOCOL_PATH)
     manifest = validate_natural_source_manifest(
         source_manifest_path, source, sha256=_sha256)
-    protected = protocol["candidate_oracle_gate"]["protected_cohort"]
     if args.role == "protected":
-        allowed = {
-            (int(item["actor_seed"]), int(item["source_seed"]))
-            for item in protected["sources"]}
-        identity = (int(manifest["actor_seed"]), int(manifest["source_seed"]))
-        if identity not in allowed:
-            raise ValueError("protected source is not in the frozen actor/source roster")
-        if int(manifest["actor_training_step"]) != int(
-                protected["actor_training"]["checkpoint_policy_steps"]):
-            raise ValueError("protected actor checkpoint age differs from protocol")
-        if int(manifest["fixed_exposure_policy_steps"]) != int(
-                protected["fixed_exposure_policy_steps_per_source"]):
-            raise ValueError("protected source exposure differs from protocol")
-        if args.groups != int(protected["groups_per_source"]) or (
-                args.replicas != int(protected["replicas_per_action"])):
-            raise ValueError("protected group or replica count differs from protocol")
-        if model is not None:
-            raise ValueError("protected admission must not use a development risk model")
+        validate_protected_source_contract(
+            manifest, groups=args.groups, replicas=args.replicas,
+            state_risk_model_supplied=model is not None)
     elif model is None:
         raise ValueError("development admission requires --state-risk-model")
     robot, train, _ = load_app_config(manifest["config_path"])

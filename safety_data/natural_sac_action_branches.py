@@ -33,11 +33,38 @@ from safety_data.collector import (
 )
 from safety_data.native import ReplicaSeedBundle, evaluate_same_state_group
 from safety_data.natural_sac_recovery import _snapshot_from_row
+from safety_data.action_qsafe_protocol import load_action_qsafe_protocol
 
 
 RISK_BAND_EDGES = (0.0, 0.25, 0.50, 0.75, 1.0)
 EARLY_PRE_FALL_MIN_STEPS = 48
 EARLY_PRE_FALL_MAX_STEPS = 96
+
+
+def validate_protected_source_contract(
+    manifest: Mapping[str, Any], *, groups: int, replicas: int,
+    state_risk_model_supplied: bool,
+) -> None:
+    """Fail closed unless one source exactly matches the frozen roster."""
+    protected = load_action_qsafe_protocol()[
+        "candidate_oracle_gate"]["protected_cohort"]
+    allowed = {
+        (int(item["actor_seed"]), int(item["source_seed"]))
+        for item in protected["sources"]}
+    identity = (int(manifest["actor_seed"]), int(manifest["source_seed"]))
+    if identity not in allowed:
+        raise ValueError("protected source is not in the frozen actor/source roster")
+    if int(manifest["actor_training_step"]) != int(
+            protected["actor_training"]["checkpoint_policy_steps"]):
+        raise ValueError("protected actor checkpoint age differs from protocol")
+    if int(manifest["fixed_exposure_policy_steps"]) != int(
+            protected["fixed_exposure_policy_steps_per_source"]):
+        raise ValueError("protected source exposure differs from protocol")
+    if int(groups) != int(protected["groups_per_source"]) or int(
+            replicas) != int(protected["replicas_per_action"]):
+        raise ValueError("protected group or replica count differs from protocol")
+    if state_risk_model_supplied:
+        raise ValueError("protected admission must not use a development risk model")
 
 
 def _u64(domain: bytes, identity: bytes, *parts: int) -> int:
