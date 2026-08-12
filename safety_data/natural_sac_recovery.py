@@ -466,3 +466,131 @@ def freeze_selector_recovery(
         stream.write(content); stream.flush(); os.fsync(stream.fileno())
     _publish_no_clobber(temporary_report, report_path)
     return report
+
+
+def build_protected_model_test_plan(
+    *, source_directory: str | Path, frozen_model: str | Path,
+    output: str | Path, target_states: int = 1200, device: str | None = None,
+) -> dict[str, Any]:
+    """Freeze a risk-enriched but outcome-blind H96-nonoverlapping test plan."""
+    source_directory = Path(source_directory).resolve()
+    frozen_model = Path(frozen_model).resolve()
+    output = Path(output).resolve()
+    report_path = output.with_suffix(".manifest.json")
+    if output.exists() or report_path.exists():
+        raise FileExistsError("protected model-test plan was already published")
+    artifact = torch.load(frozen_model, map_location="cpu", weights_only=False)
+    if artifact.get("schema_version") != "qsafe.natural_ppo_state_trigger_model.v6" or (
+            artifact.get("selector_status") != "frozen_sac_only") or (
+            artifact.get("sac_model_test_consumed") is not False):
+        raise ValueError("protected planning requires a frozen unconsumed v6 model")
+    expected = []
+    for actor_seed in (43, 44, 45, 46):
+        for checkpoint_index, training_step in enumerate((25_000, 50_000, 100_000), 1):
+            source_seed = 9500 + 10 * (actor_seed - 43) + checkpoint_index
+            expected.append((actor_seed, training_step, source_seed))
+    observations = []
+    source_records = []
+    sources: list[tuple[Path, dict[str, Any], dict[str, np.ndarray]]] = []
+    generator_commit = None
+    for actor_seed, training_step, source_seed in expected:
+        stem = f"actor{actor_seed}-age{training_step}-source{source_seed}"
+        data_path = source_directory / f"{stem}.npz"
+        manifest_path = source_directory / f"{stem}.manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        required = {
+            "output_sha256": _sha256(data_path), "actor_seed": actor_seed,
+            "actor_training_step": training_step, "source_seed": source_seed,
+            "fixed_exposure_policy_steps": 15_000,
+            "external_force": "verified_zero", "recovery_executed": False,
+            "phase2_authorized": False,
+        }
+        if any(manifest.get(name) != value for name, value in required.items()):
+            raise ValueError(f"protected source {stem} violates the frozen roster")
+        if generator_commit is None:
+            generator_commit = manifest["generator_commit"]
+        elif generator_commit != manifest["generator_commit"]:
+            raise ValueError("protected sources use different generator commits")
+        with np.load(data_path, allow_pickle=False) as loaded:
+            arrays = {name: loaded[name].copy() for name in (
+                "identity", "observation_history", "episode_id", "episode_step")}
+        observations.append(arrays["observation_history"])
+        sources.append((data_path, manifest, arrays))
+        source_records.append({
+            "file": data_path.name, "sha256": _sha256(data_path),
+            "manifest_sha256": _sha256(manifest_path), "actor_seed": actor_seed,
+            "training_step": training_step, "source_seed": source_seed,
+            "states": len(arrays["identity"]),
+        })
+    all_risk, all_std = predict_calibrated_state_risk(
+        frozen_model, np.concatenate(observations), device=device)
+    selector = artifact["selector"]
+    candidate_rows = []
+    offset = 0
+    for (_, manifest, arrays), observation in zip(sources, observations, strict=True):
+        count = len(observation)
+        risk = all_risk[offset:offset + count]
+        std = all_std[offset:offset + count]
+        offset += count
+        for episode_id in np.unique(arrays["episode_id"]):
+            episode = np.flatnonzero(arrays["episode_id"] == episode_id)
+            blocks = arrays["episode_step"][episode] // 97
+            for block in np.unique(blocks):
+                rows = episode[blocks == block]
+                row = int(rows[np.argmax(risk[rows])])
+                candidate_rows.append({
+                    "identity": arrays["identity"][row],
+                    "source_seed": int(manifest["source_seed"]),
+                    "row_index": row,
+                    "risk": float(risk[row]), "ensemble_std": float(std[row]),
+                })
+    if len(candidate_rows) < int(target_states):
+        raise RuntimeError("protected sources cannot supply 1200 nonoverlapping units")
+    # Risk enrichment is fixed before any H96 label or branch outcome is read.
+    chosen = sorted(candidate_rows, key=lambda row: (
+        -row["risk"], hashlib.sha256(bytes(row["identity"])).digest()))[:int(target_states)]
+    qsafe = np.asarray([
+        row["risk"] >= float(selector["risk_threshold"]) and
+        row["ensemble_std"] <= float(selector["ensemble_std_max"])
+        for row in chosen], dtype=bool)
+    intervention_count = int(qsafe.sum())
+    placebo_order = sorted(range(len(chosen)), key=lambda index: hashlib.sha256(
+        b"qsafe.protected_matched_placebo.v1\0" + bytes(chosen[index]["identity"])
+    ).digest())
+    placebo = np.zeros(len(chosen), dtype=bool)
+    placebo[placebo_order[:intervention_count]] = True
+    arrays_out = {
+        "identity": np.asarray([row["identity"] for row in chosen], dtype="S64"),
+        "source_seed": np.asarray([row["source_seed"] for row in chosen], dtype=np.int64),
+        "row_index": np.asarray([row["row_index"] for row in chosen], dtype=np.int64),
+        "risk": np.asarray([row["risk"] for row in chosen], dtype=np.float32),
+        "ensemble_std": np.asarray([row["ensemble_std"] for row in chosen], dtype=np.float32),
+        "qsafe_intervene": qsafe,
+        "placebo_intervene": placebo,
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.tmp-{os.getpid()}.npz")
+    np.savez_compressed(temporary, **arrays_out)
+    with temporary.open("rb") as stream: os.fsync(stream.fileno())
+    _publish_no_clobber(temporary, output)
+    report = {
+        "schema_version": "qsafe.natural_sac_protected_model_test_plan.v1",
+        "output_file": output.name, "output_sha256": _sha256(output),
+        "frozen_model_sha256": _sha256(frozen_model),
+        "source_inputs": source_records, "candidate_nonoverlap_policy_steps": 97,
+        "candidate_choice_within_block": "maximum_frozen_risk",
+        "cohort_choice": "top_frozen_risk_then_identity_hash",
+        "natural_fall_label_used": False, "branch_outcome_used": False,
+        "independent_snapshots": len(chosen),
+        "qsafe_interventions": intervention_count,
+        "placebo_interventions": int(placebo.sum()),
+        "intervention_rate": float(qsafe.mean()),
+        "selector": selector, "protected_outcomes_opened": False,
+        "objective1_claim_eligible": False, "phase2_authorized": False,
+    }
+    content = (json.dumps(report, sort_keys=True, indent=2) + "\n").encode()
+    temporary_report = report_path.with_name(f".{report_path.name}.tmp-{os.getpid()}")
+    with temporary_report.open("xb") as stream:
+        stream.write(content); stream.flush(); os.fsync(stream.fileno())
+    _publish_no_clobber(temporary_report, report_path)
+    return report

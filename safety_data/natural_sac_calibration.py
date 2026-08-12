@@ -214,7 +214,10 @@ def predict_calibrated_state_risk(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return frozen SAC-calibrated ensemble mean and standard deviation."""
     artifact = torch.load(Path(model_path), map_location="cpu", weights_only=False)
-    if artifact.get("schema_version") != "qsafe.natural_ppo_state_trigger_model.v5" or (
+    if artifact.get("schema_version") not in {
+            "qsafe.natural_ppo_state_trigger_model.v5",
+            "qsafe.natural_ppo_state_trigger_model.v6",
+    } or (
             artifact.get("temperature_status") != "frozen_sac_only") or (
             artifact.get("uncertainty_status") != "frozen_sac_only"):
         raise ValueError("state-risk inference requires the frozen v5 SAC calibration")
