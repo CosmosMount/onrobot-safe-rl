@@ -20,6 +20,7 @@ from safety_data.natural_sac_calibration import (
     predict_calibrated_state_risk,
 )
 from safety_data.policies import load_frozen_droq_policy
+from safety_data.natural_ppo_recovery_policy import NaturalPpoRecoveryPolicy
 from safety_data.recovery_behaviors import (
     RECOVERY_BEHAVIOR_STEPS,
     RecoveryBehaviorLibrary,
@@ -138,6 +139,46 @@ class MatureShortRecoveryView:
         }
 
 
+class PpoShortRecoveryView:
+    """Run the frozen 30M natural-PPO mean for a short persistent response."""
+
+    def __init__(self, policy: NaturalPpoRecoveryPolicy, env: MujocoSnapshotEnv) -> None:
+        self._policy = policy
+        self._env = env
+        self._previous = policy.initial_previous_action(env)
+
+    @property
+    def behavior_steps(self) -> np.ndarray:
+        return np.asarray([0] + list(MATURE_SHORT_DURATIONS), dtype=np.int64)
+
+    def capture_branch_state(self) -> np.ndarray:
+        return self._previous.copy()
+
+    def restore_branch_state(self, state: np.ndarray) -> None:
+        value = np.asarray(state, dtype=np.float32)
+        if value.shape != (12,):
+            raise ValueError("PPO recovery branch state must be 12D")
+        self._previous = value.copy()
+
+    def __call__(self, candidate_index: int, observation_history: np.ndarray,
+                 step: int, nominal_action: np.ndarray) -> np.ndarray:
+        del observation_history, step, nominal_action
+        action = self._policy.action(self._env, self._previous)
+        self._previous = action.copy()
+        return action
+
+    def preview(self, observation_history: np.ndarray,
+                nominal_action: np.ndarray) -> np.ndarray:
+        del observation_history
+        action = self._policy.action(self._env, self._previous)
+        return np.stack([nominal_action] + [action] * 5).astype(np.float32)
+
+    def manifest(self) -> dict[str, Any]:
+        return self._policy.manifest() | {
+            "ppo_policy_durations": list(MATURE_SHORT_DURATIONS),
+        }
+
+
 def build_selector_branch_plan(
     *, calibration_root: str | Path, calibrated_model: str | Path,
     output: str | Path, samples_per_band: int = 300, device: str | None = None,
@@ -253,6 +294,7 @@ def evaluate_selector_recovery_source(
     branch_plan: str | Path, mature_checkpoint: str | Path,
     output: str | Path,
     candidate_set: str = "fixed_nonpolicy",
+    ppo_checkpoint: str | Path | None = None,
 ) -> dict[str, Any]:
     """Evaluate nominal plus five fixed nonpolicy responses with H96 CRN."""
     source_data = Path(source_data).resolve()
@@ -299,6 +341,12 @@ def evaluate_selector_recovery_source(
     elif candidate_set == "mature_short_development":
         recovery = MatureShortRecoveryView(full_library)
         original_indices = [0, 101, 102, 103, 105, 110]
+    elif candidate_set == "ppo_short_development":
+        if ppo_checkpoint is None:
+            raise ValueError("ppo_short_development requires ppo_checkpoint")
+        recovery = PpoShortRecoveryView(
+            NaturalPpoRecoveryPolicy(ppo_checkpoint), env)
+        original_indices = [0, 201, 202, 203, 205, 210]
     else:
         raise ValueError("unknown recovery candidate_set")
     falls = np.empty((len(plan["identity"]), len(original_indices)), dtype=bool)
@@ -316,7 +364,8 @@ def evaluate_selector_recovery_source(
             candidates = (
                 recovery.preview(history, nominal)
                 if isinstance(recovery, (FixedNonpolicyRecoveryView,
-                                         MatureShortRecoveryView))
+                                         MatureShortRecoveryView,
+                                         PpoShortRecoveryView))
                 else recovery.preview_candidates(history, nominal)
             )
             seed = int.from_bytes(hashlib.sha256(
@@ -356,7 +405,8 @@ def evaluate_selector_recovery_source(
         "candidate_set": candidate_set,
         "fixed_recovery": (
             recovery.manifest() if isinstance(
-                recovery, (FixedNonpolicyRecoveryView, MatureShortRecoveryView))
+                recovery, (FixedNonpolicyRecoveryView, MatureShortRecoveryView,
+                           PpoShortRecoveryView))
             else {
                 "full_library_fingerprint_sha256": recovery.fingerprint(),
                 "original_k9_indices": list(range(9)),
