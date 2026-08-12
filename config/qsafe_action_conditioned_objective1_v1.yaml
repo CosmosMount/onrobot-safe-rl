@@ -1,6 +1,6 @@
 protocol_schema_version: 1
 protocol_name: objective1_action_conditioned_qsafe_v1
-protocol_revision: 3
+protocol_revision: 4
 status: active
 supersedes:
   - objective1_state_only_fixed_recovery
@@ -73,10 +73,19 @@ candidate_oracle_gate:
     - actor_seed_effects
     - source_seed_effects
     - confidence_interval
+    - discovery_to_audit_stability_diagnostic
+    - same_crn_realization_oracle_diagnostic
   pass_requires:
     unseen_sac_actor_and_source: true
+    minimum_actor_seeds: 2
+    minimum_source_seeds: 4
+    minimum_state_groups: 120
+    minimum_replicas_per_action: 32
     oracle_reduction_direction: positive
     oracle_reduction_lcb: greater_than_zero
+  oracle_definition: per_state_minimum_all_replica_empirical_H96_fall_risk
+  oracle_is_deployable_selector: false
+  same_crn_per_realization_oracle_is_formal_gate: false
   on_fail: revise_candidate_space_without_training_selector
 
 action_qsafe_training:

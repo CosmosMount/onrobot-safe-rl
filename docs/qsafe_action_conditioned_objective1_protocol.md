@@ -54,10 +54,16 @@ PPO 单轨迹只能说明实际执行动作对应的结果。它不能为未执�
 3. 同状态 branch SAC nominal、局部 SAC 动作、对称局部扰动、状态相关支撑
    与 capture-step 动作；必要的短 option 只能作为显式候选，不能是 get-up。
 4. 全部候选共享配对的 SAC continuation 随机性，评估 H96 fall。
-5. 报告 nominal、逐候选和 oracle-best fall 率，以及按 actor/source 分层的
-   reduction 和置信区间。
-6. 只有在未见 SAC actor/source 上 oracle reduction 的下置信界大于零，才
-   允许训练 `Q_safe(s,a)`。失败时只能修改候选空间，不能调 selector 阈值。
+5. 事后 oracle 对每个状态查看全部候选的全部 branch outcome，选择经验
+   H96 fall 率最低的具体动作；报告 nominal、逐候选、oracle-best fall 率，
+   以及按 actor/source 分层的 reduction 和置信区间。它只表示候选空间的
+   上界，不是可部署 selector。另行报告 discovery 选动作、audit 测风险的
+   稳定性，以及“预知未来随机性”的 same-CRN realization oracle；后者只作
+   诊断，不能用于正式门控。
+6. protected oracle 至少包含 2 个未见 SAC actor、4 个未见 source、120 个
+   state group，且每动作至少 32 个 replica。只有 oracle reduction 的下置信
+   界大于零且每个 actor 方向为正，才允许训练 `Q_safe(s,a)`。失败时只能修改
+   候选空间，不能调 selector 阈值。
 
 ## 5. 模型训练和验证
 

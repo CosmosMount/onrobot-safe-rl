@@ -30,7 +30,7 @@ def load_action_qsafe_protocol(path: str | Path = PROTOCOL_PATH) -> dict[str, An
     get_up = protocol.get("post_fall_get_up", {})
     runtime = protocol.get("runtime_filter", {})
     checks = {
-        "revision": protocol.get("protocol_revision") == 3,
+        "revision": protocol.get("protocol_revision") == 4,
         "target_speed": target.get("command_vx_mps") == 0.30,
         "target_horizon": target.get("horizon_policy_steps") == 96,
         "target_observation": target.get("observation") == {
@@ -39,6 +39,19 @@ def load_action_qsafe_protocol(path: str | Path = PROTOCOL_PATH) -> dict[str, An
         "oracle_horizon": oracle.get("horizon_policy_steps") == 96,
         "oracle_no_force": oracle.get("external_force") == "forbidden",
         "oracle_crn": oracle.get("same_state_common_random_numbers") == "required",
+        "oracle_definition": oracle.get("oracle_definition") == (
+            "per_state_minimum_all_replica_empirical_H96_fall_risk"),
+        "oracle_not_selector": oracle.get(
+            "oracle_is_deployable_selector") is False,
+        "oracle_minimum_structure": oracle.get("pass_requires", {}).get(
+            "minimum_actor_seeds") == 2 and oracle.get(
+                "pass_requires", {}).get("minimum_source_seeds") == 4 and (
+                    oracle.get("pass_requires", {}).get(
+                        "minimum_state_groups") == 120) and oracle.get(
+                            "pass_requires", {}).get(
+                                "minimum_replicas_per_action") == 32,
+        "future_randomness_not_gate": oracle.get(
+            "same_crn_per_realization_oracle_is_formal_gate") is False,
         "oracle_no_long_recovery": oracle.get("candidates", {}).get(
             "fixed_long_recovery") == "forbidden",
         "oracle_no_get_up": oracle.get("candidates", {}).get(

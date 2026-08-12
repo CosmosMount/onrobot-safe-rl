@@ -1,4 +1,4 @@
-"""Discovery/audit oracle analysis for action-conditioned candidate spaces."""
+"""Post-hoc oracle and stability analysis for action-conditioned candidates."""
 
 from __future__ import annotations
 
@@ -36,6 +36,45 @@ def _selected_candidate(
     return selected
 
 
+def _posthoc_state_oracle(
+    fall: np.ndarray, candidate_mask: np.ndarray,
+    candidate_requested: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return the empirical best action for each state using every replica.
+
+    This is the literal candidate-space oracle: it may inspect all branch
+    outcomes, but is reported only as an upper bound and is never a deployable
+    selector or a source of train/test splits. Exact empirical ties prefer the
+    action with the smallest RMS deviation from nominal.
+    """
+    risk = fall.mean(axis=2)
+    risk = np.where(candidate_mask, risk, np.inf)
+    deviation = np.sqrt(np.mean(np.square(
+        candidate_requested - candidate_requested[:, :1]), axis=2))
+    selected = np.empty(len(fall), dtype=np.int64)
+    for group in range(len(fall)):
+        best = np.min(risk[group])
+        tied = np.flatnonzero(risk[group] == best)
+        selected[group] = int(tied[np.argmin(deviation[group, tied])])
+    rows = np.arange(len(fall))
+    nominal = fall[:, 0].mean(axis=1)
+    oracle = fall[rows, selected].mean(axis=1)
+    return selected, nominal, oracle
+
+
+def _same_crn_outcome_oracle(
+    fall: np.ndarray, candidate_mask: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return nominal and unattainable per-realization best-action outcomes.
+
+    This diagnostic answers whether *some* candidate survives each paired
+    continuation realization. It is intentionally not used by the formal gate
+    because runtime cannot know the future continuation randomness.
+    """
+    eligible = np.where(candidate_mask[:, :, None], fall, True)
+    return fall[:, 0].mean(axis=1), eligible.min(axis=1).mean(axis=1)
+
+
 def _bootstrap_lcb(
     reduction: np.ndarray, actor_seed: np.ndarray, source_seed: np.ndarray,
     *, replicates: int, seed: int,
@@ -64,7 +103,7 @@ def analyze_action_oracle(
     paths: Sequence[str | Path], *, role: str = "development",
     bootstrap_replicates: int = 10_000, bootstrap_seed: int = 20260812,
 ) -> dict[str, Any]:
-    """Report candidate and discovery-selected audit risk without fitting a model."""
+    """Report candidate-space headroom before fitting Q_safe(s,a)."""
     if role not in {"development", "protected"}:
         raise ValueError("role must be development or protected")
     if isinstance(bootstrap_replicates, bool) or bootstrap_replicates < 1000:
@@ -115,11 +154,18 @@ def analyze_action_oracle(
     actor_seed = combined["policy_training_seed"].astype(np.int64)
     source_seed = combined["source_seed"].astype(np.int64)
     audit = slice(replicas // 2, replicas)
-    selected = _selected_candidate(fall, mask, requested)
+    discovery_selected = _selected_candidate(fall, mask, requested)
     rows = np.arange(len(fall))
-    nominal = fall[:, 0, audit].mean(axis=1)
-    oracle = fall[rows, selected, audit].mean(axis=1)
-    reduction = nominal - oracle
+    discovery_audit_nominal = fall[:, 0, audit].mean(axis=1)
+    discovery_audit_selected = fall[
+        rows, discovery_selected, audit].mean(axis=1)
+    discovery_audit_reduction = (
+        discovery_audit_nominal - discovery_audit_selected)
+    posthoc_selected, posthoc_nominal, posthoc_oracle = _posthoc_state_oracle(
+        fall, mask, requested)
+    posthoc_reduction = posthoc_nominal - posthoc_oracle
+    crn_nominal, crn_oracle = _same_crn_outcome_oracle(fall, mask)
+    crn_reduction = crn_nominal - crn_oracle
     candidate_rates = []
     for index, kind in enumerate(reference_kinds):
         valid = mask[:, index]
@@ -131,16 +177,17 @@ def analyze_action_oracle(
                 float(fall[valid, index, audit].mean()) if np.any(valid) else None),
         })
     actor_effects = {
-        str(int(actor)): float(reduction[actor_seed == actor].mean())
+        str(int(actor)): float(posthoc_reduction[actor_seed == actor].mean())
         for actor in np.unique(actor_seed)}
     source_effects = {
-        str(int(source)): float(reduction[source_seed == source].mean())
+        str(int(source)): float(posthoc_reduction[source_seed == source].mean())
         for source in np.unique(source_seed)}
     lcb = _bootstrap_lcb(
-        reduction, actor_seed, source_seed,
+        posthoc_reduction, actor_seed, source_seed,
         replicates=int(bootstrap_replicates), seed=int(bootstrap_seed))
     protected_structure = (
-        len(actor_effects) >= 2 and len(source_effects) >= 4 and replicas >= 8)
+        len(fall) >= 120 and len(actor_effects) >= 2
+        and len(source_effects) >= 4 and replicas >= 32)
     cross_actor_positive = all(value > 0.0 for value in actor_effects.values())
     source_positive_fraction = float(np.mean([
         value > 0.0 for value in source_effects.values()]))
@@ -148,7 +195,7 @@ def analyze_action_oracle(
         role == "protected" and protected_structure and lcb > 0.0
         and cross_actor_positive and source_positive_fraction >= 0.75)
     return {
-        "schema_version": "qsafe.action_candidate_oracle_report.v1",
+        "schema_version": "qsafe.action_candidate_oracle_report.v2",
         "role": role,
         "objective1_protocol_sha256": protocol_sha,
         "groups": len(fall),
@@ -156,16 +203,40 @@ def analyze_action_oracle(
         "replicas": replicas,
         "discovery_replicas": replicas // 2,
         "audit_replicas": replicas // 2,
-        "selection": (
-            "minimum_discovery_fall_risk_then_minimum_nominal_RMS_deviation"),
-        "nominal_audit_fall_rate": float(nominal.mean()),
-        "oracle_best_audit_fall_rate": float(oracle.mean()),
-        "oracle_absolute_reduction": float(reduction.mean()),
-        "oracle_reduction_one_sided_95_lcb": lcb,
+        "posthoc_state_action_oracle": {
+            "definition": (
+                "per_state_minimum_all_replica_empirical_H96_fall_risk_"
+                "then_minimum_nominal_RMS_deviation"),
+            "role": "candidate_space_upper_bound_not_deployable_selector",
+            "nominal_fall_rate": float(posthoc_nominal.mean()),
+            "oracle_best_fall_rate": float(posthoc_oracle.mean()),
+            "absolute_reduction": float(posthoc_reduction.mean()),
+            "reduction_one_sided_95_lcb": lcb,
+            "selected_candidate_counts": {
+                reference_kinds[index]: int(np.sum(posthoc_selected == index))
+                for index in np.unique(posthoc_selected)},
+        },
+        "discovery_to_audit_stability": {
+            "definition": (
+                "minimum_discovery_fall_risk_then_minimum_nominal_RMS_"
+                "deviation_evaluated_on_held_out_audit_replicas"),
+            "nominal_audit_fall_rate": float(discovery_audit_nominal.mean()),
+            "selected_audit_fall_rate": float(
+                discovery_audit_selected.mean()),
+            "absolute_reduction": float(discovery_audit_reduction.mean()),
+            "selected_candidate_counts": {
+                reference_kinds[index]: int(np.sum(
+                    discovery_selected == index))
+                for index in np.unique(discovery_selected)},
+        },
+        "same_crn_realization_oracle_diagnostic": {
+            "definition": "per_state_replica_any_candidate_survives_H96",
+            "role": "unattainable_diagnostic_not_formal_gate",
+            "nominal_fall_rate": float(crn_nominal.mean()),
+            "oracle_best_fall_rate": float(crn_oracle.mean()),
+            "absolute_reduction": float(crn_reduction.mean()),
+        },
         "candidate_audit_fall_rates": candidate_rates,
-        "oracle_selected_candidate_counts": {
-            reference_kinds[index]: int(np.sum(selected == index))
-            for index in np.unique(selected)},
         "actor_seed_effects": actor_effects,
         "source_seed_effects": source_effects,
         "source_positive_fraction": source_positive_fraction,
@@ -187,5 +258,6 @@ def analyze_action_oracle(
             "replicates": int(bootstrap_replicates),
             "seed": int(bootstrap_seed),
             "confidence": "one_sided_0.95",
+            "estimand": "posthoc_state_action_oracle_absolute_reduction",
         },
     }
