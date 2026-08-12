@@ -240,6 +240,53 @@ def predict_calibrated_state_risk(
     return members.mean(axis=0), members.std(axis=0)
 
 
+class CalibratedStateRiskPredictor:
+    """Cached inference surface for repeated closed-loop Q_safe decisions."""
+
+    def __init__(self, model_path: str | Path, *, device: str = "cpu") -> None:
+        self.path = Path(model_path).resolve()
+        self.artifact = torch.load(self.path, map_location="cpu", weights_only=False)
+        if self.artifact.get("schema_version") not in {
+                "qsafe.natural_ppo_state_trigger_model.v5",
+                "qsafe.natural_ppo_state_trigger_model.v6",
+                "qsafe.natural_ppo_state_trigger_model.v7",
+        }:
+            raise ValueError("cached predictor requires a SAC-calibrated model")
+        self.device = torch.device(device)
+        pending = dict(self.artifact)
+        pending["schema_version"] = "qsafe.natural_ppo_state_trigger_model.v3"
+        pending["temperature_status"] = "pending_sac_only_calibration"
+        self.models = _load_models(pending, self.device)
+        self.mean = np.asarray(
+            self.artifact["normalization"]["observation_mean"], dtype=np.float32)
+        self.std = np.asarray(
+            self.artifact["normalization"]["observation_std"], dtype=np.float32)
+        self.temperatures = torch.as_tensor(
+            self.artifact["state_temperatures"], dtype=torch.float32,
+            device=self.device).reshape(5, 1)
+        self.biases = torch.as_tensor(
+            self.artifact["state_biases"], dtype=torch.float32,
+            device=self.device).reshape(5, 1)
+
+    def __call__(self, observation_history: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        observation = np.asarray(observation_history, dtype=np.float32)
+        if observation.ndim == 2:
+            observation = observation[None]
+        if observation.ndim != 3 or observation.shape[1:] != (5, 46):
+            raise ValueError("cached Q_safe input must have shape [B,5,46]")
+        normalized = torch.from_numpy((observation - self.mean) / self.std).to(
+            self.device)
+        logits = []
+        with torch.inference_mode():
+            for model in self.models:
+                state = model.encode_state(normalized)
+                logits.append(model.state_risk_head(state).reshape(-1))
+            members = torch.sigmoid(
+                torch.stack(logits) / self.temperatures + self.biases)
+        return (members.mean(0).cpu().numpy(),
+                members.std(0, unbiased=False).cpu().numpy())
+
+
 def fit_member_affine_calibration(
     logits: np.ndarray, label: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
