@@ -202,6 +202,7 @@ def collect_natural_action_groups(
     plan: NaturalActionBranchPlan, env: Any, policy: Any,
     sample_action: Callable[[np.ndarray, np.random.Generator], np.ndarray],
     generator_commit: str, replicas: int = 4, horizon_steps: int = 96,
+    protocol_sha256: str,
     candidate_config: EvidenceCandidateConfig | None = None,
     progress: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> Any:
@@ -211,6 +212,9 @@ def collect_natural_action_groups(
         raise ValueError("replicas must be a positive integer")
     if int(horizon_steps) != 96:
         raise ValueError("Objective 1 natural action labels require H96")
+    if not isinstance(protocol_sha256, str) or len(protocol_sha256) != 64 or any(
+            value not in "0123456789abcdef" for value in protocol_sha256):
+        raise ValueError("protocol_sha256 must be a lowercase SHA-256")
     if source_manifest.get("external_force") != "verified_zero" or (
             source_manifest.get("recovery_executed") is not False):
         raise ValueError("source must be unforced natural SAC without recovery")
@@ -245,6 +249,8 @@ def collect_natural_action_groups(
         action_application_contract=_action_application_contract(env),
         collection_protocol={
             "version": "qsafe.natural_sac_action_branches.v1",
+            "objective1_protocol": "objective1_action_conditioned_qsafe_v1",
+            "objective1_protocol_sha256": protocol_sha256,
             "selection_timing": "before_candidate_outcomes",
             "selection_inputs": ["snapshot_identity", "calibrated_state_risk"],
             "state_uncertainty_input": "calibrated_ensemble_uncertainty",

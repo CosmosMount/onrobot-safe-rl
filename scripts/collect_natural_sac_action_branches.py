@@ -20,6 +20,11 @@ from safety_data.natural_sac_action_branches import (
     collect_natural_action_groups,
     validate_natural_source_manifest,
 )
+from safety_data.action_qsafe_protocol import (
+    PROTOCOL_PATH,
+    action_qsafe_protocol_sha256,
+    load_action_qsafe_protocol,
+)
 from safety_data.natural_sac_calibration import CalibratedStateRiskPredictor
 from safety_data.policies import load_frozen_droq_policy
 from safety_data.schema import GroupedBranchDataset
@@ -79,6 +84,8 @@ def main() -> int:
     if output.exists() or report_path.exists():
         raise FileExistsError("natural action output was already published")
     commit = _clean_commit()
+    load_action_qsafe_protocol(PROTOCOL_PATH)
+    protocol_sha256 = action_qsafe_protocol_sha256(PROTOCOL_PATH)
     manifest = validate_natural_source_manifest(
         source_manifest_path, source, sha256=_sha256)
     robot, train, _ = load_app_config(manifest["config_path"])
@@ -112,6 +119,7 @@ def main() -> int:
                 arrays=arrays, source_manifest=manifest, plan=plan,
                 env=env, policy=policy, sample_action=sample,
                 generator_commit=commit, replicas=args.replicas,
+                protocol_sha256=protocol_sha256,
                 progress=progress)
     elapsed = time.monotonic() - started
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -127,6 +135,8 @@ def main() -> int:
         "schema_version": "qsafe.natural_sac_action_branch_report.v1",
         "generator_commit": commit,
         "generator_worktree_clean": True,
+        "objective1_protocol": str(PROTOCOL_PATH),
+        "objective1_protocol_sha256": protocol_sha256,
         "source_data": str(source),
         "source_data_sha256": _sha256(source),
         "source_seed": int(manifest["source_seed"]),
