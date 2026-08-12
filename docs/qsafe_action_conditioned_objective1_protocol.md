@@ -46,8 +46,10 @@ PPO 单轨迹只能说明实际执行动作对应的结果。它不能为未执�
 
 在训练 action critic 前必须通过 oracle gate：
 
-1. 用 state-only proposal 在不知道 branching outcome 的前提下选择 early
-   near-fall 状态。
+1. 从自然 SAC/PPO 轨迹中选择距第一次 terminal fall 还有 8–64 个 policy
+   step 的 early pre-fall 状态；state-only risk 只用于 proposal/分层。自然
+   轨迹标签只能决定状态 admission，不能给任何未执行动作打标签。admission
+   全程不知道 candidate branching outcome。
 2. 恢复完整 native MuJoCo snapshot，不 settle，不施加扰动。
 3. 同状态 branch SAC nominal、局部 SAC 动作、对称局部扰动、状态相关支撑
    与 capture-step 动作；必要的短 option 只能作为显式候选，不能是 get-up。

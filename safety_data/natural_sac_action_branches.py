@@ -36,9 +36,8 @@ from safety_data.natural_sac_recovery import _snapshot_from_row
 
 
 RISK_BAND_EDGES = (0.0, 0.25, 0.50, 0.75, 1.0)
-EARLY_NEAR_FALL_RISK_MIN = 0.08
-EARLY_NEAR_FALL_RISK_MAX = 0.60
-EARLY_NEAR_FALL_UNCERTAINTY_MAX = 0.20
+EARLY_PRE_FALL_MIN_STEPS = 8
+EARLY_PRE_FALL_MAX_STEPS = 64
 
 
 def _u64(domain: bytes, identity: bytes, *parts: int) -> int:
@@ -54,6 +53,7 @@ class NaturalActionBranchPlan:
     identity: np.ndarray
     state_risk: np.ndarray
     state_uncertainty: np.ndarray
+    natural_steps_to_fall: np.ndarray
     risk_band: np.ndarray
     acceptance_probability: np.ndarray
 
@@ -65,6 +65,8 @@ class NaturalActionBranchPlan:
             "state_risk": np.asarray(self.state_risk, dtype=np.float32),
             "state_uncertainty": np.asarray(
                 self.state_uncertainty, dtype=np.float32),
+            "natural_steps_to_fall": np.asarray(
+                self.natural_steps_to_fall, dtype=np.int16),
             "risk_band": np.asarray(self.risk_band, dtype=np.int8),
             "acceptance_probability": np.asarray(
                 self.acceptance_probability, dtype=np.float64),
@@ -81,6 +83,9 @@ class NaturalActionBranchPlan:
         if not np.all(np.isfinite(values["state_uncertainty"])) or np.any(
                 values["state_uncertainty"] < 0.0):
             raise ValueError("state uncertainty must be finite and nonnegative")
+        if np.any(values["natural_steps_to_fall"] < EARLY_PRE_FALL_MIN_STEPS) or (
+                np.any(values["natural_steps_to_fall"] > EARLY_PRE_FALL_MAX_STEPS)):
+            raise ValueError("natural steps to fall must lie in the early pre-fall window")
         if np.any(values["risk_band"] < 0) or np.any(values["risk_band"] > 3):
             raise ValueError("risk band must lie in [0,3]")
         if not np.all(np.isfinite(values["acceptance_probability"])) or np.any(
@@ -92,27 +97,30 @@ class NaturalActionBranchPlan:
             object.__setattr__(self, name, value)
 
 
-def build_risk_stratified_plan(
+def build_early_prefall_plan(
     *, identities: np.ndarray, state_risk: np.ndarray,
-    state_uncertainty: np.ndarray | None = None, groups: int,
+    state_uncertainty: np.ndarray, natural_fall_label: np.ndarray,
+    natural_steps_to_outcome: np.ndarray, groups: int,
 ) -> NaturalActionBranchPlan:
     """Select deterministic early near-fall states before any branching.
 
-    The absolute risk window rejects both ordinary low-risk walking and the
-    most advanced, likely already unrecoverable states.  This admission rule
-    reads neither the natural future label nor candidate branch outcomes.
+    Natural fall timing identifies states that are neither ordinary walking nor
+    already terminal. It is used only for source-state admission. Every action
+    label still comes from the subsequent same-state candidate branches.
     """
     identities = np.asarray(identities, dtype="S64")
     risk = np.asarray(state_risk, dtype=np.float64)
-    uncertainty = (
-        np.zeros_like(risk)
-        if state_uncertainty is None
-        else np.asarray(state_uncertainty, dtype=np.float64))
+    uncertainty = np.asarray(state_uncertainty, dtype=np.float64)
+    natural_label = np.asarray(natural_fall_label, dtype=bool)
+    steps = np.asarray(natural_steps_to_outcome)
     if identities.ndim != 1 or risk.shape != identities.shape:
         raise ValueError("identities and state_risk must be aligned vectors")
     if uncertainty.shape != risk.shape or not np.all(np.isfinite(uncertainty)) or (
             np.any(uncertainty < 0.0)):
         raise ValueError("state_uncertainty must align and be nonnegative")
+    if natural_label.shape != risk.shape or steps.shape != risk.shape or (
+            steps.dtype.kind not in "iu"):
+        raise ValueError("natural fall labels and outcome steps must align")
     if isinstance(groups, bool) or not isinstance(groups, (int, np.integer)) or (
             not 1 <= int(groups) <= len(risk)):
         raise ValueError("groups must be a positive count no larger than the source")
@@ -122,10 +130,9 @@ def build_risk_stratified_plan(
         raise ValueError("state_risk must contain finite probabilities")
 
     eligible = (
-        (risk >= EARLY_NEAR_FALL_RISK_MIN)
-        & (risk <= EARLY_NEAR_FALL_RISK_MAX)
-        & (uncertainty <= EARLY_NEAR_FALL_UNCERTAINTY_MAX)
-    )
+        natural_label
+        & (steps >= EARLY_PRE_FALL_MIN_STEPS)
+        & (steps <= EARLY_PRE_FALL_MAX_STEPS))
     eligible_rows = np.flatnonzero(eligible)
     if len(eligible_rows) < int(groups):
         raise ValueError(
@@ -182,6 +189,7 @@ def build_risk_stratified_plan(
         identity=identities[rows],
         state_risk=risk[rows].astype(np.float32),
         state_uncertainty=uncertainty[rows].astype(np.float32),
+        natural_steps_to_fall=steps[rows].astype(np.int16),
         risk_band=bands,
         acceptance_probability=probabilities,
     )
@@ -252,16 +260,18 @@ def collect_natural_action_groups(
             "objective1_protocol": "objective1_action_conditioned_qsafe_v1",
             "objective1_protocol_sha256": protocol_sha256,
             "selection_timing": "before_candidate_outcomes",
-            "selection_inputs": ["snapshot_identity", "calibrated_state_risk"],
+            "selection_inputs": [
+                "snapshot_identity", "natural_trajectory_fall_label",
+                "natural_steps_to_outcome", "calibrated_state_risk"],
             "state_uncertainty_input": "calibrated_ensemble_uncertainty",
-            "early_near_fall_risk_interval_inclusive": [
-                EARLY_NEAR_FALL_RISK_MIN, EARLY_NEAR_FALL_RISK_MAX],
-            "early_near_fall_uncertainty_max_inclusive": (
-                EARLY_NEAR_FALL_UNCERTAINTY_MAX),
+            "early_prefall_steps_interval_inclusive": [
+                EARLY_PRE_FALL_MIN_STEPS, EARLY_PRE_FALL_MAX_STEPS],
             "purpose": "candidate_space_oracle_gate_before_model_training",
             "model_training_authorized": False,
             "branch_outcome_used_for_selection": False,
-            "natural_fall_label_used_for_selection": False,
+            "natural_fall_label_used_for_selection": True,
+            "natural_fall_label_role": "state_admission_only",
+            "natural_fall_label_used_as_candidate_action_label": False,
             "external_force": "verified_zero",
             "impulse": "forbidden",
             "settle_after_restore": False,

@@ -16,7 +16,7 @@ import numpy as np
 import torch
 
 from safety_data.natural_sac_action_branches import (
-    build_risk_stratified_plan,
+    build_early_prefall_plan,
     collect_natural_action_groups,
     validate_natural_source_manifest,
 )
@@ -104,9 +104,11 @@ def main() -> int:
     started = time.monotonic()
     with np.load(source, allow_pickle=False) as arrays:
         risk, uncertainty = predictor(arrays["observation_history"])
-        plan = build_risk_stratified_plan(
+        plan = build_early_prefall_plan(
             identities=arrays["identity"], state_risk=risk,
             state_uncertainty=uncertainty,
+            natural_fall_label=arrays["label"],
+            natural_steps_to_outcome=arrays["steps_to_outcome"],
             groups=args.groups)
 
         def progress(value):

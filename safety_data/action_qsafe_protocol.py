@@ -30,6 +30,7 @@ def load_action_qsafe_protocol(path: str | Path = PROTOCOL_PATH) -> dict[str, An
     get_up = protocol.get("post_fall_get_up", {})
     runtime = protocol.get("runtime_filter", {})
     checks = {
+        "revision": protocol.get("protocol_revision") == 2,
         "target_speed": target.get("command_vx_mps") == 0.30,
         "target_horizon": target.get("horizon_policy_steps") == 96,
         "target_observation": target.get("observation") == {
@@ -42,6 +43,14 @@ def load_action_qsafe_protocol(path: str | Path = PROTOCOL_PATH) -> dict[str, An
             "fixed_long_recovery") == "forbidden",
         "oracle_no_get_up": oracle.get("candidates", {}).get(
             "post_fall_get_up") == "forbidden",
+        "early_prefall_admission": oracle.get("admission") == {
+            "natural_trajectory_fall_label_required": True,
+            "minimum_steps_before_fall_inclusive": 8,
+            "maximum_steps_before_fall_inclusive": 64,
+            "natural_label_role": "state_admission_only",
+            "unexecuted_candidate_label_from_natural_trajectory": "forbidden",
+            "candidate_outcome_used_for_admission": False,
+        },
         "train_after_oracle": training.get(
             "authorized_only_after_oracle_gate_pass") is True,
         "group_split": training.get("split_unit") == "source_state_group",
