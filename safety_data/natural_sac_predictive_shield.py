@@ -138,7 +138,7 @@ def rollout_predictive_shield(
 def evaluate_predictive_plan_source(
     *, source_data: str | Path, source_manifest: str | Path,
     plan_path: str | Path, model_path: str | Path, output: str | Path,
-    limit: int | None = None,
+    limit: int | None = None, device: str = "cpu",
 ) -> dict[str, Any]:
     """Evaluate three paired arms for one protected/development source."""
     import json
@@ -170,7 +170,9 @@ def evaluate_predictive_plan_source(
     env = MujocoSnapshotEnv(
         manifest["model_path"], robot, policy_frequency=train.control_frequency,
         max_joint_delta=train.max_joint_delta, use_action_filter=False)
-    predictor = CalibratedStateRiskPredictor(model_path, device="cpu")
+    import torch
+    torch.set_num_threads(1)
+    predictor = CalibratedStateRiskPredictor(model_path, device=device)
     arms = ("nominal", "shield", "placebo")
     fall = np.empty((len(plan["identity"]), 3), dtype=bool)
     first_failure = np.empty((len(plan["identity"]), 3), dtype=np.int16)
