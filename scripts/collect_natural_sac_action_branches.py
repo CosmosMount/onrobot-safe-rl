@@ -96,9 +96,10 @@ def main() -> int:
     predictor = CalibratedStateRiskPredictor(model, device=args.device)
     started = time.monotonic()
     with np.load(source, allow_pickle=False) as arrays:
-        risk, _ = predictor(arrays["observation_history"])
+        risk, uncertainty = predictor(arrays["observation_history"])
         plan = build_risk_stratified_plan(
             identities=arrays["identity"], state_risk=risk,
+            state_uncertainty=uncertainty,
             groups=args.groups)
 
         def progress(value):

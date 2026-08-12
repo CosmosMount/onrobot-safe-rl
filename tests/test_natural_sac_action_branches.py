@@ -35,7 +35,7 @@ class NaturalSacActionBranchPlanTest(unittest.TestCase):
         self.assertIsInstance(plan, NaturalActionBranchPlan)
         self.assertEqual(
             set(plan.__dataclass_fields__),
-            {"row_index", "identity", "state_risk", "risk_band",
+            {"row_index", "identity", "state_risk", "state_uncertainty", "risk_band",
              "acceptance_probability"})
 
     def test_tied_scores_reallocate_empty_quantile_bands(self):
@@ -45,6 +45,19 @@ class NaturalSacActionBranchPlanTest(unittest.TestCase):
             identities=identities, state_risk=risk, groups=7)
         self.assertEqual(len(plan.row_index), 7)
         self.assertEqual(len(np.unique(plan.row_index)), 7)
+
+    def test_admission_excludes_safe_and_likely_unrecoverable_states(self):
+        identities = np.asarray([f"id-{index}" for index in range(100)], dtype="S64")
+        risk = np.linspace(0.0, 1.0, 100)
+        uncertainty = np.zeros(100)
+        uncertainty[40] = 0.3
+        plan = build_risk_stratified_plan(
+            identities=identities, state_risk=risk,
+            state_uncertainty=uncertainty, groups=20)
+        self.assertTrue(np.all(plan.state_risk >= 0.08))
+        self.assertTrue(np.all(plan.state_risk <= 0.60))
+        self.assertTrue(np.all(plan.state_uncertainty <= 0.20))
+        self.assertNotIn(40, plan.row_index.tolist())
 
 
 if __name__ == "__main__":

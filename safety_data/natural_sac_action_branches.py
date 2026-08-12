@@ -36,6 +36,9 @@ from safety_data.natural_sac_recovery import _snapshot_from_row
 
 
 RISK_BAND_EDGES = (0.0, 0.25, 0.50, 0.75, 1.0)
+EARLY_NEAR_FALL_RISK_MIN = 0.08
+EARLY_NEAR_FALL_RISK_MAX = 0.60
+EARLY_NEAR_FALL_UNCERTAINTY_MAX = 0.20
 
 
 def _u64(domain: bytes, identity: bytes, *parts: int) -> int:
@@ -50,6 +53,7 @@ class NaturalActionBranchPlan:
     row_index: np.ndarray
     identity: np.ndarray
     state_risk: np.ndarray
+    state_uncertainty: np.ndarray
     risk_band: np.ndarray
     acceptance_probability: np.ndarray
 
@@ -59,6 +63,8 @@ class NaturalActionBranchPlan:
             "row_index": np.asarray(self.row_index, dtype=np.int64),
             "identity": np.asarray(self.identity, dtype="S64"),
             "state_risk": np.asarray(self.state_risk, dtype=np.float32),
+            "state_uncertainty": np.asarray(
+                self.state_uncertainty, dtype=np.float32),
             "risk_band": np.asarray(self.risk_band, dtype=np.int8),
             "acceptance_probability": np.asarray(
                 self.acceptance_probability, dtype=np.float64),
@@ -72,6 +78,9 @@ class NaturalActionBranchPlan:
         if not np.all(np.isfinite(values["state_risk"])) or np.any(
                 values["state_risk"] < 0.0) or np.any(values["state_risk"] > 1.0):
             raise ValueError("state risk must be finite probabilities")
+        if not np.all(np.isfinite(values["state_uncertainty"])) or np.any(
+                values["state_uncertainty"] < 0.0):
+            raise ValueError("state uncertainty must be finite and nonnegative")
         if np.any(values["risk_band"] < 0) or np.any(values["risk_band"] > 3):
             raise ValueError("risk band must lie in [0,3]")
         if not np.all(np.isfinite(values["acceptance_probability"])) or np.any(
@@ -84,13 +93,26 @@ class NaturalActionBranchPlan:
 
 
 def build_risk_stratified_plan(
-    *, identities: np.ndarray, state_risk: np.ndarray, groups: int,
+    *, identities: np.ndarray, state_risk: np.ndarray,
+    state_uncertainty: np.ndarray | None = None, groups: int,
 ) -> NaturalActionBranchPlan:
-    """Select a deterministic equal-allocation risk sample before branching."""
+    """Select deterministic early near-fall states before any branching.
+
+    The absolute risk window rejects both ordinary low-risk walking and the
+    most advanced, likely already unrecoverable states.  This admission rule
+    reads neither the natural future label nor candidate branch outcomes.
+    """
     identities = np.asarray(identities, dtype="S64")
     risk = np.asarray(state_risk, dtype=np.float64)
+    uncertainty = (
+        np.zeros_like(risk)
+        if state_uncertainty is None
+        else np.asarray(state_uncertainty, dtype=np.float64))
     if identities.ndim != 1 or risk.shape != identities.shape:
         raise ValueError("identities and state_risk must be aligned vectors")
+    if uncertainty.shape != risk.shape or not np.all(np.isfinite(uncertainty)) or (
+            np.any(uncertainty < 0.0)):
+        raise ValueError("state_uncertainty must align and be nonnegative")
     if isinstance(groups, bool) or not isinstance(groups, (int, np.integer)) or (
             not 1 <= int(groups) <= len(risk)):
         raise ValueError("groups must be a positive count no larger than the source")
@@ -99,11 +121,23 @@ def build_risk_stratified_plan(
     if not np.all(np.isfinite(risk)) or np.any(risk < 0.0) or np.any(risk > 1.0):
         raise ValueError("state_risk must contain finite probabilities")
 
-    quantiles = np.quantile(risk, RISK_BAND_EDGES)
-    band = np.searchsorted(quantiles[1:-1], risk, side="right").astype(np.int8)
+    eligible = (
+        (risk >= EARLY_NEAR_FALL_RISK_MIN)
+        & (risk <= EARLY_NEAR_FALL_RISK_MAX)
+        & (uncertainty <= EARLY_NEAR_FALL_UNCERTAINTY_MAX)
+    )
+    eligible_rows = np.flatnonzero(eligible)
+    if len(eligible_rows) < int(groups):
+        raise ValueError(
+            "source does not contain enough pre-outcome early near-fall states; "
+            f"eligible={len(eligible_rows)}, required={int(groups)}")
+    quantiles = np.quantile(risk[eligible_rows], RISK_BAND_EDGES)
+    band = np.full(len(risk), -1, dtype=np.int8)
+    band[eligible_rows] = np.searchsorted(
+        quantiles[1:-1], risk[eligible_rows], side="right").astype(np.int8)
     quota = np.full(4, int(groups) // 4, dtype=np.int64)
     quota[:int(groups) % 4] += 1
-    available = np.bincount(band, minlength=4)
+    available = np.bincount(band[eligible_rows], minlength=4)
     # Empty/tiny bands can occur when calibrated scores tie.  Reassign their
     # unused quota deterministically to bands with remaining capacity.
     selected: list[int] = []
@@ -147,6 +181,7 @@ def build_risk_stratified_plan(
         row_index=rows,
         identity=identities[rows],
         state_risk=risk[rows].astype(np.float32),
+        state_uncertainty=uncertainty[rows].astype(np.float32),
         risk_band=bands,
         acceptance_probability=probabilities,
     )
@@ -212,6 +247,11 @@ def collect_natural_action_groups(
             "version": "qsafe.natural_sac_action_branches.v1",
             "selection_timing": "before_candidate_outcomes",
             "selection_inputs": ["snapshot_identity", "calibrated_state_risk"],
+            "state_uncertainty_input": "calibrated_ensemble_uncertainty",
+            "early_near_fall_risk_interval_inclusive": [
+                EARLY_NEAR_FALL_RISK_MIN, EARLY_NEAR_FALL_RISK_MAX],
+            "early_near_fall_uncertainty_max_inclusive": (
+                EARLY_NEAR_FALL_UNCERTAINTY_MAX),
             "purpose": "candidate_space_oracle_gate_before_model_training",
             "model_training_authorized": False,
             "branch_outcome_used_for_selection": False,
