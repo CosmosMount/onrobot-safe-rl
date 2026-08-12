@@ -1,0 +1,22 @@
+{
+  "schema_version": "qsafe.objective1_evidence_invalidation.v1",
+  "effective_date": "2026-08-12",
+  "reason": "state-only danger detection followed by unified recovery does not test action-conditioned SQRL safety filtering",
+  "invalidated_for_objective1": [
+    "fixed joint-brake selector",
+    "halfway-neutral selector",
+    "ramp-neutral and ramp-crouch selector",
+    "mature SAC fixed-duration takeover",
+    "PPO fixed-duration takeover",
+    "attitude-feedback fixed option",
+    "state-only H1/H3 successor-risk predictive shield"
+  ],
+  "artifact_disposition": "retained_only_as_rejected_baseline_and_diagnostic",
+  "may_enter_action_qsafe_fit": false,
+  "may_enter_action_qsafe_calibration": false,
+  "may_enter_action_qsafe_model_test": false,
+  "may_support_objective1_pass": false,
+  "replacement_protocol": "config/qsafe_action_conditioned_objective1_v1.yaml",
+  "objective1_pass": false,
+  "phase2_authorized": false
+}

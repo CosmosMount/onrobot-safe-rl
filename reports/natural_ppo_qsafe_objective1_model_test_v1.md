@@ -1,5 +1,10 @@
 # Natural-PPO Q_safe Objective 1 model-test result
 
+> **证据状态（2026-08-12）：已作废为 Objective 1 证据。** 本报告只保留为
+> state-only danger detection + unified fixed recovery 的失败 baseline。它不
+> 评估动作条件 `Q_safe(s,a)`，不得用于 Objective 1 通过判定。替代协议见
+> `config/qsafe_action_conditioned_objective1_v1.yaml`。
+
 Date: 2026-08-12 (Asia/Shanghai)
 
 ## Frozen inputs

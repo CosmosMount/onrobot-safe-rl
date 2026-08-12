@@ -1,0 +1,100 @@
+protocol_schema_version: 1
+protocol_name: objective1_action_conditioned_qsafe_v1
+status: active
+supersedes:
+  - objective1_state_only_fixed_recovery
+  - objective1_state_only_mature_policy_takeover
+  - objective1_state_only_ppo_policy_takeover
+  - objective1_state_only_predictive_successor_risk
+
+target:
+  command_vx_mps: 0.30
+  policy_hz: 50
+  horizon_policy_steps: 96
+  observation:
+    frames: 5
+    dimension: 46
+    deployable_only: true
+  critic_estimand: "P(fall within H96 | deployable state s, execute candidate a now, paired SAC continuation)"
+  runtime_semantics: receding_horizon_reobserve_and_reselect_every_policy_step
+
+ppo_source:
+  role: natural_state_proposal_only
+  external_force: forbidden
+  impulse: forbidden
+  recovery_during_rollout: forbidden
+  on_first_fall: terminal_and_immediate_reset
+  direct_labels_allowed:
+    state_only_proposal: true
+    unexecuted_candidate_action: false
+
+post_fall_get_up:
+  allowed_only_after_terminal_fall: true
+  allowed_as_pre_fall_candidate: false
+  allowed_as_qsafe_training_action: false
+
+state_only_model:
+  final_selector: false
+  allowed_roles:
+    - early_near_fall_proposal
+    - nominal_state_risk_auxiliary_feature
+    - state_only_baseline
+  unified_recovery_decision: forbidden
+
+candidate_oracle_gate:
+  required_before_model_training: true
+  source_state: early_near_fall_before_terminal_failure
+  selection_timing: before_candidate_outcomes
+  external_force: forbidden
+  same_state_common_random_numbers: required
+  horizon_policy_steps: 96
+  candidates:
+    nominal_index: 0
+    required_families:
+      - local_sac_actions
+      - symmetric_local_perturbations
+      - state_dependent_support_actions
+      - state_dependent_capture_step_actions
+    fixed_long_recovery: forbidden
+    post_fall_get_up: forbidden
+  required_reports:
+    - nominal_fall_rate
+    - each_candidate_fall_rate
+    - oracle_best_fall_rate
+    - oracle_absolute_reduction
+    - actor_seed_effects
+    - source_seed_effects
+    - confidence_interval
+  pass_requires:
+    unseen_sac_actor_and_source: true
+    oracle_reduction_direction: positive
+    oracle_reduction_lcb: greater_than_zero
+  on_fail: revise_candidate_space_without_training_selector
+
+action_qsafe_training:
+  authorized_only_after_oracle_gate_pass: true
+  supervision: same_state_multi_action_H96_branch_outcomes
+  split_unit: source_state_group
+  same_group_across_splits: forbidden
+  required_diagnostics:
+    - pair_accuracy
+    - strong_pair_accuracy
+    - top1_fall_reduction
+    - oracle_reduction
+    - learned_selector_reduction
+    - oracle_selector_gap
+    - within_state_action_sensitivity
+  action_sensitivity_null: "prediction is invariant when a changes within the same s"
+
+runtime_filter:
+  nominal_safe: execute_nominal
+  nominal_unsafe: choose_lowest_risk_then_minimum_nominal_deviation
+  no_safe_candidate: abstain_or_separately_preregistered_fail_safe
+  persistent_long_option_by_default: forbidden
+  reobserve_and_reselect_each_policy_step: true
+
+protected_evidence:
+  model_test_source: unseen_sac_actor_and_source_only
+  online_source: fresh_sac_from_zero_seed_only
+  old_state_only_recovery_results_objective1_eligible: false
+  objective2_authorized_before_objective1_pass: false
