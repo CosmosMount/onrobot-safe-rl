@@ -14,6 +14,8 @@ import torch
 from safety_data.native import ReplicaSeedBundle, evaluate_same_state_group
 from safety_data.natural_sac_calibration import (
     ROLE_ROSTER,
+    binary_auc,
+    expected_calibration_error,
     load_natural_sac_role,
     predict_calibrated_state_risk,
 )
@@ -588,6 +590,148 @@ def build_protected_model_test_plan(
         "selector": selector, "protected_outcomes_opened": False,
         "objective1_claim_eligible": False, "phase2_authorized": False,
     }
+    content = (json.dumps(report, sort_keys=True, indent=2) + "\n").encode()
+    temporary_report = report_path.with_name(f".{report_path.name}.tmp-{os.getpid()}")
+    with temporary_report.open("xb") as stream:
+        stream.write(content); stream.flush(); os.fsync(stream.fileno())
+    _publish_no_clobber(temporary_report, report_path)
+    return report
+
+
+def summarize_protected_model_test(
+    *, frozen_model: str | Path, model_test_plan: str | Path,
+    source_directory: str | Path, branch_files: list[str | Path],
+    output_model: str | Path,
+) -> dict[str, Any]:
+    """Consume protected outcomes once and publish an explicit pass/fail."""
+    frozen_model = Path(frozen_model).resolve()
+    model_test_plan = Path(model_test_plan).resolve()
+    source_directory = Path(source_directory).resolve()
+    output_model = Path(output_model).resolve()
+    report_path = output_model.with_suffix(".model-test-report.json")
+    if output_model.exists() or report_path.exists():
+        raise FileExistsError("protected model-test output was already published")
+    artifact = torch.load(frozen_model, map_location="cpu", weights_only=False)
+    if artifact.get("schema_version") != "qsafe.natural_ppo_state_trigger_model.v6" or (
+            artifact.get("sac_model_test_consumed") is not False):
+        raise ValueError("protected outcomes require an unconsumed frozen v6 model")
+    plan_manifest_path = model_test_plan.with_suffix(".manifest.json")
+    plan_manifest = json.loads(plan_manifest_path.read_text(encoding="utf-8"))
+    if plan_manifest.get("output_sha256") != _sha256(model_test_plan) or (
+            plan_manifest.get("frozen_model_sha256") != _sha256(frozen_model)) or (
+            plan_manifest.get("protected_outcomes_opened") is not False):
+        raise ValueError("protected plan is not bound to the frozen model")
+    with np.load(model_test_plan, allow_pickle=False) as loaded:
+        plan = {name: loaded[name].copy() for name in loaded.files}
+    outcome_by_identity: dict[bytes, np.ndarray] = {}
+    branch_records = []
+    for raw_path in branch_files:
+        path = Path(raw_path).resolve()
+        manifest_path = path.with_suffix(".manifest.json")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("output_sha256") != _sha256(path) or (
+                manifest.get("branch_plan_sha256") != _sha256(model_test_plan)):
+            raise ValueError("protected branch output is not bound to its plan")
+        with np.load(path, allow_pickle=False) as loaded:
+            for identity, falls in zip(loaded["identity"], loaded["fall"], strict=True):
+                key = bytes(identity)
+                if key in outcome_by_identity:
+                    raise ValueError("duplicate protected branch identity")
+                outcome_by_identity[key] = np.asarray(falls, dtype=bool).copy()
+        branch_records.append({
+            "file": path.name, "sha256": _sha256(path),
+            "manifest_sha256": _sha256(manifest_path),
+            "source_seed": int(manifest["source_seed"]),
+            "states": int(manifest["states"]),
+        })
+    if len(branch_records) != 12 or len(outcome_by_identity) != len(plan["identity"]):
+        raise ValueError("protected model-test branches are incomplete")
+    fall = np.stack([outcome_by_identity[bytes(value)] for value in plan["identity"]])
+    if fall.shape != (len(plan["identity"]), 6):
+        raise ValueError("protected model-test requires nominal plus fixed K9 4-8")
+    nominal = fall[:, 0]
+    qsafe = np.where(plan["qsafe_intervene"], fall[:, 1], nominal)
+    placebo = np.where(plan["placebo_intervene"], fall[:, 1], nominal)
+    qsafe_delta = nominal.astype(float) - qsafe.astype(float)
+    placebo_delta = placebo.astype(float) - qsafe.astype(float)
+    qsafe_ci = _bootstrap_paired_lcb(qsafe_delta, seed=20260813)
+    placebo_ci = _bootstrap_paired_lcb(placebo_delta, seed=20260814)
+    # Natural H96 labels are opened only here, after every model and selector
+    # field has been frozen and every branch has been published.
+    labels = np.empty(len(plan["identity"]), dtype=bool)
+    for source_seed in np.unique(plan["source_seed"]):
+        record = next(item for item in plan_manifest["source_inputs"]
+                      if int(item["source_seed"]) == int(source_seed))
+        path = source_directory / record["file"]
+        if _sha256(path) != record["sha256"]:
+            raise ValueError("protected natural-label source changed")
+        selected = np.flatnonzero(plan["source_seed"] == source_seed)
+        with np.load(path, allow_pickle=False) as loaded:
+            labels[selected] = loaded["label"][plan["row_index"][selected]]
+            if not np.array_equal(
+                    loaded["identity"][plan["row_index"][selected]],
+                    plan["identity"][selected]):
+                raise ValueError("protected natural-label identities differ")
+    auc = binary_auc(labels, plan["risk"])
+    ece = expected_calibration_error(labels, plan["risk"])
+    response_mask = plan["qsafe_intervene"]
+    response_delta = fall[response_mask, 0].astype(float) - fall[
+        response_mask, 1].astype(float)
+    response_ci = _bootstrap_paired_lcb(response_delta, seed=20260815)
+    checks = {
+        "minimum_independent_snapshots": len(nominal) >= 1200,
+        "natural_state_auroc_at_least_0.60": auc >= 0.60,
+        "ece_at_most_0.08": ece <= 0.08,
+        "intervention_rate_at_most_0.35": float(plan["qsafe_intervene"].mean()) <= 0.35,
+        "trigger_response_reduction_at_least_0.03": float(response_delta.mean()) >= 0.03,
+        "trigger_response_reduction_lcb_positive": response_ci[0] > 0.0,
+        "overall_reduction_positive": float(qsafe_delta.mean()) > 0.0,
+        "overall_reduction_lcb_positive": qsafe_ci[0] > 0.0,
+        "better_than_placebo_lcb_positive": placebo_ci[0] > 0.0,
+    }
+    model_test_pass = all(checks.values())
+    report = {
+        "schema_version": "qsafe.natural_sac_protected_model_test_report.v1",
+        "frozen_model_sha256": _sha256(frozen_model),
+        "model_test_plan_sha256": _sha256(model_test_plan),
+        "branch_inputs": branch_records,
+        "independent_snapshots": len(nominal),
+        "natural_positive_labels": int(labels.sum()),
+        "natural_state_auroc": auc, "natural_state_ece": ece,
+        "interventions": int(plan["qsafe_intervene"].sum()),
+        "intervention_rate": float(plan["qsafe_intervene"].mean()),
+        "nominal_fall_rate": float(nominal.mean()),
+        "qsafe_fall_rate": float(qsafe.mean()),
+        "placebo_fall_rate": float(placebo.mean()),
+        "overall_absolute_reduction": float(qsafe_delta.mean()),
+        "overall_absolute_reduction_ci95": list(qsafe_ci),
+        "qsafe_vs_placebo_reduction": float(placebo_delta.mean()),
+        "qsafe_vs_placebo_reduction_ci95": list(placebo_ci),
+        "trigger_states": int(response_mask.sum()),
+        "trigger_nominal_fall_rate": float(fall[response_mask, 0].mean()),
+        "trigger_recovery_fall_rate": float(fall[response_mask, 1].mean()),
+        "trigger_response_reduction": float(response_delta.mean()),
+        "trigger_response_reduction_ci95": list(response_ci),
+        "checks": checks, "model_test_pass": model_test_pass,
+        "failure_classification": None if model_test_pass else (
+            "fixed_nonpolicy_response_not_cross_seed_generalizable"),
+        "objective1_claim_eligible": False, "phase2_authorized": False,
+    }
+    consumed = dict(artifact)
+    consumed.update({
+        "schema_version": "qsafe.natural_ppo_state_trigger_model.v7",
+        "source_frozen_model_sha256": _sha256(frozen_model),
+        "sac_model_test_consumed": True,
+        "protected_model_test_report": report,
+        "model_test_pass": model_test_pass,
+        "objective1_claim_eligible": False,
+    })
+    output_model.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output_model.with_name(f".{output_model.name}.tmp-{os.getpid()}")
+    torch.save(consumed, temporary)
+    with temporary.open("rb") as stream: os.fsync(stream.fileno())
+    _publish_no_clobber(temporary, output_model)
+    report["output_model_sha256"] = _sha256(output_model)
     content = (json.dumps(report, sort_keys=True, indent=2) + "\n").encode()
     temporary_report = report_path.with_name(f".{report_path.name}.tmp-{os.getpid()}")
     with temporary_report.open("xb") as stream:
