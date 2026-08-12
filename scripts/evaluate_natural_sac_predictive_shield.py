@@ -15,8 +15,10 @@ parser.add_argument("--model", required=True)
 parser.add_argument("--output", required=True)
 parser.add_argument("--limit", type=int)
 parser.add_argument("--device", default="cpu")
+parser.add_argument("--lookahead-steps", type=int, default=3)
 args = parser.parse_args()
 print(json.dumps(evaluate_predictive_plan_source(
     source_data=args.source_data, source_manifest=args.source_manifest,
     plan_path=args.plan, model_path=args.model, output=args.output,
-    limit=args.limit, device=args.device), sort_keys=True, indent=2))
+    limit=args.limit, device=args.device,
+    lookahead_steps=args.lookahead_steps), sort_keys=True, indent=2))

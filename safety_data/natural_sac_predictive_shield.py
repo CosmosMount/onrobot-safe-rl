@@ -77,10 +77,13 @@ def rollout_predictive_shield(
     risk_threshold: float = 0.16658837339093935,
     uncertainty_max: float = 0.20,
     arm: str = "shield",
+    lookahead_steps: int = 3,
 ) -> PredictiveRollout:
     """Run nominal, Q_safe successor selection, or matched-random selection."""
     if arm not in {"nominal", "shield", "placebo"}:
         raise ValueError("arm must be nominal, shield, or placebo")
+    if isinstance(lookahead_steps, bool) or int(lookahead_steps) <= 0:
+        raise ValueError("lookahead_steps must be positive")
     env.restore(snapshot)
     interventions = 0
     eligible_steps = 0
@@ -103,9 +106,22 @@ def rollout_predictive_shield(
                 for index in valid_indices:
                     env.restore(branch)
                     result = env.step(candidates.requested[index])
-                    successor_fall.append(result.failure)
-                    successor_histories.append(
-                        history if result.failure else env.record_observation())
+                    branch_failed = result.failure
+                    successor_history = history
+                    if not branch_failed:
+                        successor_history = env.record_observation()
+                    for lookahead in range(1, int(lookahead_steps)):
+                        if branch_failed:
+                            break
+                        continuation = actor.sample_action(
+                            successor_history[-1],
+                            _rng(identity, 5, step, lookahead))
+                        result = env.step(continuation)
+                        branch_failed = result.failure
+                        if not branch_failed:
+                            successor_history = env.record_observation()
+                    successor_fall.append(branch_failed)
+                    successor_histories.append(successor_history)
                 successor_risk, successor_std = predictor(
                     np.asarray(successor_histories, dtype=np.float32))
                 score = np.where(
@@ -138,7 +154,7 @@ def rollout_predictive_shield(
 def evaluate_predictive_plan_source(
     *, source_data: str | Path, source_manifest: str | Path,
     plan_path: str | Path, model_path: str | Path, output: str | Path,
-    limit: int | None = None, device: str = "cpu",
+    limit: int | None = None, device: str = "cpu", lookahead_steps: int = 3,
 ) -> dict[str, Any]:
     """Evaluate three paired arms for one protected/development source."""
     import json
@@ -188,7 +204,8 @@ def evaluate_predictive_plan_source(
             for arm_index, arm in enumerate(arms):
                 result = rollout_predictive_shield(
                     env, snapshot, actor=session_actor, predictor=predictor,
-                    identity=bytes(plan["identity"][index]), arm=arm)
+                    identity=bytes(plan["identity"][index]), arm=arm,
+                    lookahead_steps=lookahead_steps)
                 fall[index, arm_index] = result.fall
                 first_failure[index, arm_index] = result.first_failure_step
                 interventions[index, arm_index] = result.interventions
@@ -205,6 +222,7 @@ def evaluate_predictive_plan_source(
         "actor_seed": int(manifest["actor_seed"]),
         "actor_training_step": int(manifest["actor_training_step"]),
         "states": len(fall), "arms": list(arms),
+        "lookahead_steps": int(lookahead_steps),
         "fall_counts": fall.sum(axis=0).tolist(),
         "interventions": interventions.sum(axis=0).tolist(),
         "external_force": "verified_zero", "phase2_authorized": False,
