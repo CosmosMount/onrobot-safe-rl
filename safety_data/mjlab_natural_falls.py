@@ -215,15 +215,24 @@ class MjlabNaturalFallCapture:
         rollout_steps: int = 125,
         preview_envs: int = 4,
         preview_policy_steps: int = 500,
+        export_ring_steps: int = RING_POLICY_STEPS,
+        max_normal_events: int | None = None,
     ) -> None:
         self.num_envs = int(num_envs)
         self.seed = int(seed)
         self.rollout_steps = int(rollout_steps)
         self.preview_envs = min(int(preview_envs), self.num_envs)
         self.preview_policy_steps = int(preview_policy_steps)
+        self.export_ring_steps = int(export_ring_steps)
+        self.max_normal_events = (
+            None if max_normal_events is None else int(max_normal_events))
         if self.rollout_steps <= 0 or self.preview_envs <= 0 or (
                 self.preview_policy_steps <= 0):
             raise ValueError("capture rollout and preview dimensions must be positive")
+        if not 1 <= self.export_ring_steps <= CAPTURE_RING_STEPS:
+            raise ValueError("export ring steps must be in [1,97]")
+        if self.max_normal_events is not None and self.max_normal_events < 0:
+            raise ValueError("max normal events must be non-negative")
         self.writer = MjlabFallShardWriter(output)
         self.normal_writer = MjlabNormalShardWriter(Path(output) / "normals")
         self.armed = False
@@ -333,6 +342,9 @@ class MjlabNaturalFallCapture:
         self.global_vector_step += 1
 
     def _capture_mature_normals(self, env: Any, ids: torch.Tensor) -> None:
+        if self.max_normal_events is not None and (
+                self.normal_count >= self.max_normal_events):
+            return
         mature = self.count >= CAPTURE_RING_STEPS
         if not bool(mature.any().item()):
             return
@@ -344,7 +356,11 @@ class MjlabNaturalFallCapture:
             + self.seed
         )
         selected = mature & ((key % NORMAL_HASH_MODULUS) == 0)
-        for environment_id in selected.nonzero(as_tuple=False).flatten().cpu().tolist():
+        environment_ids = selected.nonzero(as_tuple=False).flatten().cpu().tolist()
+        if self.max_normal_events is not None:
+            environment_ids = environment_ids[
+                :max(0, self.max_normal_events - self.normal_count)]
+        for environment_id in environment_ids:
             if self.normal_preview is None:
                 self.normal_preview = self._normal_preview_event(int(environment_id))
             self.normal_writer.add(self._normal_event(env, int(environment_id),
@@ -379,14 +395,14 @@ class MjlabNaturalFallCapture:
 
     def _event(self, env: Any, environment_id: int) -> dict[str, np.ndarray]:
         count = int(self.count[environment_id].item())
-        indices = ordered_ring_indices(count, CAPTURE_RING_STEPS)[-RING_POLICY_STEPS:]
+        indices = ordered_ring_indices(count, CAPTURE_RING_STEPS)[-self.export_ring_steps:]
         length = len(indices)
         device_indices = torch.as_tensor(indices, dtype=torch.long,
                                          device=self.count.device)
 
         def padded(value: torch.Tensor) -> np.ndarray:
             selected = value[environment_id, device_indices].detach().cpu().numpy()
-            result = np.zeros((RING_POLICY_STEPS, *selected.shape[1:]),
+            result = np.zeros((self.export_ring_steps, *selected.shape[1:]),
                               dtype=selected.dtype)
             result[:length] = selected
             return result
@@ -398,7 +414,7 @@ class MjlabNaturalFallCapture:
                 availability[offset_index] = True
                 prefall_index[offset_index] = length - offset
 
-        steps_to_fall = np.zeros(RING_POLICY_STEPS, dtype=np.int16)
+        steps_to_fall = np.zeros(self.export_ring_steps, dtype=np.int16)
         steps_to_fall[:length] = np.arange(length, 0, -1, dtype=np.int16)
 
         terminal_qpos = env.sim.data.qpos[environment_id].detach().cpu().numpy()
@@ -418,11 +434,13 @@ class MjlabNaturalFallCapture:
             "environment_id": np.asarray(environment_id, dtype=np.int32),
             "episode_id": np.asarray(episode, dtype=np.int64),
             "trajectory_length": np.asarray(length, dtype=np.int16),
-            "trajectory_mask": np.arange(RING_POLICY_STEPS) < length,
+            "trajectory_mask": np.arange(self.export_ring_steps) < length,
             "prefall_availability": availability,
             "prefall_trajectory_index": prefall_index,
             "trajectory_steps_to_fall": steps_to_fall,
-            "trajectory_fall_within_96_steps": np.arange(RING_POLICY_STEPS) < length,
+            "trajectory_fall_within_96_steps": (
+                (np.arange(self.export_ring_steps) < length)
+                & (steps_to_fall <= RISK_HORIZON_POLICY_STEPS)),
             "trajectory_qpos": padded(self.qpos),
             "trajectory_qvel": padded(self.qvel),
             "trajectory_ctrl": padded(self.ctrl),
@@ -490,6 +508,9 @@ class MjlabNaturalFallCapture:
             "qpos": cpu(self.qpos),
             "qvel": cpu(self.qvel),
             "ctrl": cpu(self.ctrl),
+            "time": cpu(self.time),
+            "act": cpu(self.act),
+            "qacc_warmstart": cpu(self.qacc_warmstart),
             "observation_history": cpu(self.obs_history),
             "action_requested": cpu(self.action_requested),
             "action_executed": cpu(self.action_executed),
