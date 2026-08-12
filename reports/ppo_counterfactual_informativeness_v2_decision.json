@@ -1,0 +1,22 @@
+{
+  "schema_version": "qsafe.counterfactual_gate_decision.v2",
+  "date": "2026-08-12",
+  "states": 2000,
+  "branches": 128000,
+  "horizon_policy_steps": 96,
+  "replicas": 4,
+  "falls": 8194,
+  "median_empirical_risk_range_boundary_medium": 0.25,
+  "states_with_strong_pair_fraction_boundary_medium": 0.20866666666666667,
+  "required_median_empirical_risk_range": 0.25,
+  "required_states_with_strong_pair_fraction": 0.30,
+  "development_empirical_oracle_reduction": 0.049625,
+  "counterfactual_supervision_informative": false,
+  "action_ranking_learnable": false,
+  "deployment_selector_supported": false,
+  "sac_transfer_authorized": false,
+  "formal_objective1_authorized": false,
+  "protected_branching_consumed": false,
+  "critic_training_started": false,
+  "stop_reason": "candidate_generator_and_h96_branching_did_not_produce_enough_strong_within_state_action_risk_pairs"
+}
