@@ -16,7 +16,7 @@ parser.add_argument("--output", required=True)
 parser.add_argument(
     "--candidate-set", choices=(
         "fixed_nonpolicy", "full_k9_development", "mature_short_development",
-        "ppo_short_development"),
+        "ppo_short_development", "attitude_feedback_development"),
     default="fixed_nonpolicy")
 parser.add_argument("--ppo-checkpoint")
 args = parser.parse_args()

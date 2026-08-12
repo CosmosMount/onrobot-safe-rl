@@ -26,6 +26,8 @@ from safety_data.recovery_behaviors import (
     RecoveryBehaviorLibrary,
     build_recovery_behavior_library,
 )
+from runtime.inference.actions import qpos_to_action
+from runtime.inference.observations import quat_to_euler_xyz
 from train.config import load_app_config
 from train.mujoco_snapshot_env import ApplicationState, BranchSnapshot, MujocoSnapshotEnv
 
@@ -176,6 +178,71 @@ class PpoShortRecoveryView:
     def manifest(self) -> dict[str, Any]:
         return self._policy.manifest() | {
             "ppo_policy_durations": list(MATURE_SHORT_DURATIONS),
+        }
+
+
+_ATTITUDE_OPTIONS = (
+    # (angle gain, gyro gain, duration)
+    (0.35, 0.00, 5), (0.55, 0.00, 5), (0.75, 0.00, 5),
+    (0.35, 0.00, 10), (0.55, 0.00, 10), (0.75, 0.00, 10),
+    (0.55, 0.08, 10), (0.75, 0.12, 10),
+)
+
+
+class AttitudeFeedbackRecoveryView:
+    """Deployable posture feedback using only corrected observation fields."""
+
+    @property
+    def behavior_steps(self) -> np.ndarray:
+        return np.asarray([0] + [item[2] for item in _ATTITUDE_OPTIONS], dtype=np.int64)
+
+    def capture_branch_state(self) -> None:
+        return None
+
+    def restore_branch_state(self, state: None) -> None:
+        if state is not None:
+            raise ValueError("attitude recovery is stateless")
+
+    def __call__(self, candidate_index: int, observation_history: np.ndarray,
+                 step: int, nominal_action: np.ndarray) -> np.ndarray:
+        del step, nominal_action
+        if not 1 <= int(candidate_index) <= len(_ATTITUDE_OPTIONS):
+            raise ValueError("attitude candidate index must lie in [1,8]")
+        angle_gain, gyro_gain, _ = _ATTITUDE_OPTIONS[int(candidate_index) - 1]
+        newest = np.asarray(observation_history, dtype=np.float32)[-1]
+        roll, pitch, _ = quat_to_euler_xyz(newest[30:34])
+        gyro = newest[24:27]
+        roll_signal = float(roll + gyro_gain * gyro[0])
+        pitch_signal = float(pitch + gyro_gain * gyro[1])
+        target = np.asarray([0.05, 0.70, -1.40] * 4, dtype=np.float32)
+        # FR, FL, RR, RL. Positive roll raises the left side, so extend the
+        # right legs; positive pitch raises the front, so extend the rear.
+        side = np.asarray([-1.0, 1.0, -1.0, 1.0], dtype=np.float32)
+        fore = np.asarray([1.0, 1.0, -1.0, -1.0], dtype=np.float32)
+        extension = np.clip(
+            -angle_gain * (side * roll_signal + fore * pitch_signal),
+            -0.45, 0.45)
+        target[1::3] -= 0.45 * extension
+        target[2::3] += 0.90 * extension
+        previous_target = newest[34:46]
+        target = previous_target + np.clip(target - previous_target, -0.08, 0.08)
+        return np.clip(qpos_to_action(
+            target, init_qpos=np.asarray([0.05, 0.70, -1.40] * 4),
+            action_offset=np.asarray([0.2, 0.4, 0.4] * 4)), -1.0, 1.0)
+
+    def preview(self, observation_history: np.ndarray,
+                nominal_action: np.ndarray) -> np.ndarray:
+        return np.stack([nominal_action] + [
+            self(index, observation_history, 0, nominal_action)
+            for index in range(1, 9)
+        ]).astype(np.float32)
+
+    def manifest(self) -> dict[str, Any]:
+        return {
+            "kind": "corrected_observation_attitude_posture_feedback",
+            "options": [list(item) for item in _ATTITUDE_OPTIONS],
+            "privileged_state_used": False,
+            "maximum_qtarget_delta_per_step_rad": 0.08,
         }
 
 
@@ -347,6 +414,9 @@ def evaluate_selector_recovery_source(
         recovery = PpoShortRecoveryView(
             NaturalPpoRecoveryPolicy(ppo_checkpoint), env)
         original_indices = [0, 201, 202, 203, 205, 210]
+    elif candidate_set == "attitude_feedback_development":
+        recovery = AttitudeFeedbackRecoveryView()
+        original_indices = [0] + list(range(301, 309))
     else:
         raise ValueError("unknown recovery candidate_set")
     falls = np.empty((len(plan["identity"]), len(original_indices)), dtype=bool)
@@ -365,7 +435,8 @@ def evaluate_selector_recovery_source(
                 recovery.preview(history, nominal)
                 if isinstance(recovery, (FixedNonpolicyRecoveryView,
                                          MatureShortRecoveryView,
-                                         PpoShortRecoveryView))
+                                         PpoShortRecoveryView,
+                                         AttitudeFeedbackRecoveryView))
                 else recovery.preview_candidates(history, nominal)
             )
             seed = int.from_bytes(hashlib.sha256(
@@ -406,7 +477,8 @@ def evaluate_selector_recovery_source(
         "fixed_recovery": (
             recovery.manifest() if isinstance(
                 recovery, (FixedNonpolicyRecoveryView, MatureShortRecoveryView,
-                           PpoShortRecoveryView))
+                           PpoShortRecoveryView,
+                           AttitudeFeedbackRecoveryView))
             else {
                 "full_library_fingerprint_sha256": recovery.fingerprint(),
                 "original_k9_indices": list(range(9)),
