@@ -62,8 +62,11 @@ calibration_and_test:
   probability_method: per_member_affine_platt_scaling_on_probability_calibration_only
   probability_method_amendment_reason: temperature_only_cannot_correct_SAC_base_rate_shift
   uncertainty_method: finite_sample_one_sided_residual_quantile
+  ensemble_std_abstention_max: 0.20
   intervention_rate_max: 0.35
   selector_threshold_grid_source: uncertainty_and_selector_calibration_only
+  selector_risk_quantile_grid: [0.95, 0.90, 0.80, 0.65]
+  selector_choice_rule: require_reduction_and_positive_bootstrap_LCB_then_lowest_recovery_fall_rate_then_shortest_duration_then_k9_index
   model_test_minimum_independent_snapshots: 1200
   model_test_access: one_shot_after_frozen_model_temperature_uncertainty_threshold_and_recovery
   ppo_state_in_model_test: forbidden
