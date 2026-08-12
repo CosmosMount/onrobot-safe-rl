@@ -206,6 +206,37 @@ def _member_logits(models: list[SelectiveAdvantageQSafe], observation: np.ndarra
     return np.stack(result).astype(np.float64)
 
 
+def predict_calibrated_state_risk(
+    model_path: str | Path,
+    observation_history: np.ndarray,
+    *,
+    device: str | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return frozen SAC-calibrated ensemble mean and standard deviation."""
+    artifact = torch.load(Path(model_path), map_location="cpu", weights_only=False)
+    if artifact.get("schema_version") != "qsafe.natural_ppo_state_trigger_model.v5" or (
+            artifact.get("temperature_status") != "frozen_sac_only") or (
+            artifact.get("uncertainty_status") != "frozen_sac_only"):
+        raise ValueError("state-risk inference requires the frozen v5 SAC calibration")
+    selected_device = torch.device(
+        device or ("cuda:0" if torch.cuda.is_available() else "cpu"))
+    # Reuse the weight loader after checking the calibrated outer schema.
+    pending_view = dict(artifact)
+    pending_view["schema_version"] = "qsafe.natural_ppo_state_trigger_model.v3"
+    pending_view["temperature_status"] = "pending_sac_only_calibration"
+    models = _load_models(pending_view, selected_device)
+    logits = _member_logits(
+        models, np.asarray(observation_history, dtype=np.float32),
+        artifact["normalization"], selected_device)
+    temperatures = np.asarray(artifact["state_temperatures"], dtype=np.float64)
+    biases = np.asarray(artifact["state_biases"], dtype=np.float64)
+    if temperatures.shape != (5,) or biases.shape != (5,) or np.any(temperatures <= 0):
+        raise ValueError("calibrated model has malformed affine parameters")
+    members = 1.0 / (1.0 + np.exp(
+        -(logits / temperatures[:, None] + biases[:, None])))
+    return members.mean(axis=0), members.std(axis=0)
+
+
 def fit_member_affine_calibration(
     logits: np.ndarray, label: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
