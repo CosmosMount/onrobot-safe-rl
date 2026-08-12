@@ -59,7 +59,8 @@ fixed_nonpolicy_recovery_candidates:
   minimum_calibration_reduction_pp: 3.0
 
 calibration_and_test:
-  probability_method: per_member_temperature_scaling_on_probability_calibration_only
+  probability_method: per_member_affine_platt_scaling_on_probability_calibration_only
+  probability_method_amendment_reason: temperature_only_cannot_correct_SAC_base_rate_shift
   uncertainty_method: finite_sample_one_sided_residual_quantile
   intervention_rate_max: 0.35
   selector_threshold_grid_source: uncertainty_and_selector_calibration_only
