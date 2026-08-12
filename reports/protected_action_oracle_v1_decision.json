@@ -1,0 +1,34 @@
+{
+  "schema_version": "qsafe.protected_action_oracle_decision.v1",
+  "protocol_sha256": "fd739b65cb119233bc80ded431bc0b8dfbf0f663cfa0c9edf2c3380d8073bf48",
+  "generator_commit": "9b5c55e94dbf0783eecfc1d7e9bad6df512c57db",
+  "actor_training": {
+    "57": {
+      "completed_steps": 10000,
+      "training_falls": 45,
+      "checkpoint_sha256": "9f8c7dedf66256539ae0e4f20ee4c50fdca00b7868881bea697ebdc6ee8914b0"
+    },
+    "58": {
+      "completed_steps": 10000,
+      "training_falls": 35,
+      "checkpoint_sha256": "e7d60e5e5d1418965faa3dcc980fbe49baa8572e6a1c2ac897452d57fa0888ae"
+    }
+  },
+  "source_collection": [
+    {"actor_seed": 57, "source_seed": 9701, "fixed_exposure_steps": 20000, "independent_falls": 0, "eligible_early_prefall_states": 0, "manifest_sha256": "adbcc80abd04f85305614287aa42676dabce442cb38f390a23bda9a658fc9ea0"},
+    {"actor_seed": 57, "source_seed": 9702, "fixed_exposure_steps": 20000, "independent_falls": 0, "eligible_early_prefall_states": 0, "manifest_sha256": "11f16f162bf70aea071d3e96ad3e544121b5c1c6057e19519c4cd203f56ab6ac"},
+    {"actor_seed": 58, "source_seed": 9703, "fixed_exposure_steps": 20000, "independent_falls": 0, "eligible_early_prefall_states": 0, "manifest_sha256": "e08ea5e73f08561f52ae50309e0b990e076e0bc9e183719735e964d77cc40ae1"},
+    {"actor_seed": 58, "source_seed": 9704, "fixed_exposure_steps": 20000, "independent_falls": 0, "eligible_early_prefall_states": 0, "manifest_sha256": "b7b80c3b48689b6ac9a750bc3ce02edcf6d8514d872da831e60c45ab859863e3"}
+  ],
+  "planned_groups_per_source": 30,
+  "completed_branch_groups": 0,
+  "decision": "protected_gate_failed_insufficient_natural_early_prefall_states",
+  "automatic_retry_executed": false,
+  "exposure_top_up_executed": false,
+  "actor_or_source_substitution_executed": false,
+  "candidate_oracle_gate_pass": false,
+  "model_training_authorized": false,
+  "selector_training_executed": false,
+  "objective1_pass": false,
+  "phase2_authorized": false
+}
