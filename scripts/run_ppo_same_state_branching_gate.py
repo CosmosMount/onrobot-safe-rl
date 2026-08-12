@@ -49,32 +49,33 @@ def _load_pool(roots: list[Path]) -> list[dict[str, np.ndarray | int | bytes]]:
     for source_seed, root in enumerate(roots):
         for path in sorted(root.glob("falls-*.npz")):
             with np.load(path, allow_pickle=False) as z:
-                for row in range(len(z["identity"])):
-                    iteration = int(z["ppo_iteration"][row])
+                arrays = {name: z[name] for name in z.files}
+                for row in range(len(arrays["identity"])):
+                    iteration = int(arrays["ppo_iteration"][row])
                     if not 5 <= iteration <= 20:
                         continue
-                    identity = bytes(z["identity"][row])
+                    identity = bytes(arrays["identity"][row])
                     available = [offset for offset in OFFSETS if int(
-                        z["trajectory_length"][row]) >= offset]
+                        arrays["trajectory_length"][row]) >= offset]
                     if not available:
                         continue
                     offset = available[_u64(b"qsafe.ppo.branch.offset.v1", identity) % len(available)]
                     offset_slot = (1, 2, 4, 8, 16, 32, 64).index(offset)
-                    index = int(z["prefall_trajectory_index"][row, offset_slot])
+                    index = int(arrays["prefall_trajectory_index"][row, offset_slot])
                     pool.append({
                         "identity": identity,
                         "source_seed": source_seed,
                         "offset": offset,
-                        "qpos": z["trajectory_qpos"][row, index].copy(),
-                        "qvel": z["trajectory_qvel"][row, index].copy(),
-                        "ctrl": z["trajectory_ctrl"][row, index].copy(),
-                        "time": float(z["trajectory_time"][row, index]),
-                        "qacc": z["trajectory_qacc_warmstart"][row, index].copy(),
-                        "history": z["trajectory_observation_history"][row, index].copy(),
-                        "episode_step": int(z["trajectory_episode_step"][row, index]),
-                        "geom_friction": z["randomized_geom_friction"][row].copy(),
-                        "body_ipos": z["randomized_body_ipos"][row].copy(),
-                        "encoder_bias": z["randomized_encoder_bias"][row].copy(),
+                        "qpos": arrays["trajectory_qpos"][row, index].copy(),
+                        "qvel": arrays["trajectory_qvel"][row, index].copy(),
+                        "ctrl": arrays["trajectory_ctrl"][row, index].copy(),
+                        "time": float(arrays["trajectory_time"][row, index]),
+                        "qacc": arrays["trajectory_qacc_warmstart"][row, index].copy(),
+                        "history": arrays["trajectory_observation_history"][row, index].copy(),
+                        "episode_step": int(arrays["trajectory_episode_step"][row, index]),
+                        "geom_friction": arrays["randomized_geom_friction"][row].copy(),
+                        "body_ipos": arrays["randomized_body_ipos"][row].copy(),
+                        "encoder_bias": arrays["randomized_encoder_bias"][row].copy(),
                     })
     if len(pool) < 200:
         raise RuntimeError(f"boundary snapshot pool has only {len(pool)} states")

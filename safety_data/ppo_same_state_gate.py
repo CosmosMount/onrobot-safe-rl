@@ -64,6 +64,7 @@ def summarize_selector(
     nominal = np.asarray(fall, bool)[:, 0, 4:].mean(axis=1)
     selected = selector_outcome(fall, choice)
     difference = nominal - selected
+    intervened = np.asarray(choice) != 0
     return {
         "nominal_fall_rate": float(nominal.mean()),
         "selected_fall_rate": float(selected.mean()),
@@ -73,6 +74,6 @@ def summarize_selector(
         "rescue_states": int(np.sum(difference > 0)),
         "harm_states": int(np.sum(difference < 0)),
         "conditional_harm_rate": float(
-            np.mean(difference < 0) if np.any(choice != 0) else 0.0),
-        "intervention_states": int(np.sum(np.asarray(choice) != 0)),
+            np.mean(difference[intervened] < 0) if np.any(intervened) else 0.0),
+        "intervention_states": int(np.sum(intervened)),
     }
