@@ -1,0 +1,76 @@
+protocol_schema_version: 1
+protocol_name: ppo_counterfactual_supervision_signal_diagnostic_v1
+status: frozen_before_replica_extension
+
+scope:
+  train_safety_critic: forbidden
+  read_or_branch_protected_cohort: forbidden
+  sac_transfer: forbidden
+  purpose: diagnose_development_supervision_only
+
+source:
+  development_dataset: saved/qsafe_counterfactual_v2/development-r4-h96.npz
+  development_roster: saved/qsafe_counterfactual_v2/development-roster.npz
+  existing_candidates_are_frozen: true
+  regenerate_candidates: forbidden
+
+diagnostic_roster:
+  total_states: 400
+  selection_reads_branch_outcomes: false
+  selection_unit: state_identity_hash
+  counts:
+    train:
+      seed137: {boundary: 80, medium: 40, normal: 40}
+      seed138: {boundary: 80, medium: 40, normal: 40}
+    calibration:
+      seed137: {boundary: 20, medium: 10, normal: 10}
+      seed138: {boundary: 20, medium: 10, normal: 10}
+  protected_states: 0
+
+replicas:
+  existing: [1, 2, 3, 4]
+  additional: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+  paired_crn_across_candidates: true
+  independent_across_replicas: true
+  analysis_prefixes: [4, 8, 16]
+  pair_ordering_split_halves:
+    R4: [[1, 2], [3, 4]]
+    R8: [[1, 2, 3, 4], [5, 6, 7, 8]]
+    R16: [[1, 2, 3, 4, 5, 6, 7, 8], [9, 10, 11, 12, 13, 14, 15, 16]
+  independent_oracle:
+    R4: {discovery: [1, 2], evaluation: [3, 4]}
+    R8: {discovery: [1, 2, 3, 4], evaluation: [5, 6, 7, 8]}
+    R16:
+      discovery: [1, 2, 3, 4, 5, 6, 7, 8]
+      evaluation: [9, 10, 11, 12, 13, 14, 15, 16]
+
+horizons: [16, 32, 64, 96]
+strong_pair_absolute_risk_delta: 0.50
+confidence:
+  unit: state
+  bootstrap_replicates: 10000
+  one_sided_lcb: 0.95
+  two_sided_interval: 0.95
+
+diagnostic_flags:
+  r4_label_noise_likely:
+    requires:
+      - R16_minus_R4_strong_pair_state_coverage_lcb_gt_0
+      - R16_minus_R4_pair_ordering_agreement_lcb_gt_0
+  h96_credit_dilution_likely:
+    requires:
+      - H16_or_H32_minus_H96_strong_pair_coverage_lcb_gt_0
+      - corresponding_short_horizon_independent_oracle_reduction_lcb_gt_0
+  candidate_direction_coverage_likely:
+    requires:
+      - at_least_one_joint_direction_abs_risk_effect_ge_0_05_with_ci_excluding_0
+      - action_feature_model_grouped_cv_r2_ge_0_05
+      - action_distribution_explains_at_least_half_seed_contrast_gap_with_same_sign
+
+outputs:
+  flags:
+    - r4_label_noise_likely
+    - h96_credit_dilution_likely
+    - candidate_direction_coverage_likely
+  protected_roster_must_remain_identity_only: true
+
