@@ -1,0 +1,107 @@
+protocol_schema_version: 2
+protocol_name: ppo_same_state_counterfactual_qsafe_v2
+status: frozen_before_protected_branching
+supersedes: ppo_parallel_sqrl_safety_data_v1
+
+task:
+  command_mps: [0.30, 0.0, 0.0]
+  policy_frequency_hz: 50
+  pd_frequency_hz: 500
+  external_push: forbidden
+  external_impulse: forbidden
+  recovery_or_get_up: forbidden
+  first_fall: terminal_and_reset
+  objective2_before_objective1_pass: forbidden
+
+collectors:
+  - {ppo_seed: 137, checkpoint: saved/qsafe_development/natural_ppo/production-30m-seed137-v1/model_19.pt}
+  - {ppo_seed: 138, checkpoint: saved/qsafe_ppo_sqrl_v1/ppo-seed138-30m/model_19.pt}
+  continuation_policy: originating_collector
+  role_stratum_seed_ratio: [0.5, 0.5]
+
+states:
+  total: 2400
+  one_state_per_episode: true
+  roles:
+    train: {boundary: 800, medium: 400, normal: 400}
+    calibration: {boundary: 200, medium: 100, normal: 100}
+    protected: {boundary: 200, medium: 100, normal: 100}
+  boundary_prefall_offset_inclusive: [32, 64]
+  medium_prefall_offset_inclusive: [65, 96]
+  normal_future_safe_steps: 96
+  nominal_future_use: admission_only
+
+candidates:
+  nominal: 1
+  stochastic_proposals: 64
+  selected: 15
+  critic_action: absolute_12d_joint_target_applied_to_pd
+  action_scale: [0.2, 0.4, 0.4, 0.2, 0.4, 0.4, 0.2, 0.4, 0.4, 0.2, 0.4, 0.4]
+  normalized_rms_duplicate_threshold: 0.025
+  distance_bins: [near, medium, far]
+  selections_per_bin: 5
+  percentile_positions: [0.10, 0.30, 0.50, 0.70, 0.90]
+  insufficient_candidates: invalidate_whole_state
+  outcome_blind: true
+
+branching:
+  horizon_policy_steps: 96
+  development_replicas: 4
+  protected_replicas: 8
+  paired_crn: true
+  corrupt_branch: invalidate_whole_state
+  development_branches: 128000
+  protected_branches: 51200
+
+informativeness_gate:
+  strata: [boundary, medium]
+  median_empirical_risk_range_min: 0.25
+  states_with_strong_pair_fraction_min: 0.30
+  strong_pair_empirical_risk_delta_min: 0.50
+
+models:
+  training_seeds: [20260820, 20260821, 20260822, 20260823, 20260824]
+  epochs: 100
+  calibration_interval_epochs: 5
+  architecture:
+    frame_encoder: [46, 128, 128]
+    frame_activation: silu
+    gru_hidden: 128
+    action_encoder: [12, 128, 128]
+    action_activation: silu
+    fusion: [256, 128]
+    fusion_activation: silu
+  losses: {absolute_weight: 1.0, ranking_weight: 1.0}
+  controls: [state_only, within_state_deranged]
+  frozen_historical_baseline: ppo_1m_sqrl
+
+calibration_gate:
+  pair_accuracy_min: 0.58
+  strong_pair_accuracy_min: 0.62
+  fall_recall_min: 0.90
+  action_permutation_degradation_lcb: greater_than_zero
+  control_pair_accuracy_delta_lcb: greater_than_zero
+
+protected_gate:
+  consume_once: true
+  oracle_discovery_replicas: [1, 2, 3, 4]
+  evaluation_replicas: [5, 6, 7, 8]
+  pair_accuracy_min: 0.60
+  strong_pair_accuracy_min: 0.65
+  minimal_intervention_reduction_lcb: greater_than_zero
+  top_risk_candidates_then_nearest: 3
+  require_rescue_states_greater_than_harm_states: true
+  no_significant_reverse_strata: [boundary, medium, normal, seed137, seed138]
+
+flags:
+  - counterfactual_supervision_informative
+  - action_ranking_learnable
+  - deployment_selector_supported
+  - sac_transfer_authorized
+  - formal_objective1_authorized
+
+execution:
+  no_subagents: true
+  no_background_watcher: true
+  no_automatic_retry: true
+  large_artifacts_in_git: false
