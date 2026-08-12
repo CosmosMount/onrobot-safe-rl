@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 
 import numpy as np
 
@@ -15,6 +16,90 @@ FAMILIES = {"L1": np.arange(1, 6), "L4": np.arange(6, 11),
 class Bootstrap:
     replicates: int = 10_000
     seed: int = 20260813
+
+
+def validate_short_option_dataset(arrays: dict[str, np.ndarray]) -> dict[str, object]:
+    required = {
+        "state_id", "episode_id", "collector_seed", "candidate_index",
+        "candidate_duration", "candidate_direction", "critic_action", "residual",
+        "replica_id", "crn_id", "h96_fall", "first_fall_step",
+        "replacement_magnitude_sum", "replacement_magnitude_max",
+        "projection_saturation_count", "joint_limit_saturation_count",
+        "option_active_steps_executed", "option_max_abs_roll",
+        "option_max_abs_pitch", "option_max_angular_velocity",
+        "option_min_base_height",
+    }
+    missing = required - set(arrays)
+    if missing:
+        raise ValueError(f"short-option dataset fields missing: {sorted(missing)}")
+    states = np.asarray(arrays["state_id"])
+    episodes = np.asarray(arrays["episode_id"])
+    if states.shape != (600,) or len(set(map(bytes, states))) != 600:
+        raise ValueError("state identities are not exactly 600 unique values")
+    if episodes.shape != (600,) or len(set(map(bytes, episodes))) != 600:
+        raise ValueError("each state must come from a different episode")
+    candidates = np.asarray(arrays["candidate_index"])
+    if candidates.shape != (600, 16) or not np.array_equal(
+            candidates, np.broadcast_to(np.arange(16), (600, 16))):
+        raise ValueError("candidate identities are incomplete or reordered")
+    expected_duration = np.asarray([0] + [1] * 5 + [4] * 5 + [8] * 5)
+    expected_direction = np.asarray([-1] + list(range(5)) * 3)
+    if not np.array_equal(arrays["candidate_duration"], np.broadcast_to(
+            expected_duration, (600, 16))):
+        raise ValueError("duration layout changed")
+    if not np.array_equal(arrays["candidate_direction"], np.broadcast_to(
+            expected_direction, (600, 16))):
+        raise ValueError("direction layout changed")
+    action = np.asarray(arrays["critic_action"], np.float32)
+    residual = np.asarray(arrays["residual"], np.float32)
+    if action.shape != (600, 16, 12) or residual.shape != action.shape:
+        raise ValueError("physical action/residual shape changed")
+    if not np.array_equal(residual[:, 0], np.zeros((600, 12), np.float32)):
+        raise ValueError("nominal candidate has a residual")
+    for block in (slice(1, 6), slice(6, 11), slice(11, 16)):
+        if not np.allclose(residual[:, block], action[:, block] - action[:, :1],
+                           rtol=0.0, atol=1e-7):
+            raise ValueError("candidate residual differs from physical target delta")
+    if not (np.array_equal(residual[:, 1:6], residual[:, 6:11])
+            and np.array_equal(residual[:, 1:6], residual[:, 11:16])):
+        raise ValueError("duration families do not share exact residual directions")
+    shape = (600, 16, 8)
+    replicas = np.asarray(arrays["replica_id"])
+    if replicas.shape != shape or not np.array_equal(
+            replicas, np.broadcast_to(np.arange(1, 9), shape)):
+        raise ValueError("replica layout changed")
+    crn = np.asarray(arrays["crn_id"])
+    if crn.shape != shape or not np.all(crn == crn[:, :1, :]):
+        raise ValueError("paired CRN identity differs across candidates")
+    state_replica_crn = crn[:, 0, :].reshape(-1)
+    if len(set(map(bytes, state_replica_crn))) != 600 * 8:
+        raise ValueError("CRN identity is not unique across state/replica")
+    expected_crn = np.asarray([[
+        hashlib.sha256(
+            b"qsafe.short-option.crn.id.v1\0" + bytes(states[state])
+            + replica.to_bytes(2, "little")
+        ).hexdigest()
+        for replica in range(8)] for state in range(600)], "S64")
+    if not np.array_equal(crn[:, 0, :], expected_crn):
+        raise ValueError("CRN identity does not match the runtime zero-based replica stream")
+    fall = np.asarray(arrays["h96_fall"], bool)
+    first = np.asarray(arrays["first_fall_step"])
+    if fall.shape != shape or first.shape != shape or np.any(first < 1) or np.any(first > 97):
+        raise ValueError("H96 outcome shape or first-fall range changed")
+    if not np.array_equal(fall, first <= 96) or np.any(first[~fall] != 97):
+        raise ValueError("H96 outcome has an off-by-one or sentinel error")
+    for name in required:
+        value = np.asarray(arrays[name])
+        if value.dtype.kind in "fc" and not np.all(np.isfinite(value)):
+            raise ValueError(f"non-finite values in {name}")
+    return {
+        "states": 600, "episodes": 600, "candidates_per_state": 16,
+        "replicas_per_candidate": 8, "branches": 76_800,
+        "paired_crn_across_candidates": True,
+        "independent_state_replica_crn_identities": 4_800,
+        "duration_families_share_exact_residuals": True,
+        "h96_first_fall_indexing_valid": True,
+    }
 
 
 def _summary(values: np.ndarray, bootstrap: Bootstrap) -> dict[str, float]:
@@ -72,6 +157,7 @@ def _diagnostics(
 
 def analyze_short_option_oracle(
     *, h96_fall: np.ndarray, candidate_duration: np.ndarray,
+    collector_seed: np.ndarray,
     replacement_sum: np.ndarray, replacement_max: np.ndarray,
     projection_saturation_count: np.ndarray,
     joint_limit_saturation_count: np.ndarray,
@@ -84,6 +170,10 @@ def analyze_short_option_oracle(
     if fall.shape != (600, 16, 8):
         raise ValueError("oracle dataset must be exactly [600,16,8]")
     duration = np.asarray(candidate_duration)
+    seed = np.asarray(collector_seed, np.int16)
+    if seed.shape != (600,) or set(seed.tolist()) != {137, 138} or any(
+            np.sum(seed == value) != 300 for value in (137, 138)):
+        raise ValueError("oracle dataset must contain 300 states per collector")
     expected = np.asarray([0] + [1] * 5 + [4] * 5 + [8] * 5)
     if duration.shape != (600, 16) or not np.array_equal(
             duration, np.broadcast_to(expected, duration.shape)):
@@ -155,6 +245,24 @@ def analyze_short_option_oracle(
                 },
             },
             "selected_candidate_index": selected.tolist(),
+            "collector_seed": {
+                str(value): {
+                    "states": int(np.sum(seed == value)),
+                    "nominal_evaluation_fall_rate": float(
+                        nominal_eval[seed == value].mean()),
+                    "independent_oracle_evaluation_fall_rate": float(
+                        selected_eval[seed == value].mean()),
+                    "independent_oracle_reduction": _summary(
+                        reduction[seed == value], bootstrap),
+                    "split_half_ordering_agreement": _summary(
+                        ordering[seed == value], bootstrap),
+                    "reproducible_ordering_state_fraction": float(
+                        reproducible[seed == value].mean()),
+                    "rescue_states": int(np.sum(reduction[seed == value] > 0)),
+                    "harm_states": int(np.sum(reduction[seed == value] < 0)),
+                }
+                for value in (137, 138)
+            },
         }
 
     comparisons = {}

@@ -15,7 +15,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from safety_data.counterfactual_firewall import assert_development_artifact
-from safety_data.short_option_analysis import analyze_short_option_oracle
+from safety_data.short_option_analysis import (
+    analyze_short_option_oracle, validate_short_option_dataset,
+)
 
 
 def main() -> None:
@@ -26,9 +28,12 @@ def main() -> None:
     if args.output.exists():
         raise FileExistsError(args.output)
     with np.load(assert_development_artifact(args.dataset), allow_pickle=False) as data:
+        validation = validate_short_option_dataset(
+            {name: data[name] for name in data.files})
         report = analyze_short_option_oracle(
             h96_fall=data["h96_fall"],
             candidate_duration=data["candidate_duration"],
+            collector_seed=data["collector_seed"],
             replacement_sum=data["replacement_magnitude_sum"],
             replacement_max=data["replacement_magnitude_max"],
             projection_saturation_count=data["projection_saturation_count"],
@@ -39,6 +44,7 @@ def main() -> None:
             max_angular_velocity=data["option_max_angular_velocity"],
             min_base_height=data["option_min_base_height"],
         )
+    report["dataset_validation"] = validation
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print(json.dumps({

@@ -432,7 +432,7 @@ def main() -> None:
         "crn_id": np.asarray([[[hashlib.sha256(
             b"qsafe.short-option.crn.id.v1\0" + state["identity_bytes"]
             + replica.to_bytes(2, "little")).hexdigest()
-            for replica in range(1, 9)] for _ in range(16)]
+            for replica in range(8)] for _ in range(16)]
             for state in states], "S64"),
         "randomization_identity": np.asarray(
             [state["randomization_identity"] for state in states], "S64"),
