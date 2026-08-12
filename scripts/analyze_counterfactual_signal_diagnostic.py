@@ -55,7 +55,8 @@ def main() -> None:
                               np.broadcast_to(np.arange(5, 17), (400, 16, 12))):
             raise RuntimeError("replica extension is not exactly R5--R16")
         first = np.concatenate((first_r4, extension["first_fall_step"]), axis=2)
-    replica = replica_scaling_analysis(first)
+    replica = replica_scaling_analysis(
+        first, roster["risk_stratum"], roster["collector_seed"])
     horizons = horizon_analysis(
         first, roster["risk_stratum"], roster["collector_seed"])
     directions = candidate_direction_analysis(
@@ -88,4 +89,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -88,7 +88,11 @@ def _prefix_metrics(labels: np.ndarray, replicas: int) -> tuple[dict[str, object
     return report, arrays
 
 
-def replica_scaling_analysis(first_fall_step: np.ndarray) -> dict[str, object]:
+def replica_scaling_analysis(
+    first_fall_step: np.ndarray,
+    risk_stratum: np.ndarray | None = None,
+    collector_seed: np.ndarray | None = None,
+) -> dict[str, object]:
     labels = np.asarray(first_fall_step) <= 96
     if labels.shape[1:] != (16, 16):
         raise ValueError("replica scaling requires [states,16 candidates,16 replicas]")
@@ -106,6 +110,30 @@ def replica_scaling_analysis(first_fall_step: np.ndarray) -> dict[str, object]:
             "independent_oracle_reduction": _summary(
                 values["oracle_reduction"], indices),
         }
+        if risk_stratum is not None and collector_seed is not None:
+            stratum = np.asarray(risk_stratum).astype("U")
+            seed = np.asarray(collector_seed)
+            groups = {
+                "boundary": stratum == "boundary",
+                "medium": stratum == "medium",
+                "normal": stratum == "normal",
+                "seed137": seed == 137,
+                "seed138": seed == 138,
+            }
+            report["subgroups"] = {
+                name: {
+                    "states": int(mask.sum()),
+                    "within_state_risk_range_mean": float(
+                        values["spread"][mask].mean()),
+                    "strong_pair_state_coverage": float(
+                        values["strong_state"][mask].mean()),
+                    "pair_ordering_agreement": float(np.nanmean(
+                        values["ordering_agreement"][mask])),
+                    "independent_oracle_reduction": float(
+                        values["oracle_reduction"][mask].mean()),
+                }
+                for name, mask in groups.items()
+            }
         reports[f"R{replicas}"] = report
         arrays[replicas] = values
     strong_delta = _paired_difference(
