@@ -1,0 +1,58 @@
+{
+  "schema_version": "qsafe.short_option_oracle_decision.v1",
+  "date": "2026-08-13",
+  "states": 600,
+  "states_per_collector": 300,
+  "candidates_per_state": 16,
+  "replicas_per_candidate": 8,
+  "branches": 76800,
+  "horizon_policy_steps": 96,
+  "nominal_evaluation_fall_rate": 0.2975,
+  "duration_families": {
+    "L1": {
+      "independent_oracle_fall_rate": 0.27666666666666667,
+      "independent_oracle_reduction": 0.020833333333333332,
+      "independent_oracle_reduction_one_sided_95_lcb": 0.008333333333333333,
+      "split_half_ordering_agreement": 0.5313888888888889,
+      "split_half_ordering_two_sided_95_ci": [0.5221666666666666, 0.5408333333333334],
+      "reproducible_ordering_state_fraction": 0.4216666666666667,
+      "rescue_states": 96,
+      "harm_states": 61
+    },
+    "L4": {
+      "independent_oracle_fall_rate": 0.28833333333333333,
+      "independent_oracle_reduction": 0.009166666666666667,
+      "independent_oracle_reduction_one_sided_95_lcb": -0.0033333333333333335,
+      "split_half_ordering_agreement": 0.5517777777777778,
+      "split_half_ordering_two_sided_95_ci": [0.5419430555555554, 0.5620555555555555],
+      "reproducible_ordering_state_fraction": 0.505,
+      "rescue_states": 85,
+      "harm_states": 76
+    },
+    "L8": {
+      "independent_oracle_fall_rate": 0.28,
+      "independent_oracle_reduction": 0.0175,
+      "independent_oracle_reduction_one_sided_95_lcb": 0.005416666666666667,
+      "split_half_ordering_agreement": 0.5902777777777777,
+      "split_half_ordering_two_sided_95_ci": [0.5792222222222222, 0.601111111111111],
+      "reproducible_ordering_state_fraction": 0.6533333333333333,
+      "rescue_states": 86,
+      "harm_states": 59
+    }
+  },
+  "paired_duration_comparisons": {
+    "L4_minus_L1_oracle_reduction": -0.011666666666666667,
+    "L4_minus_L1_one_sided_95_lcb": -0.024166666666666666,
+    "L8_minus_L1_oracle_reduction": -0.0033333333333333335,
+    "L8_minus_L1_one_sided_95_lcb": -0.015416666666666666
+  },
+  "flags": {
+    "short_option_candidate_space_supported": false,
+    "one_step_action_timescale_insufficient": false
+  },
+  "persistent_residual_option_route_stopped": true,
+  "critic_training_authorized": false,
+  "protected_outcomes_read_or_generated": false,
+  "sac_transfer_run": false,
+  "conclusion": "L8 improves ordering reproducibility but neither L4 nor L8 reaches the preregistered 3 percentage-point independent-oracle headroom. Persistence of frozen PPO residuals is not supported as the next safety decision unit."
+}
