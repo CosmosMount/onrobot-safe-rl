@@ -49,6 +49,7 @@ def main() -> None:
     validate_target_aligned_go2(cfg)
     agent_cfg.seed = args.ppo_seed
     agent_cfg.upload_model = False
+    args.output.mkdir(parents=True, exist_ok=False)
     capture = MjlabNaturalFallCapture(
         args.envs, args.output / "natural-falls", seed=args.ppo_seed,
         export_ring_steps=97, max_normal_events=args.normal_events,
@@ -69,7 +70,6 @@ def main() -> None:
     if "push_robot" in environment.cfg.events or bool(torch.any(
             environment.sim.data.xfrc_applied != 0.0).item()):
         raise RuntimeError("counterfactual state collector contains external force")
-    args.output.mkdir(parents=True, exist_ok=False)
     mujoco.mj_saveModel(environment.sim.mj_model, str(args.output / "model.mjb"))
     wrapped = RslRlVecEnvWrapper(environment, clip_actions=agent_cfg.clip_actions)
     runner = MjlabOnPolicyRunner(wrapped, asdict(agent_cfg), device="cuda:0")
