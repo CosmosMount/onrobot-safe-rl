@@ -23,6 +23,7 @@ from safety_data.candidates import (
     InsufficientCandidateSupportError,
     build_evidence_candidates,
 )
+from safety_data.action_oracle_candidates import build_action_oracle_candidates
 from safety_data.collector import (
     CollectedGroup,
     GroupIdentity,
@@ -181,6 +182,15 @@ def collect_natural_action_groups(
     if int(source_manifest.get("horizon_policy_steps", -1)) != 96:
         raise ValueError("source natural SAC horizon differs from H96")
     config = candidate_config or EvidenceCandidateConfig()
+    candidate_protocol = config.manifest_protocol()
+    candidate_protocol = {
+        "version": "qsafe.action_oracle_candidates.v1",
+        "count": 24,
+        "nominal_index": 0,
+        "base_local_protocol": candidate_protocol,
+        "state_dependent_slots": list(range(16, 24)),
+        "protocol_resolved_per_state_by": "build_action_oracle_candidates",
+    }
     policy_manifest = policy.manifest()
     policy_fingerprint = policy.fingerprint()
     assembler = GroupedBranchAssembler(
@@ -192,7 +202,7 @@ def collect_natural_action_groups(
         simulator_fingerprint=env.simulator_fingerprint(),
         source_policy=policy_manifest,
         continuation_policy=policy_manifest,
-        candidate_protocol=config.manifest_protocol(),
+        candidate_protocol=candidate_protocol,
         fall_definition={
             "max_abs_roll_pitch_rad": float(env.cfg.fallen_orientation_rad),
             "min_base_height_m": 0.18,
@@ -238,7 +248,7 @@ def collect_natural_action_groups(
         ])
         candidate_seed = _u64(b"qsafe.natural_action_candidates.v1", identity)
         try:
-            candidates = build_evidence_candidates(
+            local_candidates = build_evidence_candidates(
                 nominal=nominal,
                 deterministic_mean=deterministic,
                 previous_requested=env.previous_action_requested,
@@ -249,6 +259,9 @@ def collect_natural_action_groups(
                 candidate_seed=candidate_seed,
                 config=config,
             )
+            candidates = build_action_oracle_candidates(
+                local_candidates, observation_history=history,
+                action_applier=env.action_applier)
         except InsufficientCandidateSupportError:
             skipped += 1
             continue
