@@ -65,6 +65,13 @@ PPO 单轨迹只能说明实际执行动作对应的结果。它不能为未执�
    界大于零且每个 actor 方向为正，才允许训练 `Q_safe(s,a)`。失败时只能修改
    候选空间，不能调 selector 阈值。
 
+正式 protected roster 固定为 SAC-from-zero actor 57/58 的 10k checkpoint：
+actor 57 对应 source 9701/9702，actor 58 对应 9703/9704。每个 source 固定
+自然运行 20k policy steps并抽取30组，每动作32个replica。不得因fall数量
+更换actor/checkpoint/source、增加exposure或自动重试。PPO档案仅用于
+development/fit状态覆盖；protected oracle使用natural-SAC状态。两类轨迹均
+不得给未执行候选动作直接打标签。
+
 ## 5. 模型训练和验证
 
 训练数据必须来自同状态多动作 branching。split 单位是 source state/group，

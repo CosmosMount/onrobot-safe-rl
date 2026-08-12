@@ -8,7 +8,10 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from safety_data.action_qsafe_protocol import action_qsafe_protocol_sha256
+from safety_data.action_qsafe_protocol import (
+    action_qsafe_protocol_sha256,
+    load_action_qsafe_protocol,
+)
 from safety_data.schema import GroupedBranchDataset
 
 
@@ -130,6 +133,8 @@ def analyze_action_oracle(
                 collection.get("impulse") != "forbidden") or (
                 collection.get("model_training_authorized") is not False):
             raise ValueError("oracle input violates force or pre-training gate")
+        if collection.get("role", "development") != role:
+            raise ValueError("oracle input role differs from requested analysis role")
         if collection.get("objective1_protocol_sha256") != protocol_sha:
             raise ValueError("oracle input protocol hash differs from active protocol")
         if dataset.replica_count != replicas or replicas % 2 != 0:
@@ -188,6 +193,14 @@ def analyze_action_oracle(
     protected_structure = (
         len(fall) >= 120 and len(actor_effects) >= 2
         and len(source_effects) >= 4 and replicas >= 32)
+    if role == "protected":
+        protocol = load_action_qsafe_protocol()
+        expected = {
+            (int(item["actor_seed"]), int(item["source_seed"]))
+            for item in protocol["candidate_oracle_gate"][
+                "protected_cohort"]["sources"]}
+        observed = set(zip(actor_seed.tolist(), source_seed.tolist()))
+        protected_structure = protected_structure and observed == expected
     cross_actor_positive = all(value > 0.0 for value in actor_effects.values())
     source_positive_fraction = float(np.mean([
         value > 0.0 for value in source_effects.values()]))

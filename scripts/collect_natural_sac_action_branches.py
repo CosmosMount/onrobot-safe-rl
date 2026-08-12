@@ -65,7 +65,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--source-data", required=True)
     parser.add_argument("--source-manifest", required=True)
-    parser.add_argument("--state-risk-model", required=True)
+    parser.add_argument("--state-risk-model")
+    parser.add_argument("--role", choices=("development", "protected"),
+                        default="development")
     parser.add_argument("--groups", type=int, required=True)
     parser.add_argument("--replicas", type=int, default=4)
     parser.add_argument("--device", default="cuda:0")
@@ -74,7 +76,8 @@ def main() -> int:
     args = parser.parse_args()
     source = Path(args.source_data).resolve()
     source_manifest_path = Path(args.source_manifest).resolve()
-    model = Path(args.state_risk_model).resolve()
+    model = (None if args.state_risk_model is None
+             else Path(args.state_risk_model).resolve())
     output = Path(args.output).resolve()
     report_path = output.with_suffix(".report.json")
     if output.suffix != ".npz":
@@ -84,10 +87,31 @@ def main() -> int:
     if output.exists() or report_path.exists():
         raise FileExistsError("natural action output was already published")
     commit = _clean_commit()
-    load_action_qsafe_protocol(PROTOCOL_PATH)
+    protocol = load_action_qsafe_protocol(PROTOCOL_PATH)
     protocol_sha256 = action_qsafe_protocol_sha256(PROTOCOL_PATH)
     manifest = validate_natural_source_manifest(
         source_manifest_path, source, sha256=_sha256)
+    protected = protocol["candidate_oracle_gate"]["protected_cohort"]
+    if args.role == "protected":
+        allowed = {
+            (int(item["actor_seed"]), int(item["source_seed"]))
+            for item in protected["sources"]}
+        identity = (int(manifest["actor_seed"]), int(manifest["source_seed"]))
+        if identity not in allowed:
+            raise ValueError("protected source is not in the frozen actor/source roster")
+        if int(manifest["actor_training_step"]) != int(
+                protected["actor_training"]["checkpoint_policy_steps"]):
+            raise ValueError("protected actor checkpoint age differs from protocol")
+        if int(manifest["fixed_exposure_policy_steps"]) != int(
+                protected["fixed_exposure_policy_steps_per_source"]):
+            raise ValueError("protected source exposure differs from protocol")
+        if args.groups != int(protected["groups_per_source"]) or (
+                args.replicas != int(protected["replicas_per_action"])):
+            raise ValueError("protected group or replica count differs from protocol")
+        if model is not None:
+            raise ValueError("protected admission must not use a development risk model")
+    elif model is None:
+        raise ValueError("development admission requires --state-risk-model")
     robot, train, _ = load_app_config(manifest["config_path"])
     if not np.isclose(robot.move_speed, 0.30) or train.use_action_filter:
         raise ValueError("natural action runtime differs from Objective 1 target")
@@ -100,10 +124,15 @@ def main() -> int:
         manifest["model_path"], robot,
         policy_frequency=train.control_frequency,
         max_joint_delta=train.max_joint_delta, use_action_filter=False)
-    predictor = CalibratedStateRiskPredictor(model, device=args.device)
+    predictor = (None if model is None else
+                 CalibratedStateRiskPredictor(model, device=args.device))
     started = time.monotonic()
     with np.load(source, allow_pickle=False) as arrays:
-        risk, uncertainty = predictor(arrays["observation_history"])
+        if predictor is None:
+            risk = np.zeros(len(arrays["identity"]), dtype=np.float32)
+            uncertainty = np.zeros_like(risk)
+        else:
+            risk, uncertainty = predictor(arrays["observation_history"])
         plan = build_early_prefall_plan(
             identities=arrays["identity"], state_risk=risk,
             state_uncertainty=uncertainty,
@@ -122,6 +151,7 @@ def main() -> int:
                 env=env, policy=policy, sample_action=sample,
                 generator_commit=commit, replicas=args.replicas,
                 protocol_sha256=protocol_sha256,
+                role=args.role,
                 progress=progress)
     elapsed = time.monotonic() - started
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -135,6 +165,7 @@ def main() -> int:
     _publish_no_clobber(staging, output)
     report = {
         "schema_version": "qsafe.natural_sac_action_branch_report.v1",
+        "role": args.role,
         "generator_commit": commit,
         "generator_worktree_clean": True,
         "objective1_protocol": str(PROTOCOL_PATH),
@@ -144,8 +175,8 @@ def main() -> int:
         "source_seed": int(manifest["source_seed"]),
         "actor_seed": int(manifest["actor_seed"]),
         "actor_training_step": int(manifest["actor_training_step"]),
-        "state_risk_model": str(model),
-        "state_risk_model_sha256": _sha256(model),
+        "state_risk_model": None if model is None else str(model),
+        "state_risk_model_sha256": None if model is None else _sha256(model),
         "output": str(output),
         "output_sha256": _sha256(output),
         "groups": persisted.group_count,

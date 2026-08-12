@@ -1,6 +1,6 @@
 protocol_schema_version: 1
 protocol_name: objective1_action_conditioned_qsafe_v1
-protocol_revision: 4
+protocol_revision: 5
 status: active
 supersedes:
   - objective1_state_only_fixed_recovery
@@ -86,6 +86,24 @@ candidate_oracle_gate:
   oracle_definition: per_state_minimum_all_replica_empirical_H96_fall_risk
   oracle_is_deployable_selector: false
   same_crn_per_realization_oracle_is_formal_gate: false
+  protected_cohort:
+    actor_training:
+      seeds: [57, 58]
+      checkpoint_policy_steps: 10000
+      checkpoint_selection_from_outcomes: forbidden
+      command_vx_mps: 0.30
+      qsafe_enabled: false
+    sources:
+      - {actor_seed: 57, source_seed: 9701}
+      - {actor_seed: 57, source_seed: 9702}
+      - {actor_seed: 58, source_seed: 9703}
+      - {actor_seed: 58, source_seed: 9704}
+    fixed_exposure_policy_steps_per_source: 20000
+    groups_per_source: 30
+    replicas_per_action: 32
+    candidate_count: 24
+    insufficient_groups: fail_without_top_up_or_substitution
+    automatic_retry: forbidden
   on_fail: revise_candidate_space_without_training_selector
 
 action_qsafe_training:
@@ -115,3 +133,6 @@ protected_evidence:
   online_source: fresh_sac_from_zero_seed_only
   old_state_only_recovery_results_objective1_eligible: false
   objective2_authorized_before_objective1_pass: false
+  ppo_cohort_role: development_and_fit_state_coverage_only
+  ppo_unexecuted_action_labels: forbidden
+  protected_oracle_state_distribution: natural_sac_only

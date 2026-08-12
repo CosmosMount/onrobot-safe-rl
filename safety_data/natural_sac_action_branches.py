@@ -213,7 +213,7 @@ def collect_natural_action_groups(
     plan: NaturalActionBranchPlan, env: Any, policy: Any,
     sample_action: Callable[[np.ndarray, np.random.Generator], np.ndarray],
     generator_commit: str, replicas: int = 4, horizon_steps: int = 96,
-    protocol_sha256: str,
+    protocol_sha256: str, role: str = "development",
     candidate_config: EvidenceCandidateConfig | None = None,
     progress: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> Any:
@@ -223,6 +223,8 @@ def collect_natural_action_groups(
         raise ValueError("replicas must be a positive integer")
     if int(horizon_steps) != 96:
         raise ValueError("Objective 1 natural action labels require H96")
+    if role not in {"development", "protected"}:
+        raise ValueError("natural action branch role must be development or protected")
     if not isinstance(protocol_sha256, str) or len(protocol_sha256) != 64 or any(
             value not in "0123456789abcdef" for value in protocol_sha256):
         raise ValueError("protocol_sha256 must be a lowercase SHA-256")
@@ -246,7 +248,7 @@ def collect_natural_action_groups(
     assembler = GroupedBranchAssembler(
         # This first product exists to validate candidate-space headroom.  It
         # must not silently become model-fit data before the oracle gate passes.
-        split="natural_sac_action_oracle_development",
+        split=f"natural_sac_action_oracle_{role}",
         horizon_steps=96,
         generator_commit=generator_commit,
         simulator_fingerprint=env.simulator_fingerprint(),
@@ -260,6 +262,7 @@ def collect_natural_action_groups(
         action_application_contract=_action_application_contract(env),
         collection_protocol={
             "version": "qsafe.natural_sac_action_branches.v1",
+            "role": role,
             "objective1_protocol": "objective1_action_conditioned_qsafe_v1",
             "objective1_protocol_sha256": protocol_sha256,
             "selection_timing": "before_candidate_outcomes",

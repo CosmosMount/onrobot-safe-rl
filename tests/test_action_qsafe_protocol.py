@@ -24,6 +24,17 @@ class ActionQsafeProtocolTest(unittest.TestCase):
         self.assertFalse(
             protocol["protected_evidence"][
                 "objective2_authorized_before_objective1_pass"])
+        cohort = protocol["candidate_oracle_gate"]["protected_cohort"]
+        self.assertEqual(cohort["actor_training"]["seeds"], [57, 58])
+        self.assertEqual(cohort["groups_per_source"], 30)
+        self.assertEqual(cohort["replicas_per_action"], 32)
+        self.assertEqual(
+            [(item["actor_seed"], item["source_seed"])
+             for item in cohort["sources"]],
+            [(57, 9701), (57, 9702), (58, 9703), (58, 9704)])
+        self.assertEqual(
+            protocol["protected_evidence"]["ppo_unexecuted_action_labels"],
+            "forbidden")
         digest = action_qsafe_protocol_sha256()
         self.assertEqual(len(digest), 64)
 

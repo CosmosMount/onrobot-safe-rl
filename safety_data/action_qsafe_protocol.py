@@ -30,7 +30,7 @@ def load_action_qsafe_protocol(path: str | Path = PROTOCOL_PATH) -> dict[str, An
     get_up = protocol.get("post_fall_get_up", {})
     runtime = protocol.get("runtime_filter", {})
     checks = {
-        "revision": protocol.get("protocol_revision") == 4,
+        "revision": protocol.get("protocol_revision") == 5,
         "target_speed": target.get("command_vx_mps") == 0.30,
         "target_horizon": target.get("horizon_policy_steps") == 96,
         "target_observation": target.get("observation") == {
@@ -52,6 +52,27 @@ def load_action_qsafe_protocol(path: str | Path = PROTOCOL_PATH) -> dict[str, An
                                 "minimum_replicas_per_action") == 32,
         "future_randomness_not_gate": oracle.get(
             "same_crn_per_realization_oracle_is_formal_gate") is False,
+        "protected_roster": oracle.get("protected_cohort") == {
+            "actor_training": {
+                "seeds": [57, 58],
+                "checkpoint_policy_steps": 10000,
+                "checkpoint_selection_from_outcomes": "forbidden",
+                "command_vx_mps": 0.30,
+                "qsafe_enabled": False,
+            },
+            "sources": [
+                {"actor_seed": 57, "source_seed": 9701},
+                {"actor_seed": 57, "source_seed": 9702},
+                {"actor_seed": 58, "source_seed": 9703},
+                {"actor_seed": 58, "source_seed": 9704},
+            ],
+            "fixed_exposure_policy_steps_per_source": 20000,
+            "groups_per_source": 30,
+            "replicas_per_action": 32,
+            "candidate_count": 24,
+            "insufficient_groups": "fail_without_top_up_or_substitution",
+            "automatic_retry": "forbidden",
+        },
         "oracle_no_long_recovery": oracle.get("candidates", {}).get(
             "fixed_long_recovery") == "forbidden",
         "oracle_no_get_up": oracle.get("candidates", {}).get(
@@ -79,6 +100,10 @@ def load_action_qsafe_protocol(path: str | Path = PROTOCOL_PATH) -> dict[str, An
             "old_state_only_recovery_results_objective1_eligible") is False,
         "phase2_locked": protected.get(
             "objective2_authorized_before_objective1_pass") is False,
+        "ppo_label_boundary": protected.get(
+            "ppo_unexecuted_action_labels") == "forbidden",
+        "protected_sac_only": protected.get(
+            "protected_oracle_state_distribution") == "natural_sac_only",
     }
     failed = [name for name, passed in checks.items() if not passed]
     if failed:

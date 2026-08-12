@@ -73,6 +73,16 @@ class NaturalSacActionBranchPlanTest(unittest.TestCase):
         self.assertTrue(np.all(plan.natural_steps_to_fall <= 96))
         self.assertTrue(np.all(label[plan.row_index]))
 
+    def test_insufficient_protected_source_cannot_top_up(self):
+        identities = np.asarray([f"id-{index}" for index in range(40)], dtype="S64")
+        label = np.ones(40, dtype=bool)
+        steps = np.full(40, 47, dtype=np.int16)
+        with self.assertRaisesRegex(ValueError, "eligible=0, required=30"):
+            build_early_prefall_plan(
+                identities=identities, state_risk=np.zeros(40),
+                state_uncertainty=np.zeros(40), natural_fall_label=label,
+                natural_steps_to_outcome=steps, groups=30)
+
 
 if __name__ == "__main__":
     unittest.main()
