@@ -102,7 +102,7 @@ namespace control
             stand_up_config_(app.stand_up),
             control_hz_(control_hz),
             control_dt_(1.0f / control_hz),
-            scheduler_(control_hz, 50.0f),
+            scheduler_(control_hz, 20.0f),
             phase_(controller_phase::AWAIT_STATE),
             policy_receiver_(std::make_unique<policy_receiver>(ipc_socket)),
             state_publisher_(std::make_unique<state_publisher>(state_socket)),
@@ -193,36 +193,6 @@ namespace control
         }
 
         const bool policy_tick = scheduler_.tick();
-        if (policy_tick && state_received)
-        {
-            state_packet_t packet{};
-            packet.SOF = state_packet_t::magicSOF;
-            packet.phase = static_cast<uint8_t>(phase_);
-            packet.timestamp = static_cast<double>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::system_clock::now().time_since_epoch()).count()) * 1e-9;
-            packet.low_state_count = ++state_publish_count_;
-            packet.sport_state_count = sport_state_received ? 1u : 0u;
-            for (size_t i = 0; i < 12; ++i)
-            {
-                const int policy_index = go2_layout::kMotorToPolicyIndex[i];
-                packet.joint_q[policy_index] = state.motor_state()[i].q();
-                packet.joint_dq[policy_index] = state.motor_state()[i].dq();
-                packet.q_target[policy_index] = q_target[policy_index];
-            }
-            for (size_t i = 0; i < 4; ++i)
-            {
-                packet.imu_quat[i] = state.imu_state().quaternion()[i];
-            }
-            for (size_t i = 0; i < 3; ++i)
-            {
-                packet.imu_gyro[i] = state.imu_state().gyroscope()[i];
-                packet.imu_accel[i] = state.imu_state().accelerometer()[i];
-                packet.sport_velocity[i] = sport_state_received ? sport_state.velocity()[i] : 0.0f;
-                packet.world_position[i] = sport_state_received ? sport_state.position()[i] : 0.0f;
-            }
-            state_publisher_->publish(packet);
-        }
 
         switch (phase_)
         {
@@ -271,6 +241,9 @@ namespace control
                 if (done)
                 {
                     std::cout << "stand-up done, entering policy phase." << std::endl;
+                    // Do not replay a reset-time stand-up request after the
+                    // controller has reached the policy phase.
+                    policy_receiver_->clear_pending_motion_flags();
                     phase_ = controller_phase::POLICY;
                 }
                 break;
@@ -278,8 +251,19 @@ namespace control
                 
             case controller_phase::POLICY:
             {
+                // Safety recovery must not depend on the learner sending a
+                // recovery flag.  Once the controller is in POLICY, detect
+                // the same fallen/upside-down condition used during startup
+                // and enter the autonomous recovery state immediately.
+                if (state_received && accepts_recovery_motion(state, imu_thresholds_))
+                {
+                    enter_recover(state);
+                    break;
+                }
+
                 double timestamp = 0.0;
                 uint8_t flags = 0;
+                uint64_t action_id = 0;
 
                 const uint8_t motion_flags = state_received
                     ? policy_receiver_->consume_pending_motion_flags()
@@ -303,64 +287,67 @@ namespace control
                 }
 
 
-                const bool has_target = policy_receiver_->get_latest_target(policy_target, timestamp, flags);
+                const bool has_target = policy_receiver_->get_latest_target(
+                    policy_target, timestamp, flags, action_id);
 
                 const bool fresh_target = has_target 
                                         && policy_receiver_->has_fresh_target(config_.policy_timeout_ms);
 
-                if (fresh_target) 
+                if (fresh_target && action_id > applied_action_id_)
                 {
                     q_target = policy_target;
-                } 
-                else if (has_target) 
+                    applied_action_id_ = action_id;
+                }
+                else
                 {
-                    constexpr float max_delta_per_tick = 0.01f;
-                    for (size_t i = 0; i < q_target.size(); ++i)
-                    {
-                        const float err = config_.init_qpos[i] - q_target[i];
-                        if (err > max_delta_per_tick) 
-                        {
-                            q_target[i] += max_delta_per_tick;
-                        }
-                        else if (err < -max_delta_per_tick) 
-                        {
-                            q_target[i] -= max_delta_per_tick;
-                        }
-                        else
-                        {
-                            q_target[i] = config_.init_qpos[i];
-                        }
-                    }
-                } 
-                else 
-                {
-                    // A cleared/stale policy target must not cause an
-                    // instantaneous jump back to the nominal pose.  Ramp
-                    // toward the nominal pose until stand-up/recovery takes
-                    // ownership of the controller.
-                    constexpr float max_delta_per_tick = 0.01f;
-                    for (size_t i = 0; i < q_target.size(); ++i)
-                    {
-                        const float err = config_.init_qpos[i] - q_target[i];
-                        if (err > max_delta_per_tick)
-                        {
-                            q_target[i] += max_delta_per_tick;
-                        }
-                        else if (err < -max_delta_per_tick)
-                        {
-                            q_target[i] -= max_delta_per_tick;
-                        }
-                        else
-                        {
-                            q_target[i] = config_.init_qpos[i];
-                        }
-                    }
+                    // A stale/unknown target is held exactly.  Do not
+                    // synthesize a different target while retaining the old
+                    // action_id: the learner must either see the same action
+                    // being held or fail closed on the id mismatch. Recovery
+                    // and stand-up own their targets in their phases.
                 }
 
                 cmd_.fill(low_cmd_, q_target);
                 cmd_pub_->Write(low_cmd_);
                 break;
             }
+        }
+
+        // Publish after consuming the action for this policy tick.  This
+        // makes applied_action_id an exact causal acknowledgement: the
+        // state received by the learner describes the target applied during
+        // the interval that follows the action it sent.
+        if (policy_tick && state_received)
+        {
+            state_packet_t packet{};
+            packet.SOF = state_packet_t::magicSOF;
+            packet.phase = static_cast<uint8_t>(phase_);
+            packet.policy_sequence = scheduler_.policy_sequence();
+            packet.applied_action_id = applied_action_id_;
+            packet.timestamp = static_cast<double>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count()) * 1e-9;
+            packet.low_state_count = ++state_publish_count_;
+            packet.sport_state_count = sport_state_received ? 1u : 0u;
+            for (size_t i = 0; i < 12; ++i)
+            {
+                const int policy_index = go2_layout::kMotorToPolicyIndex[i];
+                packet.joint_q[policy_index] = state.motor_state()[i].q();
+                packet.joint_dq[policy_index] = state.motor_state()[i].dq();
+                packet.q_target[policy_index] = q_target[policy_index];
+            }
+            for (size_t i = 0; i < 4; ++i)
+            {
+                packet.imu_quat[i] = state.imu_state().quaternion()[i];
+            }
+            for (size_t i = 0; i < 3; ++i)
+            {
+                packet.imu_gyro[i] = state.imu_state().gyroscope()[i];
+                packet.imu_accel[i] = state.imu_state().accelerometer()[i];
+                packet.sport_velocity[i] = sport_state_received ? sport_state.velocity()[i] : 0.0f;
+                packet.world_position[i] = sport_state_received ? sport_state.position()[i] : 0.0f;
+            }
+            state_publisher_->publish(packet);
         }
         
     }

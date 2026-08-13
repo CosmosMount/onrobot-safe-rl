@@ -69,6 +69,7 @@ namespace control
 
         std::array<float, 12> q_target{};
         std::array<float, 12> policy_target{};
+        uint64_t applied_action_id_{0};
         uint32_t state_publish_count_{0};
         bool state_received_{false};
         mutable std::mutex state_mutex_;

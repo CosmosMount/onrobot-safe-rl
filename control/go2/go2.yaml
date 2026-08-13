@@ -2,7 +2,10 @@ kp: 60.0
 kd: 5.0
 policy_timeout_ms: 200
 policy_delay_ms: 0
-state_socket: /tmp/go2_policy.sock.state
+# Versioned IPC endpoints prevent an older controller from injecting packets
+# with the pre-action-id (226-byte) state layout into a v2 learner.
+ipc_socket: /tmp/go2_policy.v2.sock
+state_socket: /tmp/go2_policy.v2.sock.state
 
 # Joint order: FR_hip, FR_thigh, FR_calf, FL_hip, FL_thigh, FL_calf,
 #              RR_hip, RR_thigh, RR_calf, RL_hip, RL_thigh, RL_calf.

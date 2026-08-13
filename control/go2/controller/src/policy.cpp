@@ -59,7 +59,8 @@ namespace control
 
     bool policy_receiver::get_latest_target(std::array<float, 12>& out,
                                             double& timestamp,
-                                            uint8_t& flags) const
+                                            uint8_t& flags,
+                                            uint64_t& action_id) const
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (last_update_ns_.load() == 0)
@@ -69,6 +70,7 @@ namespace control
         out = latest_target_;
         timestamp = latest_timestamp_;
         flags = latest_flags_;
+        action_id = latest_action_id_;
         return true;
     }
 
@@ -137,6 +139,7 @@ namespace control
             std::copy(std::begin(packet.q_target), std::end(packet.q_target),
                       latest_target_.begin());
             latest_timestamp_ = packet.timestamp;
+            latest_action_id_ = packet.action_id;
             latest_flags_ = packet.flags;
             pending_motion_flags_ |=
                 packet.flags & (policy_packet_t::FLAG_STAND_UP |

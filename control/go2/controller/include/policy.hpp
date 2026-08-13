@@ -19,6 +19,7 @@ namespace control
 
         uint8_t SOF;
         uint8_t flags;
+        uint64_t action_id;
         double timestamp;
         float q_target[12];
     };
@@ -31,6 +32,8 @@ namespace control
 
         uint8_t SOF;
         uint8_t phase;
+        uint64_t policy_sequence;
+        uint64_t applied_action_id;
         double timestamp;
         uint32_t low_state_count;
         uint32_t sport_state_count;
@@ -45,6 +48,11 @@ namespace control
     };
     #pragma pack(pop)
 
+    static_assert(sizeof(policy_packet_t) == 66,
+                  "policy IPC layout changed; update the Go2 protocol together");
+    static_assert(sizeof(state_packet_t) == 242,
+                  "state IPC layout changed; update the Go2 protocol together");
+
     class policy_receiver
     {
     public:
@@ -55,7 +63,7 @@ namespace control
         void stop();
 
         bool get_latest_target(std::array<float, 12>& out, double& timestamp,
-                            uint8_t& flags) const;
+                            uint8_t& flags, uint64_t& action_id) const;
         bool has_fresh_target(int timeout_ms) const;
         uint8_t consume_pending_motion_flags();
         void clear_pending_motion_flags();
@@ -70,6 +78,7 @@ namespace control
         mutable std::mutex mutex_;
         std::array<float, 12> latest_target_{};
         double latest_timestamp_{0.0};
+        uint64_t latest_action_id_{0};
         uint8_t latest_flags_{0};
         uint8_t pending_motion_flags_{0};
         std::atomic<int64_t> last_update_ns_{0};

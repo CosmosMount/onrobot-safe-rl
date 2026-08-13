@@ -58,6 +58,7 @@ namespace
                     << " interface=" << network_interface
                     << " state_socket=" << state_socket
                     << " hz=" << control_hz
+                    << " state_packet_bytes=" << sizeof(control::state_packet_t)
                     << " kp=" << app.control.kp
                     << " kd=" << app.control.kd
                     << std::endl;
