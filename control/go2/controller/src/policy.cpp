@@ -93,10 +93,35 @@ namespace control
         return flags;
     }
 
+    bool policy_receiver::consume_pending_stop(uint64_t& action_id)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!pending_stop_)
+        {
+            return false;
+        }
+        pending_stop_ = false;
+        action_id = pending_stop_action_id_;
+        return true;
+    }
+
     void policy_receiver::clear_pending_motion_flags()
     {
         std::lock_guard<std::mutex> lock(mutex_);
         pending_motion_flags_ = 0;
+    }
+
+    void policy_receiver::clear_latest_target()
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        latest_target_.fill(0.0f);
+        latest_timestamp_ = 0.0;
+        latest_action_id_ = 0;
+        latest_flags_ = 0;
+        pending_motion_flags_ = 0;
+        pending_stop_ = false;
+        pending_stop_action_id_ = 0;
+        last_update_ns_ = 0;
     }
 
     void policy_receiver::loop()
@@ -144,6 +169,11 @@ namespace control
             pending_motion_flags_ |=
                 packet.flags & (policy_packet_t::FLAG_STAND_UP |
                                 policy_packet_t::FLAG_RECOVERY);
+            if (packet.flags & policy_packet_t::FLAG_STOP)
+            {
+                pending_stop_ = true;
+                pending_stop_action_id_ = packet.action_id;
+            }
             last_update_ns_ = get_now_ns();
         }
 

@@ -76,6 +76,14 @@ target_link_libraries(go2_control
         yaml-cpp
 )
 
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(go2_safety_test controller/tests/safety_test.cpp)
+    target_include_directories(go2_safety_test PRIVATE controller/include)
+    target_link_libraries(go2_safety_test PRIVATE go2_motions unitree_sdk2)
+    add_test(NAME go2_safety_test COMMAND go2_safety_test)
+endif()
+
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/go2.yaml
     ${CMAKE_CURRENT_BINARY_DIR}/go2.yaml

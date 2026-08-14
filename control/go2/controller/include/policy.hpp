@@ -10,12 +10,21 @@
 
 namespace control
 {
+    enum class transition_event : uint8_t
+    {
+        NONE = 0,
+        FALLEN_STANDUP = 1,
+        UPSIDE_DOWN_RECOVERY = 2,
+        STANDUP_FAILED = 3,
+    };
+
     #pragma pack(push, 1)
     struct policy_packet_t
     {
         static constexpr uint8_t magicSOF = 0xA5;
         static constexpr uint8_t FLAG_STAND_UP = 0x01;
         static constexpr uint8_t FLAG_RECOVERY = 0x02;
+        static constexpr uint8_t FLAG_STOP = 0x04;
 
         uint8_t SOF;
         uint8_t flags;
@@ -32,8 +41,11 @@ namespace control
 
         uint8_t SOF;
         uint8_t phase;
+        uint8_t event;
         uint64_t policy_sequence;
         uint64_t applied_action_id;
+        uint64_t event_action_id;
+        uint32_t event_confirm_ms;
         double timestamp;
         uint32_t low_state_count;
         uint32_t sport_state_count;
@@ -50,7 +62,7 @@ namespace control
 
     static_assert(sizeof(policy_packet_t) == 66,
                   "policy IPC layout changed; update the Go2 protocol together");
-    static_assert(sizeof(state_packet_t) == 242,
+    static_assert(sizeof(state_packet_t) == 255,
                   "state IPC layout changed; update the Go2 protocol together");
 
     class policy_receiver
@@ -66,7 +78,9 @@ namespace control
                             uint8_t& flags, uint64_t& action_id) const;
         bool has_fresh_target(int timeout_ms) const;
         uint8_t consume_pending_motion_flags();
+        bool consume_pending_stop(uint64_t& action_id);
         void clear_pending_motion_flags();
+        void clear_latest_target();
 
     private:
         void loop();
@@ -81,6 +95,8 @@ namespace control
         uint64_t latest_action_id_{0};
         uint8_t latest_flags_{0};
         uint8_t pending_motion_flags_{0};
+        bool pending_stop_{false};
+        uint64_t pending_stop_action_id_{0};
         std::atomic<int64_t> last_update_ns_{0};
 
         int64_t get_now_ns() const 

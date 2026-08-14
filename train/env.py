@@ -1,4 +1,4 @@
-"""A synchronous 20 Hz Go2 environment for the walk_in_the_park protocol.
+"""A synchronous 20 Hz Go2 environment for online locomotion training.
 
 The controller emits exactly one state at each policy tick.  ``step`` sends
 one action and waits for the next state carrying the action id that was
@@ -20,66 +20,28 @@ POLICY_SOF = 0xA5
 STATE_SOF = 0x5A
 FLAG_STAND_UP = 0x01
 FLAG_RECOVERY = 0x02
+FLAG_STOP = 0x04
 POLICY_HZ = 20.0
 PHASE_AWAIT_STATE = 0
 PHASE_RECOVER = 1
 PHASE_STAND_UP = 2
 PHASE_POLICY = 3
+PHASE_RETURN_HOME = 4
+PHASE_SHUTDOWN = 5
+PHASE_SAFETY_HOLD = 6
+
+EVENT_NONE = 0
+EVENT_FALLEN_STANDUP = 1
+EVENT_UPSIDE_DOWN_RECOVERY = 2
+EVENT_STANDUP_FAILED = 3
 
 POLICY_STRUCT = struct.Struct("=BBQd12f")
-STATE_STRUCT = struct.Struct("=BBQQdII12f12f4f3f3f3f3f12f")
+STATE_STRUCT = struct.Struct("=BBBQQQIdII12f12f4f3f3f3f3f12f")
 
-# Copied from ../_worktree_execution_aware_droq's
-# config/rewards/locomotion_straight.yaml plus its Go2 overlay.  These values
-# are intentionally local to the reward; the transport/observation protocol
-# remains unchanged.
-REWARD_COMMAND_VX = 0.30
-REWARD_TRACKING_SIGMA = 0.25
-REWARD_UPRIGHT_MIN_COS = 0.94
-REWARD_UPRIGHT_EXPONENT = 2.0
-REWARD_TRACKING_LIN_VEL_WEIGHT = 8.0
-REWARD_TRACKING_ANG_VEL_WEIGHT = 4.0
-REWARD_ROLL_PITCH_RATE_WEIGHT = 0.4
-REWARD_LATERAL_VELOCITY_WEIGHT = 0.5
-REWARD_VERTICAL_VELOCITY_WEIGHT = 0.2
-REWARD_ACTION_RATE_WEIGHT = 0.05
-REWARD_ACTION_RATE_SCALE = 0.25
-REWARD_ACTION_RATE_PENALTY_MAX = 4.0
-REWARD_ACTION_MAGNITUDE_WEIGHT = 0.02
-REWARD_ACTION_MAGNITUDE_SCALE = 0.60
-REWARD_ACTION_MAGNITUDE_PENALTY_MAX = 2.0
-REWARD_ANGULAR_RATE_SCALE = 2.0
-REWARD_LATERAL_VELOCITY_SCALE = 0.35
-REWARD_VERTICAL_VELOCITY_SCALE = 0.40
-REWARD_VERTICAL_VELOCITY_PENALTY_MAX = 4.0
-REWARD_LEG_ACTIVITY_EPSILON = 0.01
-REWARD_LEG_BALANCE_SPEED_GATE = 0.05
-REWARD_LEG_ACTIVITY_BALANCE_WEIGHT = 0.05
-REWARD_LEG_ACTION_ACTIVITY_SCALE = 0.05
-REWARD_LEG_JOINT_VELOCITY_SCALE = 1.0
-REWARD_SIMILAR_TO_DEFAULT_WEIGHT = 0.05
-REWARD_BASE_HEIGHT_WEIGHT = 15.0
-REWARD_BASE_HEIGHT_TARGET = 0.445
-REWARD_ORIENTATION_WEIGHT = 1.0
-REWARD_ORIENTATION_PENALTY_MAX = 4.0
-REWARD_DOF_VELOCITY_WEIGHT = 0.05
-REWARD_DOF_VELOCITY_SCALE = 4.0
-REWARD_JOINT_LIMIT_WEIGHT = 0.20
-REWARD_JOINT_LIMIT_MARGIN = 0.10
-REWARD_FORWARD_TILT_WEIGHT = 2.0
-REWARD_PITCH_FREE_RAD = 0.10
-REWARD_PITCH_DANGER_RAD = 0.40
-REWARD_FORWARD_PITCH_RATE_WEIGHT = 0.50
-REWARD_PITCH_RATE_SCALE = 1.0
-REWARD_PITCH_RATE_PENALTY_MAX = 2.0
-FALL_TERMINAL_PENALTY = -100.0
+REWARD_MOVE_SPEED = 0.50
+REWARD_SCALE = 10.0
+REWARD_YAW_RATE_WEIGHT = 0.10
 INIT_QPOS = np.asarray([0.05, 0.7, -1.4] * 4, dtype=np.float32)
-JOINT_MIN = np.asarray(
-    [-1.05, -1.57, -2.72, -1.05, -1.57, -2.72,
-     -1.05, -0.52, -2.72, -1.05, -0.52, -2.72], dtype=np.float32)
-JOINT_MAX = np.asarray(
-    [1.05, 3.49, -0.84, 1.05, 3.49, -0.84,
-     1.05, 4.54, -0.84, 1.05, 4.54, -0.84], dtype=np.float32)
 
 
 def _reward_tolerance(value, lower, upper, margin):
@@ -93,14 +55,15 @@ def _reward_tolerance(value, lower, upper, margin):
     return 1.0 - distance / margin
 
 
-def _reward_body_up(quat):
+def _reward_pitch_cosine(quat):
     q = np.asarray(quat, dtype=np.float32)
     norm = float(np.linalg.norm(q))
     if not np.isfinite(norm) or norm < 1e-6:
         q = np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
     else:
         q = q / norm
-    return float(1.0 - 2.0 * (q[1] * q[1] + q[2] * q[2]))
+    _, pitch = _reward_euler(q)
+    return float(np.cos(pitch))
 
 
 def _reward_euler(quat):
@@ -118,148 +81,21 @@ def _reward_euler(quat):
     return float(roll), float(pitch)
 
 
-def _reward_leg_balance(action_activity, joint_velocity):
-    action_activity = np.asarray(action_activity, dtype=np.float32).reshape(4)
-    joint_velocity = np.asarray(joint_velocity, dtype=np.float32).reshape(4)
-    values = np.sqrt((action_activity / REWARD_LEG_ACTION_ACTIVITY_SCALE) ** 2
-                     + (joint_velocity / REWARD_LEG_JOINT_VELOCITY_SCALE) ** 2)
-    front = abs(values[0] - values[1]) / (values[0] + values[1] + REWARD_LEG_ACTIVITY_EPSILON)
-    rear = abs(values[2] - values[3]) / (values[2] + values[3] + REWARD_LEG_ACTIVITY_EPSILON)
-    return float(0.5 * (front + rear))
-
-
-def _upstream_reward(state, body_velocity, return_info=False):
-    """Reward copied from walk_in_the_park/sim/tasks/run.py."""
-    vx = float(body_velocity[0])
-    vy = float(body_velocity[1])
-    vz = float(body_velocity[2])
-    _, pitch = _reward_euler(state.imu_quat)
-    dyaw = float(state.imu_gyro[2])
-    forward = _reward_tolerance(
-        np.cos(pitch) * vx, 0.5, 1.0, 1.0)
-    reward = 10.0 * (forward - 0.1 * abs(dyaw))
-    info = {"vx": vx, "vy": vy, "vz": vz, "pitch": float(pitch),
-            "forward": float(forward), "dyaw": dyaw, "total": reward}
-    return (reward, info) if return_info else reward
-
-
 def _locomotion_straight_reward(state, action, previous_action, body_velocity,
                                 terminated, return_info=False):
-    """Exact scalar dense reward from locomotion_straight."""
-    vx, vy, vz = (float(body_velocity[i]) for i in range(3))
-    roll, pitch = _reward_euler(state.imu_quat)
-    droll, dpitch, dyaw = (float(state.imu_gyro[i]) for i in range(3))
-    body_up = _reward_body_up(state.imu_quat)
-
-    forward_raw = _reward_tolerance(vx, REWARD_COMMAND_VX,
-                                    2.0 * REWARD_COMMAND_VX,
-                                    2.0 * REWARD_COMMAND_VX)
-    idle_forward = _reward_tolerance(0.0, REWARD_COMMAND_VX,
-                                     2.0 * REWARD_COMMAND_VX,
-                                     2.0 * REWARD_COMMAND_VX)
-    forward_zero_based = float(np.clip(
-        (forward_raw - idle_forward) / (1.0 - idle_forward + 1e-6), 0.0, 1.0))
-    if vx < 0.0:
-        forward_zero_based = 0.0
-
-    upright_gate = float(np.clip(
-        (body_up - REWARD_UPRIGHT_MIN_COS)
-        / (1.0 - REWARD_UPRIGHT_MIN_COS + 1e-6), 0.0, 1.0
-    ) ** REWARD_UPRIGHT_EXPONENT)
-    x_error = (REWARD_COMMAND_VX - vx) ** 2
-    x_tracking_raw = float(np.exp(-x_error / REWARD_TRACKING_SIGMA))
-    x_tracking_idle = float(np.exp(-(REWARD_COMMAND_VX ** 2) / REWARD_TRACKING_SIGMA))
-    x_tracking_zero_based = float(np.clip(
-        (x_tracking_raw - x_tracking_idle) / (1.0 - x_tracking_idle + 1e-6), 0.0, 1.0))
-    if vx < 0.0:
-        x_tracking_zero_based = 0.0
-    angular_tracking = float(np.exp(-(dyaw ** 2) / REWARD_TRACKING_SIGMA))
-    yaw_tracking_penalty = float(np.clip(1.0 - angular_tracking, 0.0, 1.0))
-
-    action_delta = np.asarray(action, dtype=np.float32) - np.asarray(previous_action, dtype=np.float32)
-    action_rate_penalty = float(np.minimum(
-        np.mean(np.square(action_delta)) / (REWARD_ACTION_RATE_SCALE ** 2),
-        REWARD_ACTION_RATE_PENALTY_MAX))
-    action_magnitude_penalty = float(np.minimum(
-        np.mean(np.square(action)) / (REWARD_ACTION_MAGNITUDE_SCALE ** 2),
-        REWARD_ACTION_MAGNITUDE_PENALTY_MAX))
-    roll_pitch_penalty = float(np.clip(
-        (droll * droll + dpitch * dpitch) / (REWARD_ANGULAR_RATE_SCALE ** 2), 0.0, 1.0))
-    lateral_penalty = float(np.minimum(
-        vy * vy / (REWARD_LATERAL_VELOCITY_SCALE ** 2), 1.0))
-    vertical_penalty = float(np.minimum(
-        vz * vz / (REWARD_VERTICAL_VELOCITY_SCALE ** 2),
-        REWARD_VERTICAL_VELOCITY_PENALTY_MAX))
-    leg_delta_rms = np.asarray([
-        np.sqrt(np.mean(np.square(action_delta[3 * i:3 * i + 3]))) for i in range(4)
-    ], dtype=np.float32)
-    leg_velocity_rms = np.asarray([
-        np.sqrt(np.mean(np.square(state.joint_dq[3 * i:3 * i + 3]))) for i in range(4)
-    ], dtype=np.float32)
-    leg_balance = _reward_leg_balance(leg_delta_rms, leg_velocity_rms)
-    if not (vx > REWARD_LEG_BALANCE_SPEED_GATE or x_tracking_zero_based > 0.01):
-        leg_balance = 0.0
-
-    pose_penalty = float(np.sum(np.abs(state.joint_q - INIT_QPOS)))
-    base_height = float(state.position[2])
-    base_height_penalty = (base_height - REWARD_BASE_HEIGHT_TARGET) ** 2
-    orientation_penalty = float(np.clip(
-        (1.0 - body_up) / (1.0 - REWARD_UPRIGHT_MIN_COS + 1e-6),
-        0.0, REWARD_ORIENTATION_PENALTY_MAX))
-    forward_tilt_penalty = float(np.clip(
-        (abs(pitch) - REWARD_PITCH_FREE_RAD)
-        / max(REWARD_PITCH_DANGER_RAD - REWARD_PITCH_FREE_RAD, 1e-6),
-        0.0, 1.0) ** 2)
-    forward_pitch_rate_penalty = float(np.clip(
-        abs(dpitch) / REWARD_PITCH_RATE_SCALE,
-        0.0, REWARD_PITCH_RATE_PENALTY_MAX) ** 2)
-    dof_velocity_penalty = float(np.clip(
-        np.mean(np.square(state.joint_dq)) / (REWARD_DOF_VELOCITY_SCALE ** 2),
-        0.0, 1.0))
-    joint_width = np.maximum(JOINT_MAX - JOINT_MIN, 1e-6)
-    limit_margin = REWARD_JOINT_LIMIT_MARGIN * joint_width
-    near_lower = np.clip((JOINT_MIN + limit_margin - state.joint_q) / limit_margin, 0.0, 1.0)
-    near_upper = np.clip((state.joint_q - (JOINT_MAX - limit_margin)) / limit_margin, 0.0, 1.0)
-    joint_limit_penalty = float(np.mean(np.maximum(near_lower, near_upper)))
-
-    reward_terms = {
-        "vx": vx,
-        "vy": vy,
-        "vz": vz,
-        "position_z": float(state.position[2]),
-        "body_up": body_up,
-        "x_tracking_zero_based": x_tracking_zero_based,
-        "upright_gate": upright_gate,
-        "yaw_tracking_penalty": yaw_tracking_penalty,
-        "base_height_penalty": float(base_height_penalty),
-        "pose_penalty": pose_penalty,
-        "orientation_penalty": orientation_penalty,
-        "dof_velocity_penalty": dof_velocity_penalty,
-        "joint_limit_penalty": joint_limit_penalty,
-        "action_rate_penalty": action_rate_penalty,
-        "action_magnitude_penalty": action_magnitude_penalty,
-        "dense_total": 0.0,
-    }
-    dense_total = (
-        REWARD_TRACKING_LIN_VEL_WEIGHT * x_tracking_zero_based * upright_gate
-        - REWARD_TRACKING_ANG_VEL_WEIGHT * yaw_tracking_penalty
-        - REWARD_ROLL_PITCH_RATE_WEIGHT * roll_pitch_penalty
-        - REWARD_LATERAL_VELOCITY_WEIGHT * lateral_penalty
-        - REWARD_VERTICAL_VELOCITY_WEIGHT * vertical_penalty
-        - REWARD_ACTION_RATE_WEIGHT * action_rate_penalty
-        - REWARD_ACTION_MAGNITUDE_WEIGHT * action_magnitude_penalty
-        - REWARD_SIMILAR_TO_DEFAULT_WEIGHT * pose_penalty
-        - REWARD_BASE_HEIGHT_WEIGHT * base_height_penalty
-        - REWARD_LEG_ACTIVITY_BALANCE_WEIGHT * leg_balance
-        - REWARD_ORIENTATION_WEIGHT * orientation_penalty
-        - REWARD_DOF_VELOCITY_WEIGHT * dof_velocity_penalty
-        - REWARD_JOINT_LIMIT_WEIGHT * joint_limit_penalty
-        - REWARD_FORWARD_TILT_WEIGHT * forward_tilt_penalty
-        - REWARD_FORWARD_PITCH_RATE_WEIGHT * forward_pitch_rate_penalty)
-    reward = float(dense_total + (FALL_TERMINAL_PENALTY if terminated else 0.0))
-    reward_terms["dense_total"] = float(dense_total)
-    reward_terms["terminal_penalty"] = float(FALL_TERMINAL_PENALTY if terminated else 0.0)
-    reward_terms["total"] = reward
+    """Original walk_in_the_park forward-walking reward."""
+    del action, previous_action, terminated
+    vx = float(body_velocity[0])
+    dyaw = float(state.imu_gyro[2])
+    cos_pitch = _reward_pitch_cosine(state.imu_quat)
+    forward = _reward_tolerance(
+        cos_pitch * vx, REWARD_MOVE_SPEED, 2.0 * REWARD_MOVE_SPEED,
+        2.0 * REWARD_MOVE_SPEED)
+    reward = float(REWARD_SCALE * (forward - REWARD_YAW_RATE_WEIGHT * abs(dyaw)))
+    reward_terms = {"vx": vx, "cos_pitch": cos_pitch, "dyaw": dyaw,
+                    "forward_reward": float(REWARD_SCALE * forward),
+                    "yaw_penalty": float(REWARD_SCALE * REWARD_YAW_RATE_WEIGHT * abs(dyaw)),
+                    "total": reward}
     return (reward, reward_terms) if return_info else reward
 
 
@@ -267,6 +103,9 @@ def _locomotion_straight_reward(state, action, previous_action, body_velocity,
 class Go2State:
     policy_sequence: int
     applied_action_id: int
+    event: int
+    event_action_id: int
+    event_confirm_ms: int
     timestamp: float
     joint_q: np.ndarray
     joint_dq: np.ndarray
@@ -288,7 +127,7 @@ def decode_state(payload: bytes) -> Go2State:
     values = STATE_STRUCT.unpack(payload)
     if values[0] != STATE_SOF:
         raise ValueError("invalid state SOF")
-    i = 5  # SOF, phase, policy sequence, applied action id, timestamp
+    i = 8  # SOF, phase, event, policy seq, applied/event ids, confirm ms, timestamp
     low_count, sport_count = values[i:i + 2]
     del low_count, sport_count
     i += 2
@@ -301,17 +140,19 @@ def decode_state(payload: bytes) -> Go2State:
     position = np.asarray(values[i:i + 3], np.float32); i += 3
     target = np.asarray(values[i:i + 12], np.float32)
     return Go2State(
-        policy_sequence=int(values[2]), applied_action_id=int(values[3]),
-        timestamp=float(values[4]), joint_q=joint_q, joint_dq=joint_dq,
+        policy_sequence=int(values[3]), applied_action_id=int(values[4]),
+        event=int(values[2]), event_action_id=int(values[5]),
+        event_confirm_ms=int(values[6]), timestamp=float(values[7]),
+        joint_q=joint_q, joint_dq=joint_dq,
         imu_quat=quat, imu_gyro=gyro, imu_accel=accel, velocity=velocity,
         position=position, q_target=target, phase=int(values[1]))
 
 
 class Go2SyncEnv:
-    """Gym-like real Go2 adapter with the upstream 20 Hz step semantics."""
+    """Gym-like real Go2 adapter with synchronous 20 Hz step semantics."""
 
-    def __init__(self, *, policy_socket: str = "/tmp/go2_policy.sock",
-                 state_socket: str = "/tmp/go2_policy.sock.state",
+    def __init__(self, *, policy_socket: str = "/tmp/go2_policy.v3.sock",
+                 state_socket: str = "/tmp/go2_policy.v3.sock.state",
                  init_qpos=None, action_offset=None, max_episode_steps=400,
                  timeout=2.0, sport_velocity_world_frame=True):
         self.policy_socket = policy_socket
@@ -343,16 +184,56 @@ class Go2SyncEnv:
         self._last_send_time = None
         self._last_payload = None
         self._steps = 0
+        self._closing = False
+        self._closed = False
+        self.last_safety_hold_info = None
         self._previous_action = np.zeros(12, dtype=np.float32)
-        # Upstream's A1 observable exposes the previous absolute qpos action.
+        # The observable includes the previous absolute qpos action.
         self._previous_qtarget = self.init_qpos.copy()
         self.observation_space_shape = (46,)
         self.action_space_shape = (12,)
 
     def close(self):
+        if self._closed:
+            return
+        self._closing = True
+        try:
+            if self._tx.fileno() >= 0:
+                stop_id, _ = self._send_shutdown()
+                # A stop issued while inverted must finish recovery,
+                # stand-up verification, and return-home before local IPC is
+                # closed. This can legitimately take more than ten seconds.
+                deadline = time.perf_counter() + max(20.0, self.timeout * 10.0)
+                while time.perf_counter() < deadline:
+                    try:
+                        state = self._recv()
+                    except socket.timeout:
+                        self._resend_last()
+                        continue
+                    if state.phase in (PHASE_SHUTDOWN, PHASE_SAFETY_HOLD):
+                        break
+                    if state.applied_action_id < stop_id:
+                        self._resend_last()
+        except (OSError, RuntimeError, ValueError) as exc:
+            # The controller may already be gone; local cleanup must still run.
+            print(f"[train] controller shutdown warning: {exc}", flush=True)
+        self._last_payload = None
+        self._previous_action.fill(0.0)
+        self._previous_qtarget = self.init_qpos.copy()
         self._rx.close(); self._tx.close()
         try: Path(self.state_socket).unlink()
         except FileNotFoundError: pass
+        self._closed = True
+
+    def _send_shutdown(self):
+        """Send a stop packet without allowing any further learner action."""
+        action_id = self._next_action_id; self._next_action_id += 1
+        q_target = self.init_qpos.copy()
+        payload = POLICY_STRUCT.pack(POLICY_SOF, FLAG_STOP, action_id,
+                                     time.time(), *q_target.tolist())
+        self._tx.sendto(payload, self.policy_socket)
+        self._last_payload = payload
+        return action_id, q_target
 
     def _recv(self):
         while True:
@@ -413,6 +294,11 @@ class Go2SyncEnv:
                 # retrying the learner action would otherwise wait forever
                 # because recovery intentionally does not advance the policy
                 # action id.
+                if state.phase == PHASE_SAFETY_HOLD:
+                    return state
+                if (state.event != EVENT_NONE and
+                        state.event_action_id <= action_id):
+                    return state
                 if (state.phase in (PHASE_RECOVER, PHASE_STAND_UP) and
                         state.applied_action_id <= action_id):
                     return state
@@ -461,6 +347,8 @@ class Go2SyncEnv:
                                self._previous_qtarget)).astype(np.float32)
 
     def _send(self, action: np.ndarray, flags: int = 0):
+        if self._closing or self._closed:
+            raise RuntimeError("environment is shutting down; action rejected")
         action = np.clip(np.asarray(action, np.float32), -1.0, 1.0)
         q_target = self.init_qpos + self.action_offset * action
         action_id = self._next_action_id; self._next_action_id += 1
@@ -481,6 +369,9 @@ class Go2SyncEnv:
         self._tx.sendto(self._last_payload, self.policy_socket)
 
     def reset(self):
+        if self._closing or self._closed:
+            raise RuntimeError("environment is closed")
+        self.last_safety_hold_info = None
         # A normal episode timeout is not a physical reset.  Re-requesting
         # stand-up while the robot is already in POLICY needlessly drives it
         # through pose_1 -> pose_2 and can make the feet slide.  Only request
@@ -489,9 +380,51 @@ class Go2SyncEnv:
             self._last_state is None or self._last_state.phase != PHASE_POLICY)
         if request_standup:
             self._send(np.zeros(12, np.float32), FLAG_STAND_UP)
-        state = self._recv()
-        while state.phase != PHASE_POLICY:
-            state = self._recv()
+        # Worst case is recovery (~3.4 s), stand-up (~5 s), and the 5 s
+        # stability verification timeout. Leave enough room to receive the
+        # explicit SAFETY_HOLD result instead of reporting a generic timeout.
+        deadline = time.perf_counter() + max(20.0, self.timeout * 10.0)
+        state = None
+        while time.perf_counter() < deadline:
+            try:
+                state = self._recv()
+            except socket.timeout:
+                if request_standup:
+                    # AF_UNIX datagrams are best effort.  Re-send the same
+                    # lifecycle request while waiting for the controller to
+                    # leave recovery/stand-up/shutdown.
+                    self._resend_last()
+                continue
+            if state.phase == PHASE_POLICY:
+                break
+            if state.phase == PHASE_SAFETY_HOLD:
+                roll, pitch = _reward_euler(state.imu_quat)
+                self.last_safety_hold_info = {
+                    "event": state.event,
+                    "event_action_id": state.event_action_id,
+                    "event_confirm_ms": state.event_confirm_ms,
+                    "roll": roll,
+                    "pitch": pitch,
+                    "up_cos": float(np.cos(roll) * np.cos(pitch)),
+                    "acc_z": float(state.imu_accel[2]),
+                }
+                raise RuntimeError(
+                    "controller entered SAFETY_HOLD: stand-up verification "
+                    "failed; policy actions are latched off until the "
+                    "controller is restarted after manual inspection")
+        if state is None or state.phase != PHASE_POLICY:
+            raise RuntimeError(
+                "controller reset timeout: expected POLICY phase, got "
+                f"phase={getattr(state, 'phase', None)} "
+                f"sequence={getattr(state, 'policy_sequence', None)}; "
+                "restart/rebuild the matching go2_control if it remains in "
+                "SHUTDOWN or uses an old IPC protocol")
+        # The controller can outlive this Python process and deliberately
+        # keeps applied_action_id monotonic across learner sessions.  Do not
+        # restart a new session at action id 1: an old ACK (for example 5)
+        # would otherwise look like the controller skipped the new action 2.
+        self._next_action_id = max(
+            self._next_action_id, int(state.applied_action_id) + 1)
         # Stand-up is an environment lifecycle phase, not a policy interval.
         self._last_send_time = None
         self.action_intervals_ms.clear()
@@ -501,30 +434,88 @@ class Go2SyncEnv:
         return self.observation(state), {"policy_sequence": state.policy_sequence}
 
     def step(self, action):
+        if self._closing or self._closed:
+            raise RuntimeError("environment is closed")
         action = np.clip(np.asarray(action, np.float32), -1.0, 1.0)
         action_id, q_target = self._send(action)
         state = self._recv_for_action(action_id)
         if state.phase == PHASE_AWAIT_STATE:
             raise RuntimeError("controller is still awaiting a valid state")
+        if state.phase == PHASE_SAFETY_HOLD:
+            roll, pitch = _reward_euler(state.imu_quat)
+            self.last_safety_hold_info = {
+                "event": state.event,
+                "event_action_id": state.event_action_id,
+                "event_confirm_ms": state.event_confirm_ms,
+                "roll": roll,
+                "pitch": pitch,
+                "up_cos": float(np.cos(roll) * np.cos(pitch)),
+                "acc_z": float(state.imu_accel[2]),
+            }
+            raise RuntimeError(
+                "controller entered SAFETY_HOLD: stand-up verification failed")
         if state.phase not in (PHASE_RECOVER, PHASE_STAND_UP, PHASE_POLICY):
             raise RuntimeError(f"unknown controller phase {state.phase}")
-        self._steps += 1
         body_velocity = self.body_velocity(
             state, self.sport_velocity_world_frame)
-        terminated = bool(state.phase in (PHASE_RECOVER, PHASE_STAND_UP))
-        reward, reward_terms = _upstream_reward(
-            state, body_velocity, return_info=True)
-        self._previous_action = action.copy()
-        self._previous_qtarget = q_target.copy()
-        truncated = self._steps >= self.max_episode_steps
+        failure_event = state.event in (
+            EVENT_FALLEN_STANDUP, EVENT_UPSIDE_DOWN_RECOVERY)
+        event_matches_action = bool(
+            failure_event and state.event_action_id == action_id and
+            state.applied_action_id == action_id)
+        causal_mismatch = bool(
+            failure_event and not event_matches_action)
+        event_action_lag = 0
+        if causal_mismatch and state.event_action_id < action_id:
+            event_action_lag = int(action_id - state.event_action_id)
+        recovery_motion = bool(
+            state.phase in (PHASE_RECOVER, PHASE_STAND_UP) and
+            not event_matches_action)
+        # Recovery/stand-up is a controller lifecycle interruption, not an
+        # MDP failure transition.  Truncate the learner episode and let the
+        # training loop pause until reset() observes POLICY again.
+        terminated = event_matches_action
+        reward, reward_terms = _locomotion_straight_reward(
+            state, action, self._previous_action, body_velocity,
+            terminated, return_info=True)
+        action_applied = state.applied_action_id == action_id
+        if action_applied:
+            self._steps += 1
+            self._previous_action = action.copy()
+            self._previous_qtarget = q_target.copy()
+        time_limit = self._steps >= self.max_episode_steps
+        truncated = bool(not terminated and (time_limit or recovery_motion))
         info = {"policy_sequence": state.policy_sequence,
+                "requested_action_id": action_id,
                 "applied_action_id": state.applied_action_id,
                 "phase": state.phase,
+                "event": state.event,
+                "event_action_id": state.event_action_id,
+                "event_confirm_ms": state.event_confirm_ms,
+                "event_action_lag": event_action_lag,
+                "action_applied": action_applied,
+                "policy_transition": bool(action_applied and
+                                           not recovery_motion),
+                "causal_mismatch": causal_mismatch,
+                "time_limit": time_limit,
+                "terminal_patch_action_id": (
+                    state.event_action_id if causal_mismatch else None),
                 # Motions in these phases are generated by the controller,
                 # not by the learner.  Their observations must never become
                 # policy replay transitions.
-                "recovery_motion": state.phase in (PHASE_RECOVER, PHASE_STAND_UP),
+                "recovery_motion": recovery_motion,
                 "terminated": terminated, "truncated": truncated}
+        roll, pitch = _reward_euler(state.imu_quat)
+        joint_tracking_error = state.q_target - state.joint_q
+        info.update({"safety/roll": roll,
+                     "safety/pitch": pitch,
+                     "safety/up_cos": float(np.cos(roll) * np.cos(pitch)),
+                     "safety/acc_z": float(state.imu_accel[2]),
+                     "safety/joint_tracking_error_rms": float(
+                         np.linalg.norm(joint_tracking_error) /
+                         np.sqrt(joint_tracking_error.size)),
+                     "safety/joint_tracking_error_max": float(
+                         np.max(np.abs(joint_tracking_error)))})
         info.update({f"reward/{key}": value
                      for key, value in reward_terms.items()})
         return self.observation(state), float(reward), terminated, truncated, info

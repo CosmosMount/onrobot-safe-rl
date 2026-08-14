@@ -46,7 +46,7 @@ namespace
             }
             const int domain_id = root["domain_id"].as<int>(1);
             const std::string network_interface = root["interface"].as<std::string>("lo");
-            const std::string ipc_socket = root["ipc_socket"].as<std::string>("/tmp/go2_policy.sock");
+            const std::string ipc_socket = root["ipc_socket"].as<std::string>("/tmp/go2_policy.v3.sock");
             const std::string state_socket = root["state_socket"].as<std::string>(ipc_socket + ".state");
             const float control_hz = root["control_hz"].as<float>(500.f);
 

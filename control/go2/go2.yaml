@@ -4,8 +4,10 @@ policy_timeout_ms: 200
 policy_delay_ms: 0
 # Versioned IPC endpoints prevent an older controller from injecting packets
 # with the pre-action-id (226-byte) state layout into a v2 learner.
-ipc_socket: /tmp/go2_policy.v2.sock
-state_socket: /tmp/go2_policy.v2.sock.state
+ipc_socket: /tmp/go2_policy.v3.sock
+state_socket: /tmp/go2_policy.v3.sock.state
+
+control_hz: 1000
 
 # Joint order: FR_hip, FR_thigh, FR_calf, FL_hip, FL_thigh, FL_calf,
 #              RR_hip, RR_thigh, RR_calf, RL_hip, RL_thigh, RL_calf.
@@ -14,11 +16,17 @@ joint_min: [-1.05, -1.57, -2.72, -1.05, -1.57, -2.72, -1.05, -0.52, -2.72, -1.05
 joint_max: [1.05, 3.49, -0.84, 1.05, 3.49, -0.84, 1.05, 4.54, -0.84, 1.05, 4.54, -0.84]
 
 imu:
-  upside_down_acc_z_on: 2.0
+  # Go2: upright ~= +9.8 m/s², belly-up ~= -9.8 m/s².
+  upside_down_acc_z_on: -3.0
   upside_down_acc_z_off: 4.0
   fallen_acc_z_off: 7.0
   upside_down_up_cos_on: -0.7
   fallen_roll_pitch_limit_rad: 0.523599
+  stable_roll_pitch_limit_rad: 0.349066
+  fallen_confirm_ms: 50
+  upside_down_confirm_ms: 20
+  stable_confirm_ms: 100
+  standup_verify_timeout_ms: 5000
 
 stand_up:
   warmup_s: 1.0

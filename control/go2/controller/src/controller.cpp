@@ -1,92 +1,21 @@
 #include "controller.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
+
+#include "safety.hpp"
 
 namespace control
 {
     namespace
     {
-        void roll_pitch(
-            const unitree_go::msg::dds_::LowState_& state,
-            float& roll,
-            float& pitch)
+        int64_t elapsed_ms(
+            const std::chrono::steady_clock::time_point& since,
+            const std::chrono::steady_clock::time_point& now)
         {
-            const auto& q = state.imu_state().quaternion();
-            float w = q[0];
-            float x = q[1];
-            float y = q[2];
-            float z = q[3];
-            const float norm_sq = w * w + x * x + y * y + z * z;
-            if (norm_sq < 1e-6f)
-            {
-                roll = 0.0f;
-                pitch = 0.0f;
-                return;
-            }
-            const float inv_norm = 1.0f / std::sqrt(norm_sq);
-            w *= inv_norm;
-            x *= inv_norm;
-            y *= inv_norm;
-            z *= inv_norm;
-
-            roll = std::atan2(
-                2.0f * (w * x + y * z),
-                1.0f - 2.0f * (x * x + y * y));
-            const float sinp = 2.0f * (w * y - z * x);
-            if (std::abs(sinp) >= 1.0f)
-            {
-                constexpr float half_pi = 1.57079632679f;
-                pitch = std::copysign(half_pi, sinp);
-            }
-            else
-            {
-                pitch = std::asin(sinp);
-            }
-        }
-
-        float body_up_cos(const unitree_go::msg::dds_::LowState_& state)
-        {
-            const auto& q = state.imu_state().quaternion();
-            const float w = q[0];
-            const float x = q[1];
-            const float y = q[2];
-            const float z = q[3];
-            const float norm_sq = w * w + x * x + y * y + z * z;
-            if (norm_sq < 1e-6f)
-            {
-                return 1.0f;
-            }
-            return 1.0f - 2.0f * (x * x + y * y) / norm_sq;
-        }
-
-        bool is_fallen(
-            const unitree_go::msg::dds_::LowState_& state,
-            const motions::imu_thresholds& thresholds)
-        {
-            float roll = 0.0f;
-            float pitch = 0.0f;
-            roll_pitch(state, roll, pitch);
-            return std::abs(roll) > thresholds.fallen_roll_pitch_limit_rad ||
-                std::abs(pitch) > thresholds.fallen_roll_pitch_limit_rad;
-        }
-
-        bool is_upside_down(
-            const unitree_go::msg::dds_::LowState_& state,
-            const motions::imu_thresholds& thresholds)
-        {
-            const float up_cos = body_up_cos(state);
-            const bool pose_inverted = up_cos < thresholds.upside_down_up_cos_on;
-            const bool accel_inverted =
-                state.imu_state().accelerometer()[2] < thresholds.upside_down_acc_z_on;
-            return pose_inverted || (accel_inverted && is_fallen(state, thresholds));
-        }
-
-        bool accepts_recovery_motion(
-            const unitree_go::msg::dds_::LowState_& state,
-            const motions::imu_thresholds& thresholds)
-        {
-            return is_upside_down(state, thresholds) || is_fallen(state, thresholds);
+            return std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - since).count();
         }
     }
 
@@ -119,6 +48,7 @@ namespace control
             std::lock_guard<std::mutex> lock(state_mutex_);
             low_state_ = *static_cast<const unitree_go::msg::dds_::LowState_*>(data);
             state_received_ = true;
+            ++state_generation_;
         });
 
         sport_state_sub_.reset(new unitree::robot::ChannelSubscriber<unitree_go::msg::dds_::SportModeState_>("rt/sportmodestate"));
@@ -163,16 +93,133 @@ namespace control
         policy_receiver_->stop();
     }
 
-    void controller::enter_recover(const unitree_go::msg::dds_::LowState_& state)
+    void controller::set_transition_event(transition_event event)
     {
+        if (event == transition_event::NONE)
+            return;
+        current_event_ = event;
+        event_action_id_ = applied_action_id_;
+        const auto now = std::chrono::steady_clock::now();
+        if (event == transition_event::FALLEN_STANDUP &&
+            fallen_timer_active_)
+            event_confirm_ms_ = static_cast<uint32_t>(
+                std::max<int64_t>(0, elapsed_ms(fallen_since_, now)));
+        else if (event == transition_event::UPSIDE_DOWN_RECOVERY &&
+                 upside_down_timer_active_)
+            event_confirm_ms_ = static_cast<uint32_t>(
+                std::max<int64_t>(0, elapsed_ms(upside_down_since_, now)));
+        else
+            event_confirm_ms_ = 0;
+        std::cout << "[safety] event=" << static_cast<int>(event)
+                  << " action_id=" << event_action_id_
+                  << " roll=" << current_roll_
+                  << " pitch=" << current_pitch_
+                  << " up_cos=" << current_up_cos_
+                  << " acc_z=" << current_acc_z_
+                  << " confirm_ms=" << event_confirm_ms_
+                  << std::endl;
+    }
+
+    void controller::clear_transition_event()
+    {
+        current_event_ = transition_event::NONE;
+        event_action_id_ = 0;
+        event_confirm_ms_ = 0;
+    }
+
+    void controller::update_safety_state(
+        const unitree_go::msg::dds_::LowState_& state,
+        uint64_t state_generation)
+    {
+        if (state_generation == last_safety_generation_)
+            return;
+        last_safety_generation_ = state_generation;
+
+        const auto sample = safety::measure(state);
+        current_roll_ = sample.roll;
+        current_pitch_ = sample.pitch;
+        current_up_cos_ = sample.up_cos;
+        current_acc_z_ = sample.acc_z;
+        fallen_raw_ = safety::is_fallen(sample, imu_thresholds_);
+        upside_down_raw_ = safety::is_upside_down(sample, imu_thresholds_);
+        const auto now = std::chrono::steady_clock::now();
+
+        if (fallen_raw_)
+        {
+            if (!fallen_timer_active_)
+            {
+                fallen_timer_active_ = true;
+                fallen_since_ = now;
+            }
+            fallen_confirmed_ = elapsed_ms(fallen_since_, now) >=
+                imu_thresholds_.fallen_confirm_ms;
+        }
+        else
+        {
+            fallen_timer_active_ = false;
+            fallen_confirmed_ = false;
+        }
+
+        if (upside_down_raw_)
+        {
+            if (!upside_down_timer_active_)
+            {
+                upside_down_timer_active_ = true;
+                upside_down_since_ = now;
+            }
+            upside_down_confirmed_ = elapsed_ms(upside_down_since_, now) >=
+                imu_thresholds_.upside_down_confirm_ms;
+        }
+        else
+        {
+            upside_down_timer_active_ = false;
+            upside_down_confirmed_ = false;
+        }
+    }
+
+    void controller::enter_recover(
+        const unitree_go::msg::dds_::LowState_& state,
+        transition_event event)
+    {
+        set_transition_event(event);
         recovery_.reset(state);
+        // Once recovery is running, a subsequent stand-up must not start a
+        // second recovery fallback if that complete lifecycle also fails.
+        standup_fallback_recovery_used_ = true;
         phase_ = controller_phase::RECOVER;
     }
 
-    void controller::enter_stand_up(const unitree_go::msg::dds_::LowState_& state)
+    void controller::enter_stand_up(
+        const unitree_go::msg::dds_::LowState_& state,
+        transition_event event)
     {
+        set_transition_event(event);
         standup_.reset(state);
+        standup_motion_done_ = false;
+        standup_stable_timer_active_ = false;
+        if (event == transition_event::FALLEN_STANDUP)
+            standup_fallback_recovery_used_ = false;
         phase_ = controller_phase::STAND_UP;
+    }
+
+    void controller::enter_safety_hold()
+    {
+        set_transition_event(transition_event::STANDUP_FAILED);
+        q_target = config_.init_qpos;
+        phase_ = controller_phase::SAFETY_HOLD;
+        policy_receiver_->clear_latest_target();
+        std::cerr << "[safety] stand-up verification timed out; "
+                     "holding initial pose and rejecting policy actions."
+                  << std::endl;
+    }
+
+    void controller::enter_return_home(
+        const unitree_go::msg::dds_::LowState_& state)
+    {
+        for (size_t i = 0; i < shutdown_start_q_.size(); ++i)
+            shutdown_start_q_[i] = state.motor_state()[i].q();
+        shutdown_tick_ = 0;
+        phase_ = controller_phase::RETURN_HOME;
     }
 
     void controller::loop()
@@ -184,15 +231,55 @@ namespace control
         unitree_go::msg::dds_::SportModeState_ sport_state{};
         bool state_received = false;
         bool sport_state_received = false;
+        uint64_t state_generation = 0;
         {
             std::lock_guard<std::mutex> lock(state_mutex_);
             state = low_state_;
             sport_state = sport_state_;
             state_received = state_received_;
             sport_state_received = sport_state_received_;
+            state_generation = state_generation_;
         }
 
+        const bool new_state = state_received &&
+            state_generation != last_safety_generation_;
+        if (state_received)
+            update_safety_state(state, state_generation);
+
         const bool policy_tick = scheduler_.tick();
+
+        uint64_t stop_action_id = 0;
+        if (policy_receiver_->consume_pending_stop(stop_action_id))
+        {
+            shutdown_requested_ = true;
+            applied_action_id_ = std::max(applied_action_id_, stop_action_id);
+            policy_receiver_->clear_latest_target();
+            if (state_received &&
+                phase_ == controller_phase::POLICY)
+            {
+                if (upside_down_confirmed_)
+                    enter_recover(state);
+                else if (fallen_confirmed_)
+                    enter_stand_up(state);
+                else
+                    enter_return_home(state);
+            }
+        }
+
+        // A new learner session explicitly requests STAND_UP from the
+        // terminal hold state.  Re-arm only on that lifecycle request; the
+        // shutdown path itself never loops back into stand-up.
+        if (state_received && phase_ == controller_phase::SHUTDOWN)
+        {
+            const uint8_t motion_flags =
+                policy_receiver_->consume_pending_motion_flags();
+            if (motion_flags & policy_packet_t::FLAG_STAND_UP)
+            {
+                shutdown_requested_ = false;
+                clear_transition_event();
+                phase_ = controller_phase::AWAIT_STATE;
+            }
+        }
 
         switch (phase_)
         {
@@ -205,17 +292,54 @@ namespace control
                     return;
                 }
 
-                if (is_upside_down(state, imu_thresholds_))
+                if (shutdown_requested_)
                 {
-                    enter_recover(state);
+                    if (upside_down_confirmed_)
+                        enter_recover(state);
+                    else if (fallen_confirmed_)
+                        enter_stand_up(state);
+                    else
+                        enter_return_home(state);
+                    break;
+                }
+
+                // Use the same recovery predicate at startup as in POLICY.
+                // A robot that is merely away from the stable pose should
+                // execute stand-up only; recovery is reserved for a fallen
+                // or upside-down robot.
+                if (upside_down_confirmed_)
+                {
+                    enter_recover(
+                        state, transition_event::UPSIDE_DOWN_RECOVERY);
+                }
+                else if (fallen_confirmed_)
+                {
+                    enter_stand_up(
+                        state, transition_event::FALLEN_STANDUP);
+                }
+                else if (upside_down_raw_ || fallen_raw_)
+                {
+                    // Wait for a sustained classification while holding the
+                    // measured pose; never route a single IMU sample into a
+                    // recovery motion.
+                    for (size_t i = 0; i < q_target.size(); ++i)
+                        q_target[i] = state.motor_state()[i].q();
+                    cmd_.fill(low_cmd_, q_target);
+                    cmd_pub_->Write(low_cmd_);
                 }
                 else if (!standup_.near_stable_pose(state))
                 {
-                    enter_stand_up(state);
+                    if (shutdown_requested_)
+                        enter_return_home(state);
+                    else
+                        enter_stand_up(state);
                 }
                 else
                 {
-                    phase_ = controller_phase::POLICY;
+                    clear_transition_event();
+                    phase_ = shutdown_requested_
+                        ? controller_phase::SHUTDOWN
+                        : controller_phase::POLICY;
                 }
                 break;
             }
@@ -235,29 +359,132 @@ namespace control
                 
             case controller_phase::STAND_UP:
             {
-                const bool done = standup_.update(state_received, state, q_target);
+                bool done = standup_motion_done_;
+                if (!standup_motion_done_)
+                {
+                    done = standup_.update(state_received, state, q_target);
+                    if (done)
+                    {
+                        standup_motion_done_ = true;
+                        standup_verify_started_ =
+                            std::chrono::steady_clock::now();
+                        standup_stable_timer_active_ = false;
+                        std::cout << "[standup] motion complete; verifying "
+                                     "stable pose before POLICY."
+                                  << std::endl;
+                    }
+                }
+                else
+                {
+                    q_target = config_.init_qpos;
+                }
                 cmd_.fill(low_cmd_, q_target);
                 cmd_pub_->Write(low_cmd_);
-                if (done)
+                if (done && state_received)
                 {
-                    std::cout << "stand-up done, entering policy phase." << std::endl;
-                    // Do not replay a reset-time stand-up request after the
-                    // controller has reached the policy phase.
-                    policy_receiver_->clear_pending_motion_flags();
-                    phase_ = controller_phase::POLICY;
+                    const auto now = std::chrono::steady_clock::now();
+                    if (new_state)
+                    {
+                        // A stand-up motion can finish while the robot is
+                        // still belly-up (for example when the initial
+                        // orientation was classified before the IMU
+                        // confirmation window elapsed). Do not wait for the
+                        // generic stand-up timeout in that case: the only
+                        // valid next lifecycle action is belly-up recovery.
+                        if (upside_down_confirmed_ &&
+                            !standup_fallback_recovery_used_)
+                        {
+                            std::cout << "[safety] stand-up verification "
+                                         "still upside-down; restarting "
+                                         "recovery sequence." << std::endl;
+                            enter_recover(
+                                state,
+                                transition_event::UPSIDE_DOWN_RECOVERY);
+                            break;
+                        }
+
+                        // The ordinary stand-up trajectory is deliberately
+                        // tried first for a side fall.  On hardware it can
+                        // finish with the joints at the target while the
+                        // body is still on its side, which used to spend the
+                        // whole 5 s verification timeout before entering
+                        // SAFETY_HOLD.  Use the stronger recovery trajectory
+                        // exactly once as a bounded fallback.  This does not
+                        // classify ordinary falls as upside-down and cannot
+                        // create a recovery/stand-up loop.
+                        if (fallen_confirmed_ &&
+                            !standup_fallback_recovery_used_)
+                        {
+                            standup_fallback_recovery_used_ = true;
+                            std::cout << "[safety] stand-up completed while "
+                                         "still fallen; running one bounded "
+                                         "recovery fallback." << std::endl;
+                            enter_recover(state);
+                            break;
+                        }
+
+                        const bool orientation_stable =
+                            std::abs(current_roll_) <
+                                imu_thresholds_.stable_roll_pitch_limit_rad &&
+                            std::abs(current_pitch_) <
+                                imu_thresholds_.stable_roll_pitch_limit_rad;
+                        const bool stable = orientation_stable &&
+                            standup_.near_stable_pose(state);
+                        if (stable && !standup_stable_timer_active_)
+                        {
+                            standup_stable_timer_active_ = true;
+                            standup_stable_since_ = now;
+                        }
+                        else if (!stable)
+                        {
+                            standup_stable_timer_active_ = false;
+                        }
+                    }
+
+                    if (new_state && standup_stable_timer_active_ &&
+                        elapsed_ms(standup_stable_since_, now) >=
+                            imu_thresholds_.stable_confirm_ms)
+                    {
+                        std::cout << "stand-up stable, leaving stand-up phase."
+                                  << std::endl;
+                        policy_receiver_->clear_pending_motion_flags();
+                        clear_transition_event();
+                        if (shutdown_requested_)
+                            enter_return_home(state);
+                        else
+                            phase_ = controller_phase::POLICY;
+                    }
+                    else if (elapsed_ms(standup_verify_started_, now) >=
+                        imu_thresholds_.standup_verify_timeout_ms)
+                    {
+                        enter_safety_hold();
+                    }
                 }
                 break;
             }
                 
             case controller_phase::POLICY:
             {
+                if (shutdown_requested_)
+                {
+                    if (state_received)
+                        enter_return_home(state);
+                    break;
+                }
                 // Safety recovery must not depend on the learner sending a
                 // recovery flag.  Once the controller is in POLICY, detect
                 // the same fallen/upside-down condition used during startup
                 // and enter the autonomous recovery state immediately.
-                if (state_received && accepts_recovery_motion(state, imu_thresholds_))
+                if (state_received && upside_down_confirmed_)
                 {
-                    enter_recover(state);
+                    enter_recover(
+                        state, transition_event::UPSIDE_DOWN_RECOVERY);
+                    break;
+                }
+                if (state_received && fallen_confirmed_)
+                {
+                    enter_stand_up(
+                        state, transition_event::FALLEN_STANDUP);
                     break;
                 }
 
@@ -268,24 +495,31 @@ namespace control
                 const uint8_t motion_flags = state_received
                     ? policy_receiver_->consume_pending_motion_flags()
                     : 0u;
-                const bool recovery_needed = accepts_recovery_motion(state, imu_thresholds_);
-                if ((motion_flags & policy_packet_t::FLAG_RECOVERY) && recovery_needed)
+                if ((motion_flags & policy_packet_t::FLAG_RECOVERY) &&
+                    upside_down_confirmed_)
                 {
                     enter_recover(state);
                 }
                 else if (motion_flags & policy_packet_t::FLAG_RECOVERY)
                 {
-                    std::cout << "[controller] ignored stale recovery request phase="
-                            << static_cast<int>(phase_)
-                            << " acc_z=" << state.imu_state().accelerometer()[2]
-                            << " up_cos=" << body_up_cos(state)
-                            << std::endl;
+                    // A non-inverted fallen robot needs stand-up, not the
+                    // aggressive belly-up recovery sequence.
+                    if (fallen_confirmed_)
+                        enter_stand_up(state);
+                    else
+                        std::cout << "[controller] ignored stale recovery request phase="
+                                  << static_cast<int>(phase_)
+                                  << " acc_z=" << current_acc_z_
+                                  << " up_cos=" << current_up_cos_
+                                  << std::endl;
                 }
                 else if (motion_flags & policy_packet_t::FLAG_STAND_UP)
                 {
                     enter_stand_up(state);
                 }
 
+                if (phase_ != controller_phase::POLICY)
+                    break;
 
                 const bool has_target = policy_receiver_->get_latest_target(
                     policy_target, timestamp, flags, action_id);
@@ -311,6 +545,45 @@ namespace control
                 cmd_pub_->Write(low_cmd_);
                 break;
             }
+
+            case controller_phase::RETURN_HOME:
+            {
+                constexpr uint32_t kReturnHomeTicks = 1000;
+                const float alpha = std::min(
+                    1.0f, static_cast<float>(shutdown_tick_ + 1) /
+                              static_cast<float>(kReturnHomeTicks));
+                for (size_t i = 0; i < q_target.size(); ++i)
+                {
+                    q_target[i] = (1.0f - alpha) * shutdown_start_q_[i] +
+                                  alpha * config_.init_qpos[i];
+                }
+                cmd_.fill(low_cmd_, q_target);
+                cmd_pub_->Write(low_cmd_);
+                ++shutdown_tick_;
+                if (shutdown_tick_ >= kReturnHomeTicks)
+                    phase_ = controller_phase::SHUTDOWN;
+                break;
+            }
+
+            case controller_phase::SHUTDOWN:
+            {
+                // Terminal hold state: no stand-up sequence and no learner
+                // target can be applied after this point.
+                q_target = config_.init_qpos;
+                cmd_.fill(low_cmd_, q_target);
+                cmd_pub_->Write(low_cmd_);
+                break;
+            }
+
+            case controller_phase::SAFETY_HOLD:
+            {
+                // Latched terminal safety state. Only a controller restart
+                // can re-arm policy execution after a failed stand-up.
+                q_target = config_.init_qpos;
+                cmd_.fill(low_cmd_, q_target);
+                cmd_pub_->Write(low_cmd_);
+                break;
+            }
         }
 
         // Publish after consuming the action for this policy tick.  This
@@ -322,8 +595,11 @@ namespace control
             state_packet_t packet{};
             packet.SOF = state_packet_t::magicSOF;
             packet.phase = static_cast<uint8_t>(phase_);
+            packet.event = static_cast<uint8_t>(current_event_);
             packet.policy_sequence = scheduler_.policy_sequence();
             packet.applied_action_id = applied_action_id_;
+            packet.event_action_id = event_action_id_;
+            packet.event_confirm_ms = event_confirm_ms_;
             packet.timestamp = static_cast<double>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::system_clock::now().time_since_epoch()).count()) * 1e-9;

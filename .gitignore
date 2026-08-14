@@ -2,6 +2,7 @@
 .agents/
 
 saved/
+saved_backup/
 build/
 wandb/
 logs/

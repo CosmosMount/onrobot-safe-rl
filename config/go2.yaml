@@ -1,0 +1,45 @@
+# Go2 training parameters and IPC transport.
+control_frequency: 20
+# Reference DroQ: one learner/policy update per 20 Hz action, with 20 critic
+# sub-updates inside that learner call.
+num_qs: 2
+num_min_qs: null
+critic_dropout_rate: 0.01
+critic_layer_norm: true
+utd_ratio: 20
+policy_delay: 1
+target_update_period: 1
+actor_q_aggregation: mean
+target_q_selection: all
+target_q_aggregation: min
+discount: 0.99
+tau: 0.005
+target_entropy: null
+init_temperature: 0.1
+temperature_loss_type: standard
+actor_lr: 0.0003
+critic_lr: 0.0003
+temperature_lr: 0.0003
+hidden_dims: [256, 256]
+sampled_backup: true
+# The UTD batch is sampled with replacement, so one mini-batch is sufficient.
+start_training: 1000
+batch_size: 256
+max_steps: 40000
+max_episode_steps: 400
+replay_capacity: 1000000
+save_dir: saved/jaxsac
+checkpoint_interval: 5000
+resume: false
+enforce_20hz: true
+seed: 42
+wandb: true
+wandb_project: tests
+wandb_mode: online
+wandb_log_interval: 100
+progress_interval: 100
+policy_socket: /tmp/go2_policy.v3.sock
+state_socket: /tmp/go2_policy.v3.sock.state
+sport_velocity_world_frame: true
+init_qpos: [0.05, 0.7, -1.4, 0.05, 0.7, -1.4, 0.05, 0.7, -1.4, 0.05, 0.7, -1.4]
+action_offset: [0.2, 0.4, 0.4, 0.2, 0.4, 0.4, 0.2, 0.4, 0.4, 0.2, 0.4, 0.4]

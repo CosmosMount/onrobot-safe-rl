@@ -22,5 +22,13 @@ namespace motions
         float fallen_acc_z_off = 7.f;        // m/s², upright when acc_z above
         float upside_down_up_cos_on = -0.7f; // body-up dot world-up, enter belly-up
         float fallen_roll_pitch_limit_rad = 0.523599f; // upstream Run terminates at 30 deg
+        float stable_roll_pitch_limit_rad = 0.349066f; // 20 deg before POLICY
+        int fallen_confirm_ms = 50;
+        int upside_down_confirm_ms = 20;
+        // The stand-up motion already ends with a controlled hold. Keep a
+        // short fresh-state confirmation window so recovery decisions do not
+        // wait half a second after the motion has completed.
+        int stable_confirm_ms = 100;
+        int standup_verify_timeout_ms = 5000;
     };
 }

@@ -183,6 +183,22 @@ namespace control
             app.imu.fallen_roll_pitch_limit_rad =
                 imu_node["fallen_roll_pitch_limit_rad"].as<float>(
                     imu_node["fallen_orientation_rad"].as<float>(0.523599f));
+            app.imu.stable_roll_pitch_limit_rad =
+                imu_node["stable_roll_pitch_limit_rad"].as<float>(0.349066f);
+            app.imu.fallen_confirm_ms =
+                imu_node["fallen_confirm_ms"].as<int>(50);
+            app.imu.upside_down_confirm_ms =
+                imu_node["upside_down_confirm_ms"].as<int>(20);
+            app.imu.stable_confirm_ms =
+                imu_node["stable_confirm_ms"].as<int>(100);
+            app.imu.standup_verify_timeout_ms =
+                imu_node["standup_verify_timeout_ms"].as<int>(5000);
+            if (app.imu.fallen_confirm_ms < 0 ||
+                app.imu.upside_down_confirm_ms < 0 ||
+                app.imu.stable_confirm_ms < 0 ||
+                app.imu.standup_verify_timeout_ms < 1) {
+                throw std::runtime_error("IMU confirmation durations must be non-negative");
+            }
         }
 
         return app;
