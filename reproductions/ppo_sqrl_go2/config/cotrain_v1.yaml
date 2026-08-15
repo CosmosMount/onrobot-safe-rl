@@ -1,0 +1,10 @@
+protocol_id: ppo_sqrl_go2_cotrain_v1
+seeds: [0, 1, 2]
+command_mps: 0.30
+environment_allocation: {task: 1600, safety: 400}
+rollout_steps: 125
+task_transitions: 30000000
+safety_transitions: 7500000
+final_window_fraction: 0.20
+candidate_safe_fraction_open_interval: [0.005, 0.995]
+reward_velocity_gate: false

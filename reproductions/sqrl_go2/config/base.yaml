@@ -1,0 +1,43 @@
+phase: pretrain
+move_speed: 0.30
+
+environment:
+  observation_dim: 46
+  observation_frames: 5
+  action_dim: 12
+  control_frequency: 50.0
+  max_episode_steps: 500
+  action_filter: false
+  max_joint_delta: null
+
+replay:
+  task_capacity: 1000000
+  safety_trajectories: 10
+  batch_size: 256
+  minimum_task_transitions: 1000
+  minimum_safety_transitions: 256
+
+sqrl:
+  gamma_safe: 0.70
+  epsilon_safe: 0.10
+  mask_candidates: 100
+  task_steps_per_cycle: 1000
+  safety_trajectories_per_cycle: 1
+  safety_updates_per_cycle: 1
+  safety_lagrange_initial: 0.0
+  safety_lagrange_lr: 0.0003
+
+training:
+  seed: 42
+  device: cpu
+  hidden_dims: [256, 256]
+  checkpoint_interval: 25000
+  output_dir: saved/reproductions/sqrl_go2
+
+# Frozen after the three-seed development screening; runners still require
+# explicit --steps so an invocation cannot silently become a formal run.
+development_protocol:
+  pretrain_steps: 25000
+  target_steps: 10000
+  pretrain_seeds: [0, 1, 2]
+  target_seed: 0

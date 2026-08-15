@@ -1,0 +1,10 @@
+phase: target
+move_speed: 0.40
+reward_profile: locomotion_straight
+reward_command_vx: 0.40
+
+train:
+  control_frequency: 50.0
+  max_episode_steps: 500
+  max_joint_delta: null
+  use_action_filter: false

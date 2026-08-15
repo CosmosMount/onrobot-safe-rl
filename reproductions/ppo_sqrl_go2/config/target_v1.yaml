@@ -1,0 +1,14 @@
+protocol_id: ppo_sqrl_go2_target_v1
+seeds: [10, 11, 12, 13, 14, 15]
+command_mps: 0.40
+environments: 2000
+rollout_steps: 125
+transitions_per_branch: 10000000
+branches: [ppo_transfer, ppo_safe]
+even_seed_order: [ppo_transfer, ppo_safe]
+odd_seed_order: [ppo_safe, ppo_transfer]
+qsafe_update: frozen
+evaluation_exposures: [0, 2000000, 4000000, 6000000, 8000000, 10000000]
+evaluation_episodes_per_arm: 200
+bootstrap: {engine: numpy_pcg64, seed: 20260814, replicates: 100000, quantile_method: linear}
+reward_velocity_gate: false

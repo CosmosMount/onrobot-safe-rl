@@ -1,0 +1,14 @@
+protocol_id: ppo_sqrl_go2_mechanism_v1
+formal_sqrl_protocol: sqrl_go2_formal_v2
+seeds: [12, 16, 18, 10, 13]
+positive_reference_seeds: [12, 16, 18]
+command_mps: 0.40
+states_per_seed: 200
+one_state_per_episode: true
+candidates: 16
+replicas: 8
+horizon_steps: 96
+continuation: seed_specific_frozen_sqrl_masked_policy
+state_only_score: mean_candidate_qsafe
+state_only_matching: nearest_complete_state_rows_to_action_rejection_rate
+blocks_cotrain: false
